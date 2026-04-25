@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: Apache-2.0
+
+manifest:
+  self:
+    path: cerebri_rdd2
+    west-commands: scripts/west-commands.yml
+
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+    - name: cognipilot
+      url-base: https://github.com/CogniPilot
+
+  projects:
+    - name: zephyr
+      remote: cognipilot
+      revision: c908d12ebc2baa679d0f5b8e31eeb459ea93caff # cerebri2 4/14/26
+      path: zephyr
+      west-commands: scripts/west-commands.yml
+    - name: cmsis
+      remote: zephyrproject-rtos
+      revision: 512cc7e895e8491696b61f7ba8066b4a182569b8
+      path: modules/hal/cmsis
+    - name: cmsis-dsp
+      remote: zephyrproject-rtos
+      revision: 97512610ec92058f0119450b9e743eeb7e95b5c8
+      path: modules/lib/cmsis-dsp
+    - name: cmsis_6
+      remote: zephyrproject-rtos
+      revision: 30a859f44ef8ab4dc8f84b03ed586fd16ccf9d74
+      path: modules/hal/cmsis_6
+    - name: hal_nxp
+      remote: cognipilot
+      revision: cf8f1631e862528ee044850bcc70273975b90771
+      path: modules/hal/nxp
+    - name: zros
+      remote: cognipilot
+      revision: 959bce412d6e12b3a49fb8b55c219affcf7f6d0e # cerebri2 4/14/26
+      path: modules/lib/zros
+    - name: zenoh-pico
+      url: https://github.com/cognipilot/zenoh-pico.git
+      revision: 3c203551f37c5ad0b6f5471a8c344d376c04127b  # cerebri2 4/14/26
+      path: modules/lib/zenoh-pico
+    - name: zephyr_boards
+      remote: cognipilot
+      revision: d006ec84e621ee33f43c233a96380c8c3f6470eb # cerebri2 4/14/26
+      path: modules/lib/zephyr_boards
