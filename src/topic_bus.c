@@ -11,6 +11,8 @@
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(rc, synapse_topic_RcChannels16_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(flight_state, rdd2_topic_flight_state_blob_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(motor_output, rdd2_topic_motor_output_blob_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(mocap_frame, struct rdd2_topic_mocap_frame);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(mocap_rigid_bodies, struct rdd2_topic_mocap_rigid_bodies);
 
 uint32_t rdd2_topic_generation(const struct zros_topic *topic)
 {
@@ -59,4 +61,14 @@ uint32_t rdd2_topic_motor_output_generation(void)
 bool rdd2_topic_motor_output_copy_blob(uint8_t *buf, size_t buf_size, size_t *len)
 {
 	return rdd2_topic_copy_blob(&topic_motor_output, buf, buf_size, len);
+}
+
+uint32_t rdd2_topic_mocap_frame_generation(void)
+{
+	return rdd2_topic_generation(&topic_mocap_frame);
+}
+
+uint32_t rdd2_topic_mocap_rigid_bodies_generation(void)
+{
+	return rdd2_topic_generation(&topic_mocap_rigid_bodies);
 }

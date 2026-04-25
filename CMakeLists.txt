@@ -20,14 +20,17 @@ include(FetchContent)
 set(FETCHCONTENT_BASE_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps)
 
 FetchContent_Declare(synapse_fbs_c
-  URL https://github.com/CogniPilot/synapse_fbs/releases/download/v0.1.0/synapse_fbs-c.tar.gz
-  URL_HASH SHA256=723f0c8d838580ca89899f6b9d01de3bec84c416b6703f9b4755990420c7dfbe
+  URL https://github.com/CogniPilot/synapse_fbs/releases/download/v0.1.2/synapse_fbs-c.tar.gz
+  URL_HASH SHA256=be2cd865e82838d74aac0ca41b97971210ed55ecf012e76880128a6ad074e089
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(synapse_fbs_c)
 
 set(RDD2_FLATBUFFER_SCHEMA_DIR
   ${synapse_fbs_c_SOURCE_DIR}/fbs
+)
+set(RDD2_FLATBUFFER_BFBS_DIR
+  ${synapse_fbs_c_SOURCE_DIR}/bfbs
 )
 set(RDD2_FLATBUFFER_SCHEMA
   ${RDD2_FLATBUFFER_SCHEMA_DIR}/synapse_topics.fbs
@@ -37,6 +40,12 @@ set(RDD2_FLATBUFFER_LOG_SCHEMA
 )
 set(RDD2_FLATBUFFER_SIL_SCHEMA
   ${RDD2_FLATBUFFER_SCHEMA_DIR}/synapse_sil.fbs
+)
+set(RDD2_FLATBUFFER_TOPIC_BFBS
+  ${RDD2_FLATBUFFER_BFBS_DIR}/synapse_topics.bfbs
+)
+set(RDD2_FLATBUFFER_SIL_BFBS
+  ${RDD2_FLATBUFFER_BFBS_DIR}/synapse_sil.bfbs
 )
 set(RDD2_FLATBUFFER_GENERATED_DIR
   ${CMAKE_CURRENT_BINARY_DIR}/generated/flatbuffers
@@ -63,6 +72,18 @@ if(NOT EXISTS ${RDD2_FLATBUFFER_SIL_SCHEMA})
   )
 endif()
 
+if(NOT EXISTS ${RDD2_FLATBUFFER_TOPIC_BFBS})
+  message(FATAL_ERROR
+    "Missing FlatBuffer topic reflection schema in synapse_fbs release: ${RDD2_FLATBUFFER_TOPIC_BFBS}."
+  )
+endif()
+
+if(NOT EXISTS ${RDD2_FLATBUFFER_SIL_BFBS})
+  message(FATAL_ERROR
+    "Missing FlatBuffer SITL reflection schema in synapse_fbs release: ${RDD2_FLATBUFFER_SIL_BFBS}."
+  )
+endif()
+
 add_custom_command(
   OUTPUT ${RDD2_FLATBUFFER_STAGE_STAMP}
   COMMAND ${CMAKE_COMMAND} -E make_directory ${RDD2_FLATBUFFER_GENERATED_DIR}
@@ -75,11 +96,19 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${RDD2_FLATBUFFER_SIL_SCHEMA}
           ${RDD2_FLATBUFFER_GENERATED_DIR}/synapse_sil.fbs
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${RDD2_FLATBUFFER_TOPIC_BFBS}
+          ${RDD2_FLATBUFFER_GENERATED_DIR}/synapse_topics.bfbs
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${RDD2_FLATBUFFER_SIL_BFBS}
+          ${RDD2_FLATBUFFER_GENERATED_DIR}/synapse_sil.bfbs
   COMMAND ${CMAKE_COMMAND} -E touch ${RDD2_FLATBUFFER_STAGE_STAMP}
   DEPENDS
     ${RDD2_FLATBUFFER_SCHEMA}
     ${RDD2_FLATBUFFER_LOG_SCHEMA}
     ${RDD2_FLATBUFFER_SIL_SCHEMA}
+    ${RDD2_FLATBUFFER_TOPIC_BFBS}
+    ${RDD2_FLATBUFFER_SIL_BFBS}
   COMMENT "Staging FlatBuffer schemas into ${RDD2_FLATBUFFER_GENERATED_DIR}"
   VERBATIM
 )

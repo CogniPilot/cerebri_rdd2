@@ -126,6 +126,40 @@ static void rdd2_topic_shell_format_rc(const struct shell *sh, const struct zros
 		    (long)rc->ch14, (long)rc->ch15);
 }
 
+static void rdd2_topic_shell_format_mocap_rigid_bodies(const struct shell *sh,
+						       const struct zros_topic *topic,
+						       const void *msg, size_t msg_size)
+{
+	const struct rdd2_topic_mocap_rigid_bodies *mocap = msg;
+	uint32_t count;
+
+	ARG_UNUSED(topic);
+
+	if (msg_size != sizeof(*mocap)) {
+		shell_error(sh, "mocap_rigid_bodies: invalid sample size %u",
+			    (unsigned int)msg_size);
+		return;
+	}
+
+	count = MIN(mocap->count, (uint32_t)RDD2_TOPIC_MOCAP_RIGID_BODY_MAX);
+	shell_print(sh, "mocap_rigid_bodies frame=%lu timestamp_us=%llu count=%lu rx=%llu",
+		    (unsigned long)mocap->frame_number, (unsigned long long)mocap->timestamp_us,
+		    (unsigned long)count, (unsigned long long)mocap->receive_count);
+
+	for (uint32_t i = 0U; i < count; i++) {
+		const struct rdd2_topic_mocap_rigid_body_pose *body = &mocap->bodies[i];
+
+		shell_print(sh,
+			    "  body[%lu] id=%ld valid=%d residual=%9.6f "
+			    "pos_m=[%9.5f %9.5f %9.5f] quat_xyzw=[%9.6f %9.6f %9.6f %9.6f]",
+			    (unsigned long)i, (long)body->id, body->tracking_valid ? 1 : 0,
+			    (double)body->residual, (double)body->position_m[0],
+			    (double)body->position_m[1], (double)body->position_m[2],
+			    (double)body->attitude_xyzw[0], (double)body->attitude_xyzw[1],
+			    (double)body->attitude_xyzw[2], (double)body->attitude_xyzw[3]);
+	}
+}
+
 static struct zros_shell_topic_formatter g_rdd2_flight_state_formatter = {
 	.topic = &topic_flight_state,
 	.format = rdd2_topic_shell_format_flight_state,
@@ -139,6 +173,11 @@ static struct zros_shell_topic_formatter g_rdd2_motor_output_formatter = {
 static struct zros_shell_topic_formatter g_rdd2_rc_formatter = {
 	.topic = &topic_rc,
 	.format = rdd2_topic_shell_format_rc,
+};
+
+static struct zros_shell_topic_formatter g_rdd2_mocap_rigid_bodies_formatter = {
+	.topic = &topic_mocap_rigid_bodies,
+	.format = rdd2_topic_shell_format_mocap_rigid_bodies,
 };
 
 static int rdd2_topic_shell_init(void)
@@ -156,6 +195,11 @@ static int rdd2_topic_shell_init(void)
 	}
 
 	rc = zros_shell_topic_formatter_register(&g_rdd2_rc_formatter);
+	if (rc != 0 && rc != -EALREADY) {
+		return rc;
+	}
+
+	rc = zros_shell_topic_formatter_register(&g_rdd2_mocap_rigid_bodies_formatter);
 	if (rc != 0 && rc != -EALREADY) {
 		return rc;
 	}

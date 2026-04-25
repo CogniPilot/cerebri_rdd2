@@ -1,4 +1,7 @@
-target_include_directories(app PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+target_include_directories(app PRIVATE
+  ${CMAKE_CURRENT_LIST_DIR}
+  ${WORKSPACE_ROOT}/modules/lib/zenoh-pico/src/system/zephyr
+)
 
 target_sources(app PRIVATE
   attitude_control.c
@@ -19,6 +22,8 @@ target_sources(app PRIVATE
   topic_flatbuffer.c
   topic_shell.c
 )
+
+target_sources_ifdef(CONFIG_ZENOH_PICO_SHELL app PRIVATE mocap_shell.c)
 
 if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
   zephyr_code_relocate(
