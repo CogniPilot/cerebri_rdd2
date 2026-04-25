@@ -1,5 +1,6 @@
 menu "Subsystems"
 
 rsource "sitl/Kconfig"
+rsource "log_sdcard/Kconfig"
 
 endmenu

@@ -29,6 +29,10 @@ manifest:
       remote: zephyrproject-rtos
       revision: 30a859f44ef8ab4dc8f84b03ed586fd16ccf9d74
       path: modules/hal/cmsis_6
+    - name: fatfs
+      remote: zephyrproject-rtos
+      revision: f4ead3bf4a6dab3a07d7b5f5315795c073db568d
+      path: modules/fs/fatfs
     - name: hal_nxp
       remote: cognipilot
       revision: cf8f1631e862528ee044850bcc70273975b90771

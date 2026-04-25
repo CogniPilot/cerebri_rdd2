@@ -1,0 +1,49 @@
+menuconfig RDD2_LOG_SDCARD
+	bool "RDD2 self-describing SD-card logger"
+	default y
+	depends on ZROS
+	select FILE_SYSTEM
+	select FILE_SYSTEM_LIB_LINK
+	select FAT_FILESYSTEM_ELM
+	select DISK_DRIVERS
+	help
+	  Write length-delimited synapse.log.LogRecord FlatBuffers to /SD:.
+	  The logger writes schema records with embedded BFBS data before topic
+	  frames so logs can be decoded without a matching source tree.
+
+if RDD2_LOG_SDCARD
+
+config RDD2_LOG_SDCARD_AUTOSTART
+	bool "Start the SD-card logger at boot"
+	default n
+
+config RDD2_LOG_SDCARD_STACK_SIZE
+	int "SD-card logger stack size"
+	default 8192
+
+config RDD2_LOG_SDCARD_PRIORITY
+	int "SD-card logger thread priority"
+	default 8
+
+config RDD2_LOG_SDCARD_TOPIC_RATE_HZ
+	int "Per-topic logger rate limit in Hz"
+	default 100
+
+config RDD2_LOG_SDCARD_PATH
+	string "SD-card mount point"
+	default "/SD:"
+
+config RDD2_LOG_SDCARD_LOG_MOCAP
+	bool "Log raw mocap frame payloads"
+	default y
+	depends on ZENOH_PICO_SHELL
+	help
+	  Log the raw synapse.topic.MocapFrame FlatBuffer received from Zenoh.
+	  This preserves rigid-body poses and any other mocap content present in
+	  that frame.
+
+module = RDD2_LOG_SDCARD
+module-str = rdd2_log_sdcard
+source "subsys/logging/Kconfig.template.log_config"
+
+endif

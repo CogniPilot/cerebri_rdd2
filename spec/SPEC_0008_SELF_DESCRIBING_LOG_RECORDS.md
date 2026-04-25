@@ -11,6 +11,8 @@ SD-card logging uses a dedicated FlatBuffer log-envelope schema plus generated b
 **REQUIRED:**
 - Log records use `fbs/synapse_log.fbs` from the pinned `synapse_fbs` C release asset, not ad-hoc raw byte dumps.
 - Logged topic payloads are wrapped in a typed FlatBuffer union record.
+- On disk, each `LogRecord` is framed as a 32-bit little-endian byte length
+  followed by that many FlatBuffer bytes.
 - The log format supports a `SchemaRecord` for carrying schema bytes when that path is enabled.
 - Build outputs stage active `.fbs` files under `${CMAKE_BINARY_DIR}/generated/flatbuffers`.
 - The logger remains outside the flight hot path.
