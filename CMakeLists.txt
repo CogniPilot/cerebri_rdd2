@@ -21,7 +21,7 @@ set(FETCHCONTENT_BASE_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps)
 
 FetchContent_Declare(synapse_fbs_c
   URL https://github.com/CogniPilot/synapse_fbs/releases/download/v0.1.2/synapse_fbs-c.tar.gz
-  URL_HASH SHA256=be2cd865e82838d74aac0ca41b97971210ed55ecf012e76880128a6ad074e089
+  URL_HASH SHA256=a0644e63c0746bb4b7eb8ffb3c55c51c8a467dec631b0cdddd25ab21ea600872
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(synapse_fbs_c)
