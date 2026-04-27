@@ -3,13 +3,41 @@ config RDD2_SITL
 	depends on BOARD_NATIVE_SIM
 	default y
 	help
-	  Enable the native_sim UDP transport and shared FlatBuffer staging used
-	  by the fake RC, IMU, and DSHOT device adapters.
+	  Enable native_sim transport and shared FlatBuffer staging used by the
+	  fake RC, IMU, and DSHOT device adapters.
 
 if RDD2_SITL
 
+choice RDD2_SITL_TRANSPORT
+	prompt "SITL transport"
+	default RDD2_SITL_TRANSPORT_UDP
+	help
+	  Select how native_sim exchanges SITL FlatBuffer payloads with the host
+	  simulator.
+
+config RDD2_SITL_TRANSPORT_UDP
+	bool "UDP sockets"
+	help
+	  Use fixed UDP ports for the low-latency simulator loop.
+
+config RDD2_SITL_TRANSPORT_ZENOH
+	bool "Zenoh"
+	select ZENOH_PICO
+	select ZENOH_PICO_MULTI_THREAD
+	select ZENOH_PICO_PUBLICATION
+	select ZENOH_PICO_SUBSCRIPTION
+	select ZENOH_PICO_SCOUTING
+	select ZENOH_PICO_LINK_UDP_MULTICAST
+	select ZENOH_PICO_LINK_UDP_UNICAST
+	help
+	  Use zenoh key expressions for SITL input, flight state, and motor
+	  output FlatBuffer payloads.
+
+endchoice
+
 config RDD2_SITL_HOST
 	string "SITL host IPv4 address"
+	depends on RDD2_SITL_TRANSPORT_UDP
 	default "127.0.0.1"
 	help
 	  IPv4 address of the host process that receives outbound SITL topic
@@ -17,6 +45,7 @@ config RDD2_SITL_HOST
 
 config RDD2_SITL_RX_PORT
 	int "SITL input UDP port"
+	depends on RDD2_SITL_TRANSPORT_UDP
 	range 1 65535
 	default 4242
 	help
@@ -24,6 +53,7 @@ config RDD2_SITL_RX_PORT
 
 config RDD2_SITL_TX_FLIGHT_SNAPSHOT_PORT
 	int "SITL flight state UDP port"
+	depends on RDD2_SITL_TRANSPORT_UDP
 	range 1 65535
 	default 4243
 	help
@@ -32,16 +62,62 @@ config RDD2_SITL_TX_FLIGHT_SNAPSHOT_PORT
 
 config RDD2_SITL_TX_MOTOR_OUTPUT_PORT
 	int "SITL motor output UDP port"
+	depends on RDD2_SITL_TRANSPORT_UDP
 	range 1 65535
 	default 4244
 	help
 	  UDP port to which native_sim publishes MotorOutput blobs.
 
+config RDD2_SITL_ZENOH_MODE
+	string "SITL zenoh mode"
+	depends on RDD2_SITL_TRANSPORT_ZENOH
+	default "client"
+	help
+	  Zenoh session mode. Use "client" to connect to a router or "peer" to
+	  listen directly on a UDP locator.
+
+config RDD2_SITL_ZENOH_LOCATOR
+	string "SITL zenoh connect/listen locator"
+	depends on RDD2_SITL_TRANSPORT_ZENOH
+	default "udp/127.0.0.1:7447"
+	help
+	  Locator passed to zenoh-pico. In client mode this is the router
+	  connect locator; in peer mode this is the local listen locator.
+
+config RDD2_SITL_ZENOH_INPUT_KEYEXPR
+	string "SITL zenoh input key expression"
+	depends on RDD2_SITL_TRANSPORT_ZENOH
+	default "rdd2/sitl/input"
+	help
+	  Key expression carrying SimInput FlatBuffer payloads into native_sim.
+
+config RDD2_SITL_ZENOH_FLIGHT_STATE_KEYEXPR
+	string "SITL zenoh flight state key expression"
+	depends on RDD2_SITL_TRANSPORT_ZENOH
+	default "rdd2/sitl/flight_state"
+	help
+	  Key expression used to publish FlightSnapshot FlatBuffer payloads.
+
+config RDD2_SITL_ZENOH_MOTOR_OUTPUT_KEYEXPR
+	string "SITL zenoh motor output key expression"
+	depends on RDD2_SITL_TRANSPORT_ZENOH
+	default "rdd2/sitl/motor_output"
+	help
+	  Key expression used to publish MotorOutput FlatBuffer payloads.
+
+config RDD2_SITL_ZENOH_RETRY_MS
+	int "SITL zenoh reconnect period in milliseconds"
+	depends on RDD2_SITL_TRANSPORT_ZENOH
+	range 100 10000
+	default 1000
+	help
+	  Delay between zenoh connect or reconnect attempts.
+
 config RDD2_SITL_THREAD_PRIORITY
 	int "SITL transport thread priority"
 	default 5
 	help
-	  Low-priority thread that handles non-blocking host UDP transport.
+	  Low-priority thread that handles host SITL transport work.
 
 config RDD2_SITL_THREAD_STACK_SIZE
 	int "SITL transport thread stack size"

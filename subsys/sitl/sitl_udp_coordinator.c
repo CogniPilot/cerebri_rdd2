@@ -2,10 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "rc_input.h"
-#include "sitl_flatbuffer.h"
-#include "sitl_udp_coordinator.h"
-#include "topic_bus.h"
+#include "sitl_transport.h"
 #include "topic_flatbuffer.h"
 
 #include <arpa/inet.h>
@@ -16,23 +13,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <zephyr/device.h>
 #include <zephyr/init.h>
-#include <zephyr/input/input.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/sys/atomic.h>
-#include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(rdd2_sitl_udp, LOG_LEVEL_INF);
 
-struct sitl_input_store {
-	uint8_t slots[2][RDD2_SITL_INPUT_MAX_SIZE];
-	uint16_t lengths[2];
-	atomic_t generation;
-};
-
-static struct sitl_input_store g_sitl_input_store;
 static int g_sitl_rx_sock = -1;
 static int g_sitl_tx_sock = -1;
 static struct sockaddr_in g_sitl_tx_flight_addr;
@@ -99,69 +85,6 @@ static int sitl_destination_init(struct sockaddr_in *addr, uint16_t port)
 	return 0;
 }
 
-static void sitl_input_store_publish(const uint8_t *buf, size_t len)
-{
-	uint32_t next_generation = (uint32_t)atomic_get(&g_sitl_input_store.generation) + 1U;
-	uint32_t slot = next_generation & 1U;
-
-	memcpy(g_sitl_input_store.slots[slot], buf, len);
-	g_sitl_input_store.lengths[slot] = (uint16_t)len;
-	atomic_set(&g_sitl_input_store.generation, (atomic_val_t)next_generation);
-}
-
-bool rdd2_sitl_udp_latest_input_get(uint8_t *buf, size_t buf_size, size_t *len,
-				    uint32_t *generation)
-{
-	uint32_t generation_start;
-	uint32_t generation_end;
-	uint32_t slot;
-	uint16_t length;
-
-	if (buf == NULL || len == NULL || generation == NULL) {
-		return false;
-	}
-
-	do {
-		generation_start = (uint32_t)atomic_get(&g_sitl_input_store.generation);
-		if (generation_start == 0U) {
-			return false;
-		}
-
-		slot = generation_start & 1U;
-		length = g_sitl_input_store.lengths[slot];
-		if (length == 0U || length > buf_size) {
-			return false;
-		}
-
-		memcpy(buf, g_sitl_input_store.slots[slot], length);
-		generation_end = (uint32_t)atomic_get(&g_sitl_input_store.generation);
-	} while (generation_start != generation_end);
-
-	*len = length;
-	*generation = generation_start;
-	return true;
-}
-
-static void sitl_report_rc_input(const synapse_topic_RcChannels16_t *rc, uint8_t rc_link_quality,
-				 bool rc_valid)
-{
-	const struct device *const rc_dev = DEVICE_DT_GET(DT_ALIAS(rc));
-	const int32_t *channels = rdd2_topic_rc_channels_data_const(rc);
-
-	if (!device_is_ready(rc_dev)) {
-		return;
-	}
-
-	for (size_t i = 0; i < 16U; i++) {
-		(void)input_report_abs(rc_dev, (uint16_t)(i + 1U), channels[i], false, K_FOREVER);
-	}
-
-	(void)input_report(rc_dev, INPUT_EV_MSC, RDD2_RC_INPUT_EVENT_LINK_QUALITY, rc_link_quality,
-			   false, K_FOREVER);
-	(void)input_report(rc_dev, INPUT_EV_MSC, RDD2_RC_INPUT_EVENT_VALID, rc_valid ? 1 : 0, true,
-			   K_FOREVER);
-}
-
 static void sitl_rx_drain(void)
 {
 	struct sockaddr_in source_addr;
@@ -169,9 +92,6 @@ static void sitl_rx_drain(void)
 	uint8_t buf[RDD2_SITL_INPUT_MAX_SIZE];
 
 	while (true) {
-		synapse_topic_RcChannels16_t rc;
-		uint8_t rc_link_quality;
-		bool rc_valid;
 		ssize_t len = recvfrom(g_sitl_rx_sock, buf, sizeof(buf), 0,
 				       (struct sockaddr *)&source_addr, &source_addr_len);
 
@@ -182,14 +102,7 @@ static void sitl_rx_drain(void)
 			break;
 		}
 
-		if (!rdd2_sitl_fb_unpack_input(buf, (size_t)len, NULL, NULL, &rc, &rc_link_quality,
-					       &rc_valid, NULL)) {
-			source_addr_len = sizeof(source_addr);
-			continue;
-		}
-
-		sitl_input_store_publish(buf, (size_t)len);
-		sitl_report_rc_input(&rc, rc_link_quality, rc_valid);
+		(void)rdd2_sitl_handle_input_blob(buf, (size_t)len);
 		source_addr_len = sizeof(source_addr);
 	}
 }
@@ -197,41 +110,29 @@ static void sitl_rx_drain(void)
 static void sitl_send_flight_state_if_updated(void)
 {
 	static uint32_t last_generation;
-	uint32_t generation = rdd2_topic_flight_state_generation();
 	uint8_t buf[RDD2_TOPIC_FB_FLIGHT_STATE_SIZE];
 	size_t len;
 
-	if (generation == 0U || generation == last_generation) {
-		return;
-	}
-
-	if (!rdd2_topic_flight_state_copy_blob(buf, sizeof(buf), &len)) {
+	if (!rdd2_sitl_flight_state_blob_if_updated(&last_generation, buf, sizeof(buf), &len)) {
 		return;
 	}
 
 	(void)sendto(g_sitl_tx_sock, buf, len, 0, (struct sockaddr *)&g_sitl_tx_flight_addr,
 		     sizeof(g_sitl_tx_flight_addr));
-	last_generation = generation;
 }
 
 static void sitl_send_motor_output_if_updated(void)
 {
 	static uint32_t last_generation;
-	uint32_t generation = rdd2_topic_motor_output_generation();
 	uint8_t buf[RDD2_TOPIC_FB_MOTOR_OUTPUT_SIZE];
 	size_t len;
 
-	if (generation == 0U || generation == last_generation) {
-		return;
-	}
-
-	if (!rdd2_topic_motor_output_copy_blob(buf, sizeof(buf), &len)) {
+	if (!rdd2_sitl_motor_output_blob_if_updated(&last_generation, buf, sizeof(buf), &len)) {
 		return;
 	}
 
 	(void)sendto(g_sitl_tx_sock, buf, len, 0, (struct sockaddr *)&g_sitl_tx_motor_addr,
 		     sizeof(g_sitl_tx_motor_addr));
-	last_generation = generation;
 }
 
 static void sitl_transport_thread(void *arg0, void *arg1, void *arg2)
@@ -251,8 +152,6 @@ static void sitl_transport_thread(void *arg0, void *arg1, void *arg2)
 static int rdd2_sitl_init(void)
 {
 	int rc;
-
-	atomic_set(&g_sitl_input_store.generation, 0);
 
 	rc = sitl_socket_init(&g_sitl_rx_sock, CONFIG_RDD2_SITL_RX_PORT);
 	if (rc != 0) {

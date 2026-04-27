@@ -17,6 +17,7 @@ enum {
 	SIM_FIELD_RC_LINK_QUALITY = 3,
 	SIM_FIELD_RC_VALID = 4,
 	SIM_FIELD_IMU_VALID = 5,
+	SIM_FIELD_TARGET_BOOT_TIME_NS = 6,
 };
 
 BUILD_ASSERT(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__);
@@ -32,6 +33,11 @@ static uint32_t get_le32(const uint8_t *buf)
 {
 	return (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) | ((uint32_t)buf[2] << 16) |
 	       ((uint32_t)buf[3] << 24);
+}
+
+static uint64_t get_le64(const uint8_t *buf)
+{
+	return (uint64_t)get_le32(buf) | ((uint64_t)get_le32(buf + 4U) << 32);
 }
 
 static bool sim_input_read_field_offset(const uint8_t *table, size_t table_offset, size_t buf_size,
@@ -88,7 +94,8 @@ static bool sim_input_struct_in_bounds(size_t table_offset, uint16_t object_size
 
 bool rdd2_sitl_fb_unpack_input(const uint8_t *buf, size_t buf_size, synapse_topic_Vec3f_t *gyro,
 			       synapse_topic_Vec3f_t *accel, synapse_topic_RcChannels16_t *rc,
-			       uint8_t *rc_link_quality, bool *rc_valid, bool *imu_valid)
+			       uint8_t *rc_link_quality, bool *rc_valid, bool *imu_valid,
+			       uint64_t *target_boot_time_ns)
 {
 	const uint8_t *table;
 	size_t table_offset;
@@ -182,6 +189,22 @@ bool rdd2_sitl_fb_unpack_input(const uint8_t *buf, size_t buf_size, synapse_topi
 				return false;
 			}
 			*imu_valid = table[field_offset] != 0U;
+		}
+	}
+
+	if (!sim_input_read_field_offset(table, table_offset, buf_size,
+					 SIM_FIELD_TARGET_BOOT_TIME_NS, &field_offset,
+					 &object_size)) {
+		return false;
+	}
+	if (target_boot_time_ns != NULL) {
+		*target_boot_time_ns = 0U;
+		if (field_offset != 0U) {
+			if (!sim_input_struct_in_bounds(table_offset, object_size, field_offset,
+							sizeof(uint64_t), buf_size)) {
+				return false;
+			}
+			*target_boot_time_ns = get_le64(table + field_offset);
 		}
 	}
 

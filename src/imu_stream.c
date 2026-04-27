@@ -5,6 +5,10 @@
 #include "imu_stream.h"
 
 #include "rate_control.h"
+#if defined(CONFIG_RDD2_SITL)
+#include "sitl_flatbuffer.h"
+#include "sitl_transport.h"
+#endif
 
 #include <errno.h>
 #include <math.h>
@@ -251,10 +255,56 @@ bool rdd2_imu_stream_wait_next(synapse_topic_Vec3f_t *gyro, synapse_topic_Vec3f_
 
 #else
 
+#if defined(CONFIG_RDD2_SITL)
+static uint32_t g_sitl_imu_generation;
+static uint64_t g_sitl_current_boot_time_ns;
+static uint64_t g_sitl_target_boot_time_ns;
+#endif
+
+#if !defined(CONFIG_RDD2_SITL)
 static uint64_t imu_timestamp_now_ns(void)
 {
 	return k_cyc_to_ns_floor64(k_cycle_get_64());
 }
+#endif
+
+#if defined(CONFIG_RDD2_SITL)
+static bool sitl_latest_target_boot_time_get(uint64_t *target_boot_time_ns)
+{
+	uint8_t buf[RDD2_SITL_INPUT_MAX_SIZE];
+	size_t len;
+	uint32_t generation;
+
+	if (!rdd2_sitl_latest_input_get(buf, sizeof(buf), &len, &generation)) {
+		return false;
+	}
+
+	return rdd2_sitl_fb_unpack_input(buf, len, NULL, NULL, NULL, NULL, NULL, NULL,
+					 target_boot_time_ns);
+}
+
+static bool sitl_wait_until_controller_tick_ready(void)
+{
+	uint64_t target_boot_time_ns = 0U;
+
+	while (g_sitl_current_boot_time_ns >= g_sitl_target_boot_time_ns) {
+		if (!rdd2_sitl_input_wait_next(&g_sitl_imu_generation, K_FOREVER)) {
+			return false;
+		}
+
+		if (!sitl_latest_target_boot_time_get(&target_boot_time_ns)) {
+			return false;
+		}
+
+		if (target_boot_time_ns <= g_sitl_current_boot_time_ns) {
+			target_boot_time_ns = g_sitl_current_boot_time_ns + RDD2_CONTROL_PERIOD_NS;
+		}
+		g_sitl_target_boot_time_ns = target_boot_time_ns;
+	}
+
+	return true;
+}
+#endif
 
 static bool imu_fetch_sync(synapse_topic_Vec3f_t *gyro_out, synapse_topic_Vec3f_t *accel_out)
 {
@@ -304,7 +354,21 @@ int rdd2_imu_stream_init(void)
 bool rdd2_imu_stream_wait_next(synapse_topic_Vec3f_t *gyro, synapse_topic_Vec3f_t *accel, float *dt,
 			       uint64_t *interrupt_timestamp_ns)
 {
+#if defined(CONFIG_RDD2_SITL)
+	uint64_t next_boot_time_ns;
+
+	if (!sitl_wait_until_controller_tick_ready()) {
+		imu_outputs_zero(gyro, accel);
+		return false;
+	}
+
+	next_boot_time_ns = g_sitl_current_boot_time_ns + RDD2_CONTROL_PERIOD_NS;
+	if (next_boot_time_ns > g_sitl_target_boot_time_ns) {
+		next_boot_time_ns = g_sitl_target_boot_time_ns;
+	}
+#else
 	k_sleep(K_NSEC(RDD2_CONTROL_PERIOD_NS));
+#endif
 	*dt = RDD2_CONTROL_DT_S;
 	if (interrupt_timestamp_ns != NULL) {
 		*interrupt_timestamp_ns = 0U;
@@ -315,9 +379,17 @@ bool rdd2_imu_stream_wait_next(synapse_topic_Vec3f_t *gyro, synapse_topic_Vec3f_
 		return false;
 	}
 
+#if defined(CONFIG_RDD2_SITL)
+	*dt = (float)(next_boot_time_ns - g_sitl_current_boot_time_ns) * 1.0e-9f;
+	g_sitl_current_boot_time_ns = next_boot_time_ns;
+	if (interrupt_timestamp_ns != NULL) {
+		*interrupt_timestamp_ns = g_sitl_current_boot_time_ns;
+	}
+#else
 	if (interrupt_timestamp_ns != NULL) {
 		*interrupt_timestamp_ns = imu_timestamp_now_ns();
 	}
+#endif
 
 	return true;
 }

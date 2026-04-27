@@ -5,7 +5,7 @@
 #define DT_DRV_COMPAT cognipilot_sitl_imu
 
 #include "sitl_flatbuffer.h"
-#include "sitl_udp_coordinator.h"
+#include "sitl_transport.h"
 
 #include <errno.h>
 
@@ -34,7 +34,7 @@ static int sitl_imu_sample_fetch(const struct device *dev, enum sensor_channel c
 
 	ARG_UNUSED(chan);
 
-	if (!rdd2_sitl_udp_latest_input_get(buf, sizeof(buf), &len, &generation)) {
+	if (!rdd2_sitl_latest_input_get(buf, sizeof(buf), &len, &generation)) {
 		data->valid = false;
 		return -ENODATA;
 	}
@@ -44,7 +44,7 @@ static int sitl_imu_sample_fetch(const struct device *dev, enum sensor_channel c
 	}
 
 	if (!rdd2_sitl_fb_unpack_input(buf, len, &data->gyro, &data->accel, NULL, NULL, NULL,
-				       &imu_valid)) {
+				       &imu_valid, NULL)) {
 		data->valid = false;
 		data->generation = generation;
 		return -ENODATA;

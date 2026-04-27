@@ -27,6 +27,10 @@ FetchContent_Declare(synapse_fbs_c
 )
 FetchContent_MakeAvailable(synapse_fbs_c)
 
+set_property(TARGET synapse_fbs_c APPEND PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
+  ${synapse_fbs_c_SOURCE_DIR}/include
+)
+
 set(RDD2_FLATBUFFER_SCHEMA_DIR
   ${synapse_fbs_c_SOURCE_DIR}/fbs
 )
@@ -60,6 +64,35 @@ set(RDD2_FLATBUFFER_LOG_BFBS
 set(RDD2_FLATBUFFER_MOCAP_BFBS
   ${RDD2_FLATBUFFER_BFBS_DIR}/synapse_mocap.bfbs
 )
+set(RDD2_LOCAL_FLATBUFFER_SIL_SCHEMA
+  ${CMAKE_CURRENT_SOURCE_DIR}/schemas/synapse_sil.fbs
+)
+set(RDD2_LOCAL_FLATBUFFER_GENERATED_DIR
+  ${CMAKE_CURRENT_BINARY_DIR}/generated/local_flatbuffers
+)
+if(EXISTS ${RDD2_LOCAL_FLATBUFFER_SIL_SCHEMA})
+  find_program(FLATC_EXECUTABLE flatc REQUIRED)
+  set(RDD2_FLATBUFFER_SIL_SCHEMA ${RDD2_LOCAL_FLATBUFFER_SIL_SCHEMA})
+  set(RDD2_FLATBUFFER_SIL_BFBS
+    ${RDD2_LOCAL_FLATBUFFER_GENERATED_DIR}/synapse_sil.bfbs
+  )
+  set(RDD2_FLATBUFFER_SIL_BFBS_GENERATED TRUE)
+  add_custom_command(
+    OUTPUT ${RDD2_FLATBUFFER_SIL_BFBS}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${RDD2_LOCAL_FLATBUFFER_GENERATED_DIR}
+    COMMAND ${FLATC_EXECUTABLE} --binary --schema
+            -I ${RDD2_FLATBUFFER_SCHEMA_DIR}
+            -o ${RDD2_LOCAL_FLATBUFFER_GENERATED_DIR}
+            ${RDD2_LOCAL_FLATBUFFER_SIL_SCHEMA}
+    DEPENDS
+      ${RDD2_LOCAL_FLATBUFFER_SIL_SCHEMA}
+      ${RDD2_FLATBUFFER_SCHEMA}
+    COMMENT "Generating local SITL FlatBuffer reflection schema"
+    VERBATIM
+  )
+else()
+  set(RDD2_FLATBUFFER_SIL_BFBS_GENERATED FALSE)
+endif()
 set(RDD2_FLATBUFFER_GENERATED_DIR
   ${CMAKE_CURRENT_BINARY_DIR}/generated/flatbuffers
 )
@@ -97,7 +130,7 @@ if(NOT EXISTS ${RDD2_FLATBUFFER_TOPIC_BFBS})
   )
 endif()
 
-if(NOT EXISTS ${RDD2_FLATBUFFER_SIL_BFBS})
+if(NOT RDD2_FLATBUFFER_SIL_BFBS_GENERATED AND NOT EXISTS ${RDD2_FLATBUFFER_SIL_BFBS})
   message(FATAL_ERROR
     "Missing FlatBuffer SITL reflection schema in synapse_fbs release: ${RDD2_FLATBUFFER_SIL_BFBS}."
   )
@@ -162,6 +195,13 @@ add_custom_target(rdd2_flatbuffer_schema_stage
 
 add_dependencies(app rdd2_flatbuffer_schema_stage)
 target_link_libraries(app PRIVATE synapse_fbs::c)
+
+if(TARGET ..__modules__lib__zenoh-pico__zephyr)
+  target_compile_options(..__modules__lib__zenoh-pico__zephyr PRIVATE
+    -Wno-unused-function
+    -Wno-unused-variable
+  )
+endif()
 
 set(RDD2_LOG_SCHEMA_BLOBS_C ${CMAKE_CURRENT_BINARY_DIR}/generated/rdd2_log_schema_blobs.c)
 set(RDD2_LOG_SCHEMA_BLOBS_H ${CMAKE_CURRENT_BINARY_DIR}/generated/rdd2_log_schema_blobs.h)

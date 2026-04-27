@@ -7,7 +7,9 @@ ACCEPTED
 `native_sim` runs the same 1600 Hz flight-control loop as flight firmware, but
 simulator IO terminates in native-sim RC, IMU, and DSHOT devices backed by one
 low-priority SITL subsystem transport and FlatBuffer schemas from the
-`synapse_fbs` C release asset.
+`synapse_fbs` C release asset. SITL may stage a local backward-compatible
+`synapse_sil.fbs` overlay when simulator-only fields are needed before the
+shared schema release catches up.
 
 ## Specification
 
@@ -17,11 +19,15 @@ low-priority SITL subsystem transport and FlatBuffer schemas from the
 - Host simulator IO must stay out of the hot path and run in a lower-priority thread than the main control loop.
 - `src/main.c` must remain free of `native_sim`-specific control-path branches.
 - The simulator boundary must terminate at board-selected `rc`, `imu0`, and `motors` devices, not at ad hoc app-level IO hooks.
-- Inbound simulator packets use `fbs/synapse/synapse_sil.fbs` `SimInput`.
+- Inbound simulator packets use `synapse.sil.SimInput`. For lockstep, Rumoca
+  owns time and sends `target_boot_time_ns`; native_sim runs the controller
+  toward that boot clock before returning actuator data.
 - Outbound simulator packets reuse `synapse_topics.fbs` `FlightSnapshot` and `MotorOutput`.
-- SITL message schemas come from the pinned `synapse_fbs-c.tar.gz` release asset.
-- The SITL UDP coordinator must stage the latest inbound `SimInput` as a FlatBuffer blob instead of queueing per-sample work into the controller.
-- Shared SITL state between the UDP coordinator and fake drivers must remain FlatBuffer blobs, not shared native structs.
+- SITL message schemas come from the pinned `synapse_fbs-c.tar.gz` release
+  asset, except for a local backward-compatible SITL overlay that may append
+  simulator-only fields.
+- The SITL transport must stage the latest inbound `SimInput` as a FlatBuffer blob instead of queueing per-sample work into the controller.
+- Shared SITL state between the transport backend and fake drivers must remain FlatBuffer blobs, not shared native structs.
 - Driver-local fetch code may decode transient locals from the staged FlatBuffer blob, but schema-shaped values must use the generated flatcc struct types instead of handwritten mirrors.
 - SITL transport and shared FlatBuffer staging live under `subsys/sitl/`, not `src/`.
 - Fake native-sim device adapters live under driver-family directories, not under one generic `drivers/sitl/` bucket.
@@ -32,9 +38,10 @@ low-priority SITL subsystem transport and FlatBuffer schemas from the
 **PROHIBITED:**
 - Blocking socket IO in the 1600 Hz control loop.
 - A simulation-only control loop separate from `src/main.c`.
-- SITL message definitions that bypass the pinned `synapse_fbs` release asset.
+- Incompatible SITL message definitions that bypass the pinned `synapse_fbs`
+  release asset.
 - Per-packet heap allocation in the hot path.
-- Publishing simulator UDP traffic directly from `src/main.c`.
+- Publishing simulator transport traffic directly from `src/main.c`.
 
 ## Motivation
 
@@ -50,8 +57,11 @@ low-priority SITL subsystem transport and FlatBuffer schemas from the
 - `../src/main.c`
 - `../src/rc_input.c`
 - `../subsys/sitl/sitl_flatbuffer.c`
-- `../subsys/sitl/sitl_udp_coordinator.h`
+- `../subsys/sitl/sitl_transport.h`
+- `../subsys/sitl/sitl_transport.c`
 - `../subsys/sitl/sitl_udp_coordinator.c`
+- `../subsys/sitl/sitl_zenoh_coordinator.c`
+- `../schemas/synapse_sil.fbs`
 - `../drivers/input/sitl_rc.c`
 - `../drivers/sensor/sitl_imu.c`
 - `../drivers/nxp_flexio_dshot/sitl_dshot.c`

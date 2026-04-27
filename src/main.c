@@ -105,6 +105,12 @@ static uint32_t imu_to_motor_latency_us(uint64_t imu_interrupt_timestamp_ns,
 {
 	uint64_t latency_ns;
 
+#if defined(CONFIG_RDD2_SITL)
+	ARG_UNUSED(imu_interrupt_timestamp_ns);
+	ARG_UNUSED(motor_signal_timestamp_ns);
+	return 0U;
+#endif
+
 	if (imu_interrupt_timestamp_ns == 0U || motor_signal_timestamp_ns == 0U ||
 	    motor_signal_timestamp_ns <= imu_interrupt_timestamp_ns) {
 		return 0U;
@@ -173,8 +179,18 @@ int main(void)
 		rdd2_control_input_wait(&ctx->gyro, &ctx->accel, &ctx->rc, &ctx->status, &ctx->dt,
 					&imu_interrupt_timestamp_ns);
 		ctx->now_ms = k_uptime_get();
+#if defined(CONFIG_RDD2_SITL)
+		/*
+		 * In lockstep SITL, simulator input is what advances controller time.
+		 * If input stops arriving, the control loop blocks instead of running
+		 * on stale RC. Avoid mixing native event timestamps with simulator
+		 * boot time for the RC freshness check.
+		 */
+		ctx->rc_stale = !ctx->status.rc_valid;
+#else
 		ctx->rc_stale = !ctx->status.rc_valid || ((ctx->now_ms - ctx->status.rc_stamp_ms) >
 							  RDD2_RC_STALE_TIMEOUT_MS);
+#endif
 		ctx->flight_mode = rdd2_flight_mode_from_rc(&ctx->rc);
 		ctx->status.flight_mode = (uint8_t)ctx->flight_mode;
 
