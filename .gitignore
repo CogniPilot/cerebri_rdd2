@@ -1,7 +1,10 @@
 dev/
 build/
 build-native_sim/
+build-*/
 build_native*/
 build-flatfb/
 twister-out/
 __pycache__
+result
+result-*

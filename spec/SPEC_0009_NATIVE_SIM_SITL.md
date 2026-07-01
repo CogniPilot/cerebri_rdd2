@@ -7,9 +7,7 @@ ACCEPTED
 `native_sim` runs the same 1600 Hz flight-control loop as flight firmware, but
 simulator IO terminates in native-sim RC, IMU, and DSHOT devices backed by one
 low-priority SITL subsystem transport and FlatBuffer schemas from the
-`synapse_fbs` C release asset. SITL may stage a local backward-compatible
-`synapse_sil.fbs` overlay when simulator-only fields are needed before the
-shared schema release catches up.
+`synapse_fbs` C release asset.
 
 ## Specification
 
@@ -24,8 +22,7 @@ shared schema release catches up.
   toward that boot clock before returning actuator data.
 - Outbound simulator packets reuse `synapse_topics.fbs` `FlightSnapshot` and `MotorOutput`.
 - SITL message schemas come from the pinned `synapse_fbs-c.tar.gz` release
-  asset, except for a local backward-compatible SITL overlay that may append
-  simulator-only fields.
+  asset.
 - The SITL transport must stage the latest inbound `SimInput` as a FlatBuffer blob instead of queueing per-sample work into the controller.
 - Shared SITL state between the transport backend and fake drivers must remain FlatBuffer blobs, not shared native structs.
 - Driver-local fetch code may decode transient locals from the staged FlatBuffer blob, but schema-shaped values must use the generated flatcc struct types instead of handwritten mirrors.
@@ -61,7 +58,6 @@ shared schema release catches up.
 - `../subsys/sitl/sitl_transport.c`
 - `../subsys/sitl/sitl_udp_coordinator.c`
 - `../subsys/sitl/sitl_zenoh_coordinator.c`
-- `../schemas/synapse_sil.fbs`
 - `../drivers/input/sitl_rc.c`
 - `../drivers/sensor/sitl_imu.c`
 - `../drivers/nxp_flexio_dshot/sitl_dshot.c`

@@ -2,7 +2,17 @@ cmake_minimum_required(VERSION 3.20.0)
 
 list(APPEND DTS_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
-get_filename_component(WORKSPACE_ROOT ${CMAKE_CURRENT_SOURCE_DIR} DIRECTORY)
+set(RDD2_WORKSPACE_ROOT "" CACHE PATH "West workspace root containing Zephyr and module checkouts")
+if(NOT RDD2_WORKSPACE_ROOT AND DEFINED ENV{RDD2_WORKSPACE_ROOT})
+  set(RDD2_WORKSPACE_ROOT "$ENV{RDD2_WORKSPACE_ROOT}")
+endif()
+
+if(RDD2_WORKSPACE_ROOT)
+  get_filename_component(WORKSPACE_ROOT ${RDD2_WORKSPACE_ROOT} ABSOLUTE)
+else()
+  get_filename_component(WORKSPACE_ROOT ${CMAKE_CURRENT_SOURCE_DIR} DIRECTORY)
+endif()
+
 set(ZEPHYR_MODULES
   ${WORKSPACE_ROOT}/modules/hal/cmsis
   ${WORKSPACE_ROOT}/modules/hal/cmsis_6
@@ -21,8 +31,8 @@ include(FetchContent)
 set(FETCHCONTENT_BASE_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps)
 
 FetchContent_Declare(synapse_fbs_c
-  URL https://github.com/CogniPilot/synapse_fbs/releases/download/v0.1.3/synapse_fbs-c.tar.gz
-  URL_HASH SHA256=7dd5d389154750290a2497609a0a69bbba0071d3d7bc576529c73ee7f2f38103
+  URL https://github.com/CogniPilot/synapse_fbs/releases/download/v0.1.5/synapse_fbs-c.tar.gz
+  URL_HASH SHA256=f03232831b24527785da1320b731aadabe08ae4615b8a917d4f5a2305c4f8440
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(synapse_fbs_c)
@@ -64,35 +74,6 @@ set(RDD2_FLATBUFFER_LOG_BFBS
 set(RDD2_FLATBUFFER_MOCAP_BFBS
   ${RDD2_FLATBUFFER_BFBS_DIR}/synapse_mocap.bfbs
 )
-set(RDD2_LOCAL_FLATBUFFER_SIL_SCHEMA
-  ${CMAKE_CURRENT_SOURCE_DIR}/schemas/synapse_sil.fbs
-)
-set(RDD2_LOCAL_FLATBUFFER_GENERATED_DIR
-  ${CMAKE_CURRENT_BINARY_DIR}/generated/local_flatbuffers
-)
-if(EXISTS ${RDD2_LOCAL_FLATBUFFER_SIL_SCHEMA})
-  find_program(FLATC_EXECUTABLE flatc REQUIRED)
-  set(RDD2_FLATBUFFER_SIL_SCHEMA ${RDD2_LOCAL_FLATBUFFER_SIL_SCHEMA})
-  set(RDD2_FLATBUFFER_SIL_BFBS
-    ${RDD2_LOCAL_FLATBUFFER_GENERATED_DIR}/synapse_sil.bfbs
-  )
-  set(RDD2_FLATBUFFER_SIL_BFBS_GENERATED TRUE)
-  add_custom_command(
-    OUTPUT ${RDD2_FLATBUFFER_SIL_BFBS}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${RDD2_LOCAL_FLATBUFFER_GENERATED_DIR}
-    COMMAND ${FLATC_EXECUTABLE} --binary --schema
-            -I ${RDD2_FLATBUFFER_SCHEMA_DIR}
-            -o ${RDD2_LOCAL_FLATBUFFER_GENERATED_DIR}
-            ${RDD2_LOCAL_FLATBUFFER_SIL_SCHEMA}
-    DEPENDS
-      ${RDD2_LOCAL_FLATBUFFER_SIL_SCHEMA}
-      ${RDD2_FLATBUFFER_SCHEMA}
-    COMMENT "Generating local SITL FlatBuffer reflection schema"
-    VERBATIM
-  )
-else()
-  set(RDD2_FLATBUFFER_SIL_BFBS_GENERATED FALSE)
-endif()
 set(RDD2_FLATBUFFER_GENERATED_DIR
   ${CMAKE_CURRENT_BINARY_DIR}/generated/flatbuffers
 )
@@ -130,7 +111,7 @@ if(NOT EXISTS ${RDD2_FLATBUFFER_TOPIC_BFBS})
   )
 endif()
 
-if(NOT RDD2_FLATBUFFER_SIL_BFBS_GENERATED AND NOT EXISTS ${RDD2_FLATBUFFER_SIL_BFBS})
+if(NOT EXISTS ${RDD2_FLATBUFFER_SIL_BFBS})
   message(FATAL_ERROR
     "Missing FlatBuffer SITL reflection schema in synapse_fbs release: ${RDD2_FLATBUFFER_SIL_BFBS}."
   )
