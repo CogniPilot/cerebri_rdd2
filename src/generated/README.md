@@ -1,11 +1,15 @@
-Generated control artifacts live in this directory.
+Generated control artifacts no longer live in this directory.
 
 Rules:
-- Do not edit these files by hand.
-- Handwritten flight-stack code should wrap them from normal `src/` modules.
-- If behavior needs to change, prefer regenerating or replacing these artifacts instead of patching them in place.
+- Do not commit generated C/H artifacts here.
+- Keep Modelica source under `modelica/`.
+- Let CMake run pinned Rumoca and write generated eFMI output under
+  `${CMAKE_BINARY_DIR}/generated/rumoca`.
+- If generated behavior needs to change, update the Modelica source instead of
+  patching generated output.
 
 Current status:
-- `rdd2.*` is an imported generated source artifact.
-- `PIDAxis.*` is retained only as a historical reference and is no longer wired into the flight build.
-- This directory is transitional and is expected to be replaced by a local Rumoca-based generation flow.
+- `Quadrotor` is generated from `modelica/Quadrotor.mo` with Rumoca `v0.9.11`
+  and the `galec-production` target.
+- The active flight stack calls generated eFMI controller code through thin
+  handwritten wrappers; controller equation changes belong in Modelica.

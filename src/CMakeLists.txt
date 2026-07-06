@@ -14,7 +14,6 @@ target_sources(app PRIVATE
   main.c
   motor_output.c
   motor_shell.c
-  pid_axis.c
   rc_input.c
   rate_control.c
   top_shell.c
@@ -39,7 +38,6 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
       motor_output.c
       imu_latency_stats.c
       topic_flatbuffer.c
-      pid_axis.c
     LOCATION ITCM_TEXT_RODATA
   )
 

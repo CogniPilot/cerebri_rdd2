@@ -324,7 +324,7 @@ int main(void)
 			rdd2_rate_throttle_command(ctx->throttle_input, ctx->status.armed);
 		rdd2_rate_controller_step(
 			&g_rate_controller, &ctx->rate_desired, &ctx->gyro, ctx->dt,
-			ctx->status.armed && ctx->throttle_input > RDD2_PID_INTEGRATE_THROTTLE_MIN,
+			rdd2_rate_pid_integrate(ctx->throttle_input, ctx->status.armed),
 			&ctx->rate_cmd);
 		rdd2_mix_quad_x(ctx->throttle_cmd, &ctx->rate_cmd, &ctx->motors);
 		motor_signal_timestamp_ns =

@@ -1,12 +1,12 @@
 #ifndef RDD2_ATTITUDE_CONTROL_H_
 #define RDD2_ATTITUDE_CONTROL_H_
 
-#include "pid_axis.h"
+#include "Quadrotor.h"
 #include "topic_flatbuffer.h"
 
 struct rdd2_attitude_controller {
-	struct rdd2_pid_axis roll;
-	struct rdd2_pid_axis pitch;
+	QuadrotorState roll;
+	QuadrotorState pitch;
 };
 
 void rdd2_attitude_controller_init(struct rdd2_attitude_controller *controller);

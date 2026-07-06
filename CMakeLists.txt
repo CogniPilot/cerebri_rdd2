@@ -30,6 +30,93 @@ project(rdd2 LANGUAGES C)
 include(FetchContent)
 set(FETCHCONTENT_BASE_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps)
 
+set(RDD2_RUMOCA_VERSION "v0.9.11"
+  CACHE STRING "Pinned Rumoca version used for eFMI control code generation"
+)
+set(RDD2_RUMOCA_INSTALL_SCRIPT_SHA256
+  "ac15aa5ec90cb974387610fae7594d2704f2a3bd2e080cfe2517e896d30eb161"
+  CACHE STRING "SHA256 of the pinned Rumoca binary install script"
+)
+set(RDD2_RUMOCA_INSTALL_SCRIPT_URL
+  "https://raw.githubusercontent.com/CogniPilot/rumoca/${RDD2_RUMOCA_VERSION}/infra/install/install.sh"
+  CACHE STRING "Pinned Rumoca binary install script URL"
+)
+set(RDD2_RUMOCA_BIN_DIR
+  ${CMAKE_CURRENT_BINARY_DIR}/tools/rumoca/${RDD2_RUMOCA_VERSION}
+)
+set(RDD2_RUMOCA_EXECUTABLE ${RDD2_RUMOCA_BIN_DIR}/rumoca)
+
+add_custom_command(
+  OUTPUT ${RDD2_RUMOCA_EXECUTABLE}
+  COMMAND ${CMAKE_COMMAND}
+          -DRDD2_RUMOCA_VERSION=${RDD2_RUMOCA_VERSION}
+          -DRDD2_RUMOCA_BIN_DIR=${RDD2_RUMOCA_BIN_DIR}
+          -DRDD2_RUMOCA_INSTALL_SCRIPT_URL=${RDD2_RUMOCA_INSTALL_SCRIPT_URL}
+          -DRDD2_RUMOCA_INSTALL_SCRIPT_SHA256=${RDD2_RUMOCA_INSTALL_SCRIPT_SHA256}
+          -P ${CMAKE_CURRENT_LIST_DIR}/cmake/InstallRumoca.cmake
+  COMMENT "Installing pinned Rumoca ${RDD2_RUMOCA_VERSION}"
+  VERBATIM
+)
+
+add_custom_target(rdd2_rumoca_tool
+  DEPENDS ${RDD2_RUMOCA_EXECUTABLE}
+)
+
+set(RDD2_RUMOCA_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/rumoca)
+set(RDD2_EFMI_CONTROL_STAMPS)
+set(RDD2_EFMI_CONTROL_SOURCES)
+set(RDD2_EFMI_CONTROL_INCLUDE_DIRS)
+
+function(rdd2_add_efmi_control_model model_name)
+  set(_model_file ${CMAKE_CURRENT_SOURCE_DIR}/modelica/${model_name}.mo)
+  set(_efmu_dir ${RDD2_RUMOCA_GENERATED_DIR}/${model_name})
+  set(_efmu_file ${RDD2_RUMOCA_GENERATED_DIR}/${model_name}.efmu)
+  set(_stamp ${RDD2_RUMOCA_GENERATED_DIR}/${model_name}.galec-production.stamp)
+  set(_source ${_efmu_dir}/ProductionCode/${model_name}.c)
+  set(_header ${_efmu_dir}/ProductionCode/${model_name}.h)
+
+  add_custom_command(
+    OUTPUT ${_stamp}
+    BYPRODUCTS
+      ${_efmu_file}
+      ${_efmu_dir}/AlgorithmCode/${model_name}.alg
+      ${_efmu_dir}/AlgorithmCode/manifest.xml
+      ${_source}
+      ${_header}
+      ${_efmu_dir}/ProductionCode/manifest.xml
+      ${_efmu_dir}/__content.xml
+    COMMAND ${CMAKE_COMMAND} -E rm -rf
+            ${_efmu_dir}
+            ${_efmu_file}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${RDD2_RUMOCA_GENERATED_DIR}
+    COMMAND ${RDD2_RUMOCA_EXECUTABLE}
+            --cache-dir ${CMAKE_CURRENT_BINARY_DIR}/.rumoca-cache
+            compile ${_model_file}
+            --model ${model_name}
+            --target galec-production
+            --output ${RDD2_RUMOCA_GENERATED_DIR}
+    COMMAND ${CMAKE_COMMAND} -E touch ${_stamp}
+    DEPENDS
+      ${_model_file}
+      ${RDD2_RUMOCA_EXECUTABLE}
+    COMMENT "Generating ${model_name} eFMI Production Code with Rumoca ${RDD2_RUMOCA_VERSION}"
+    VERBATIM
+  )
+
+  list(APPEND RDD2_EFMI_CONTROL_STAMPS ${_stamp})
+  list(APPEND RDD2_EFMI_CONTROL_SOURCES ${_source})
+  list(APPEND RDD2_EFMI_CONTROL_INCLUDE_DIRS ${_efmu_dir}/ProductionCode)
+  set(RDD2_EFMI_CONTROL_STAMPS ${RDD2_EFMI_CONTROL_STAMPS} PARENT_SCOPE)
+  set(RDD2_EFMI_CONTROL_SOURCES ${RDD2_EFMI_CONTROL_SOURCES} PARENT_SCOPE)
+  set(RDD2_EFMI_CONTROL_INCLUDE_DIRS ${RDD2_EFMI_CONTROL_INCLUDE_DIRS} PARENT_SCOPE)
+endfunction()
+
+rdd2_add_efmi_control_model(Quadrotor)
+
+add_custom_target(rdd2_efmi_control_codegen
+  DEPENDS ${RDD2_EFMI_CONTROL_STAMPS}
+)
+
 FetchContent_Declare(synapse_fbs_c
   URL https://github.com/CogniPilot/synapse_fbs/releases/download/v0.1.5/synapse_fbs-c.tar.gz
   URL_HASH SHA256=f03232831b24527785da1320b731aadabe08ae4615b8a917d4f5a2305c4f8440
@@ -174,8 +261,17 @@ add_custom_target(rdd2_flatbuffer_schema_stage
   DEPENDS ${RDD2_FLATBUFFER_STAGE_STAMP}
 )
 
+add_dependencies(app rdd2_efmi_control_codegen)
 add_dependencies(app rdd2_flatbuffer_schema_stage)
 target_link_libraries(app PRIVATE synapse_fbs::c)
+
+set_source_files_properties(${RDD2_EFMI_CONTROL_SOURCES}
+  PROPERTIES GENERATED TRUE
+)
+
+target_sources(app PRIVATE
+  ${RDD2_EFMI_CONTROL_SOURCES}
+)
 
 if(TARGET ..__modules__lib__zenoh-pico__zephyr)
   target_compile_options(..__modules__lib__zenoh-pico__zephyr PRIVATE
@@ -270,6 +366,7 @@ target_sources_ifdef(CONFIG_RDD2_LOG_SDCARD app PRIVATE
 target_include_directories(app PRIVATE
   include
   ${CMAKE_CURRENT_BINARY_DIR}/generated
+  ${RDD2_EFMI_CONTROL_INCLUDE_DIRS}
   ${ZEPHYR_BASE}/../modules/hal/nxp/mcux/mcux-sdk-ng/drivers/flexio
 )
 
