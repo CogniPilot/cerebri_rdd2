@@ -4,82 +4,41 @@
 
 #include "rate_control.h"
 
-#include "motor_output.h"
+#include "rdd2_efmi_control.h"
 
-#define RC_US_CENTER            1500
-#define RC_US_MIN               1000
-#define RC_US_MAX               2000
-#define ARM_SWITCH_THRESHOLD_US 1600
-
-struct motor_mix {
-	float roll;
-	float pitch;
-	float yaw;
-};
-
-/*
- * Default mixer uses FLU body axes and assumes DSHOT channels 1..4 are:
- * front-right, rear-right, rear-left, front-left.
- *
- * Positive roll is about body +x (forward), so left motors increase and
- * right motors decrease.
- *
- * Positive pitch is about body +y (left), so rear motors increase and front
- * motors decrease.
- *
- * Positive yaw is about body +z (up), so yaw mix signs invert relative to the
- * previous FRD convention.
- */
-static const struct motor_mix g_motor_mix[4] = {
-	{.roll = -1.0f, .pitch = -1.0f, .yaw = -1.0f},
-	{.roll = -1.0f, .pitch = 1.0f, .yaw = 1.0f},
-	{.roll = 1.0f, .pitch = 1.0f, .yaw = -1.0f},
-	{.roll = 1.0f, .pitch = -1.0f, .yaw = 1.0f},
-};
-
-static float clampf(float value, float min_value, float max_value)
+static void quadrotor_from_rc(QuadrotorState *state, const synapse_topic_RcChannels16_t *rc)
 {
-	if (value < min_value) {
-		return min_value;
-	}
-	if (value > max_value) {
-		return max_value;
-	}
-	return value;
-}
-
-static float rc_norm_centered(int32_t pulse_us)
-{
-	return clampf((float)(pulse_us - RC_US_CENTER) / 500.0f, -1.0f, 1.0f);
-}
-
-static float rc_norm_throttle(int32_t pulse_us)
-{
-	return clampf((float)(pulse_us - RC_US_MIN) / (float)(RC_US_MAX - RC_US_MIN), 0.0f, 1.0f);
+	rdd2_efmi_quadrotor_init_from_rc(state, rc, RDD2_ROLL_CHANNEL_INDEX,
+					 RDD2_PITCH_CHANNEL_INDEX, RDD2_THROTTLE_CHANNEL_INDEX,
+					 RDD2_YAW_CHANNEL_INDEX, RDD2_ARM_CHANNEL_INDEX);
 }
 
 void rdd2_rate_controller_init(struct rdd2_rate_controller *controller)
 {
-	rdd2_pid_axis_init(&controller->roll);
-	rdd2_pid_axis_init(&controller->pitch);
-	rdd2_pid_axis_init(&controller->yaw);
+	rdd2_efmi_pid_axis_init(&controller->roll);
+	rdd2_efmi_pid_axis_init(&controller->pitch);
+	rdd2_efmi_pid_axis_init(&controller->yaw);
 	controller->yaw.kp = 0.20f;
 	controller->yaw.ki = 0.20f;
 	controller->yaw.kd = 0.0f;
+	rdd2_efmi_pid_axis_recalibrate(&controller->yaw);
 	rdd2_rate_controller_reset(controller);
 }
 
 void rdd2_rate_controller_reset(struct rdd2_rate_controller *controller)
 {
-	rdd2_pid_axis_reset(&controller->roll);
-	rdd2_pid_axis_reset(&controller->pitch);
-	rdd2_pid_axis_reset(&controller->yaw);
+	rdd2_efmi_pid_axis_reset(&controller->roll);
+	rdd2_efmi_pid_axis_reset(&controller->pitch);
+	rdd2_efmi_pid_axis_reset(&controller->yaw);
 }
 
 bool rdd2_rate_arm_switch_high(const synapse_topic_RcChannels16_t *rc)
 {
-	return rdd2_topic_rc_channels_data_const(rc)[RDD2_ARM_CHANNEL_INDEX] >
-	       ARM_SWITCH_THRESHOLD_US;
+	QuadrotorState state;
+
+	quadrotor_from_rc(&state, rc);
+	rdd2_efmi_quadrotor_step(&state);
+	return state.armSwitchHigh;
 }
 
 int32_t rdd2_rate_throttle_us(const synapse_topic_RcChannels16_t *rc)
@@ -89,34 +48,54 @@ int32_t rdd2_rate_throttle_us(const synapse_topic_RcChannels16_t *rc)
 
 float rdd2_rate_throttle_input_from_rc(const synapse_topic_RcChannels16_t *rc)
 {
-	return rc_norm_throttle(rdd2_rate_throttle_us(rc));
+	QuadrotorState state;
+
+	quadrotor_from_rc(&state, rc);
+	rdd2_efmi_quadrotor_step(&state);
+	return (float)state.throttleInput;
 }
 
 float rdd2_rate_throttle_command(float throttle_input, bool armed)
 {
-	if (!armed) {
-		return 0.0f;
-	}
+	QuadrotorState state;
 
-	return RDD2_MOTOR_IDLE_THROTTLE + (throttle_input * (1.0f - RDD2_MOTOR_IDLE_THROTTLE));
+	rdd2_efmi_quadrotor_init(&state);
+	state.throttleInputForCommand = (double)throttle_input;
+	state.armed = armed;
+	rdd2_efmi_quadrotor_step(&state);
+	return (float)state.throttleCommand;
+}
+
+bool rdd2_rate_pid_integrate(float throttle_input, bool armed)
+{
+	QuadrotorState state;
+
+	rdd2_efmi_quadrotor_init(&state);
+	state.throttleInputForCommand = (double)throttle_input;
+	state.armed = armed;
+	rdd2_efmi_quadrotor_step(&state);
+	return state.ratePidIntegrate;
 }
 
 float rdd2_rate_yaw_desired_from_rc(const synapse_topic_RcChannels16_t *rc)
 {
-	return -rc_norm_centered(rdd2_topic_rc_channels_data_const(rc)[RDD2_YAW_CHANNEL_INDEX]) *
-	       RDD2_MAX_YAW_RATE_RAD_S;
+	QuadrotorState state;
+
+	quadrotor_from_rc(&state, rc);
+	rdd2_efmi_quadrotor_step(&state);
+	return (float)state.yawRateDesired;
 }
 
 void rdd2_rate_desired_from_rc(const synapse_topic_RcChannels16_t *rc,
 			       synapse_topic_RateTriplet_t *rate_desired)
 {
-	const int32_t *channels = rdd2_topic_rc_channels_data_const(rc);
+	QuadrotorState state;
 
-	rate_desired->roll = rc_norm_centered(channels[RDD2_ROLL_CHANNEL_INDEX]) *
-			     RDD2_MAX_ROLL_PITCH_RATE_RAD_S;
-	rate_desired->pitch = rc_norm_centered(channels[RDD2_PITCH_CHANNEL_INDEX]) *
-			      RDD2_MAX_ROLL_PITCH_RATE_RAD_S;
-	rate_desired->yaw = rdd2_rate_yaw_desired_from_rc(rc);
+	quadrotor_from_rc(&state, rc);
+	rdd2_efmi_quadrotor_step(&state);
+	rate_desired->roll = (float)state.acroRateDesiredRoll;
+	rate_desired->pitch = (float)state.acroRateDesiredPitch;
+	rate_desired->yaw = (float)state.acroRateDesiredYaw;
 }
 
 void rdd2_rate_controller_step(struct rdd2_rate_controller *controller,
@@ -129,57 +108,32 @@ void rdd2_rate_controller_step(struct rdd2_rate_controller *controller,
 		return;
 	}
 
-	controller->roll.setpoint = rate_desired->roll;
-	controller->roll.measurement = gyro->x;
-	rdd2_pid_axis_step(&controller->roll, dt, integrate);
-	rate_cmd->roll = controller->roll.u;
+	rate_cmd->roll =
+		rdd2_efmi_pid_axis_step(&controller->roll, rate_desired->roll, gyro->x, dt,
+					 integrate);
 
-	controller->pitch.setpoint = rate_desired->pitch;
-	controller->pitch.measurement = gyro->y;
-	rdd2_pid_axis_step(&controller->pitch, dt, integrate);
-	rate_cmd->pitch = controller->pitch.u;
+	rate_cmd->pitch =
+		rdd2_efmi_pid_axis_step(&controller->pitch, rate_desired->pitch, gyro->y, dt,
+					 integrate);
 
-	controller->yaw.setpoint = rate_desired->yaw;
-	controller->yaw.measurement = gyro->z;
-	rdd2_pid_axis_step(&controller->yaw, dt, integrate);
-	rate_cmd->yaw = controller->yaw.u;
+	rate_cmd->yaw =
+		rdd2_efmi_pid_axis_step(&controller->yaw, rate_desired->yaw, gyro->z, dt,
+					 integrate);
 }
 
 void rdd2_mix_quad_x(float throttle, const synapse_topic_RateTriplet_t *rate_cmd,
 		     synapse_topic_MotorValues4f_t *motors)
 {
-	float max_up = 0.0f;
-	float max_down = 0.0f;
-	float correction[4];
-	float scale = 1.0f;
-	float *motor_values = rdd2_topic_motor_values_data(motors);
+	QuadrotorState state;
 
-	for (size_t i = 0; i < 4U; i++) {
-		correction[i] = (rate_cmd->roll * g_motor_mix[i].roll) +
-				(rate_cmd->pitch * g_motor_mix[i].pitch) +
-				(rate_cmd->yaw * g_motor_mix[i].yaw);
-
-		if (correction[i] > max_up) {
-			max_up = correction[i];
-		}
-		if (-correction[i] > max_down) {
-			max_down = -correction[i];
-		}
-	}
-
-	if (max_up > (1.0f - throttle) && max_up > 0.0f) {
-		scale = (1.0f - throttle) / max_up;
-	}
-
-	if (max_down > throttle && max_down > 0.0f) {
-		float down_scale = throttle / max_down;
-
-		if (down_scale < scale) {
-			scale = down_scale;
-		}
-	}
-
-	for (size_t i = 0; i < 4U; i++) {
-		motor_values[i] = clampf(throttle + (correction[i] * scale), 0.0f, 1.0f);
-	}
+	rdd2_efmi_quadrotor_init(&state);
+	state.throttle = (double)throttle;
+	state.rateCmdRoll = (double)rate_cmd->roll;
+	state.rateCmdPitch = (double)rate_cmd->pitch;
+	state.rateCmdYaw = (double)rate_cmd->yaw;
+	rdd2_efmi_quadrotor_step(&state);
+	motors->m0 = (float)state.motor0;
+	motors->m1 = (float)state.motor1;
+	motors->m2 = (float)state.motor2;
+	motors->m3 = (float)state.motor3;
 }
