@@ -10,7 +10,7 @@
 
 /*
  * Private controller working types. These never cross a transport boundary;
- * all external I/O uses the generated synapse_fbs 0.6 fixed-layout structs.
+ * all external I/O uses the generated synapse_fbs 0.7 fixed-layout structs.
  * Keeping these types private lets the numerically sensitive controller evolve
  * independently without creating an alternate wire schema.
  */

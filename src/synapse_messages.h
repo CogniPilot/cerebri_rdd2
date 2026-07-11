@@ -9,7 +9,7 @@
 #include <synapse/sensors_reader.h>
 #include <synapse/state_reader.h>
 
-/* Every member below is an unwrapped, generated synapse_fbs 0.6 payload. */
+/* Every member below is an unwrapped, generated synapse_fbs 0.7 payload. */
 struct rdd2_topic_flight_state {
 	synapse_topic_VehicleHealthData_t vehicle_health;
 	synapse_topic_AttitudeEstimateData_t attitude_estimate;

@@ -12,7 +12,7 @@
 
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(rc, rdd2_rc_channels_t);
 
-/* RDD2 owns its synapse_fbs 0.6 topic contract. CSyn resolves these compact
+/* RDD2 owns its synapse_fbs 0.7 topic contract. CSyn resolves these compact
  * keys through the generated catalog and rejects mismatched payload sizes at
  * initialization. The lockstep transport remains direct shared memory; these
  * registrations support independent realtime Ethernet communication. */
@@ -30,15 +30,19 @@ CSYN_TOPIC_DEFINE(att_sp, "att_sp", CSYN_DIR_TX,
                   sizeof(synapse_topic_AttitudeCommandData_t));
 CSYN_TOPIC_DEFINE(loop, "loop", CSYN_DIR_TX,
                   sizeof(synapse_topic_ControlLoopMetricsData_t));
-CSYN_ZROS_TOPIC_DEFINE(manual_control, struct csyn_manual_control);
-CSYN_ZROS_TOPIC_DEFINE(inertial_sample, synapse_topic_InertialSampleData_t);
-CSYN_ZROS_TOPIC_DEFINE(pwm_signal_outputs,
-                       synapse_topic_PwmSignalOutputsData_t);
-CSYN_ZROS_TOPIC_DEFINE(vehicle_health, synapse_topic_VehicleHealthData_t);
-CSYN_ZROS_TOPIC_DEFINE(attitude_estimate, synapse_topic_AttitudeEstimateData_t);
-CSYN_ZROS_TOPIC_DEFINE(attitude_command, synapse_topic_AttitudeCommandData_t);
-CSYN_ZROS_TOPIC_DEFINE(control_loop_metrics,
-                       synapse_topic_ControlLoopMetricsData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(manual_control, struct csyn_manual_control);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(inertial_sample,
+                                   synapse_topic_InertialSampleData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(pwm_signal_outputs,
+                                   synapse_topic_PwmSignalOutputsData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(vehicle_health,
+                                   synapse_topic_VehicleHealthData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(attitude_estimate,
+                                   synapse_topic_AttitudeEstimateData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(attitude_command,
+                                   synapse_topic_AttitudeCommandData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(control_loop_metrics,
+                                   synapse_topic_ControlLoopMetricsData_t);
 
 uint32_t rdd2_topic_generation(const struct zros_topic *topic) {
   return (uint32_t)atomic_get((atomic_t *)&topic->_lockless_generation);

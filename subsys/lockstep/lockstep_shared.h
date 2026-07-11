@@ -12,7 +12,7 @@
 
 #define RDD2_LOCKSTEP_MAGIC UINT32_C(0x52444432)
 
-/* Vehicle-owned storage containing only generated synapse_fbs 0.6 payloads. */
+/* Vehicle-owned storage containing only generated synapse_fbs 0.7 payloads. */
 struct rdd2_lockstep_shared {
   uint32_t magic;
   uint32_t input_sequence;
