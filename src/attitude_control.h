@@ -2,7 +2,7 @@
 #define RDD2_ATTITUDE_CONTROL_H_
 
 #include "Quadrotor.h"
-#include "topic_flatbuffer.h"
+#include "synapse_messages.h"
 
 struct rdd2_attitude_controller {
 	QuadrotorState roll;
@@ -11,13 +11,13 @@ struct rdd2_attitude_controller {
 
 void rdd2_attitude_controller_init(struct rdd2_attitude_controller *controller);
 void rdd2_attitude_controller_reset(struct rdd2_attitude_controller *controller);
-void rdd2_attitude_desired_from_rc(const synapse_topic_RcChannels16_t *rc,
-				   const synapse_topic_AttitudeEuler_t *attitude,
-				   synapse_topic_AttitudeEuler_t *attitude_desired);
+void rdd2_attitude_desired_from_rc(const rdd2_rc_channels_t *rc,
+				   const rdd2_attitude_euler_t *attitude,
+				   rdd2_attitude_euler_t *attitude_desired);
 void rdd2_attitude_controller_step(struct rdd2_attitude_controller *controller,
-				   const synapse_topic_AttitudeEuler_t *attitude,
-				   const synapse_topic_AttitudeEuler_t *attitude_desired,
-				   const synapse_topic_RcChannels16_t *rc, float dt,
-				   synapse_topic_RateTriplet_t *rate_desired);
+				   const rdd2_attitude_euler_t *attitude,
+				   const rdd2_attitude_euler_t *attitude_desired,
+				   const rdd2_rc_channels_t *rc, float dt,
+				   rdd2_rate_triplet_t *rate_desired);
 
 #endif

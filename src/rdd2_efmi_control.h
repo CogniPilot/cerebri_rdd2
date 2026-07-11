@@ -7,7 +7,7 @@
 
 #include "Quadrotor.h"
 #include "efmi_wrapper.h"
-#include "topic_flatbuffer.h"
+#include "synapse_messages.h"
 
 static inline void rdd2_efmi_quadrotor_init(QuadrotorState *state)
 {
@@ -62,7 +62,7 @@ static inline float rdd2_efmi_pid_axis_step(QuadrotorState *state, float setpoin
 }
 
 static inline void rdd2_efmi_quadrotor_init_from_rc(QuadrotorState *state,
-						    const synapse_topic_RcChannels16_t *rc,
+						    const rdd2_rc_channels_t *rc,
 						    size_t roll_index, size_t pitch_index,
 						    size_t throttle_index, size_t yaw_index,
 						    size_t arm_index)

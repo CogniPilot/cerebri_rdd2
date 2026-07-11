@@ -10,7 +10,7 @@
 #define AUTO_LEVEL_ROLL_P_GAIN  4.0f
 #define AUTO_LEVEL_PITCH_P_GAIN 4.0f
 
-static void quadrotor_from_rc(QuadrotorState *state, const synapse_topic_RcChannels16_t *rc)
+static void quadrotor_from_rc(QuadrotorState *state, const rdd2_rc_channels_t *rc)
 {
 	rdd2_efmi_quadrotor_init_from_rc(state, rc, RDD2_ROLL_CHANNEL_INDEX,
 					 RDD2_PITCH_CHANNEL_INDEX, RDD2_THROTTLE_CHANNEL_INDEX,
@@ -45,9 +45,9 @@ void rdd2_attitude_controller_reset(struct rdd2_attitude_controller *controller)
 	rdd2_efmi_pid_axis_reset(&controller->pitch);
 }
 
-void rdd2_attitude_desired_from_rc(const synapse_topic_RcChannels16_t *rc,
-				   const synapse_topic_AttitudeEuler_t *attitude,
-				   synapse_topic_AttitudeEuler_t *attitude_desired)
+void rdd2_attitude_desired_from_rc(const rdd2_rc_channels_t *rc,
+				   const rdd2_attitude_euler_t *attitude,
+				   rdd2_attitude_euler_t *attitude_desired)
 {
 	QuadrotorState state;
 
@@ -66,10 +66,10 @@ void rdd2_attitude_desired_from_rc(const synapse_topic_RcChannels16_t *rc,
 }
 
 void rdd2_attitude_controller_step(struct rdd2_attitude_controller *controller,
-				   const synapse_topic_AttitudeEuler_t *attitude,
-				   const synapse_topic_AttitudeEuler_t *attitude_desired,
-				   const synapse_topic_RcChannels16_t *rc, float dt,
-				   synapse_topic_RateTriplet_t *rate_desired)
+				   const rdd2_attitude_euler_t *attitude,
+				   const rdd2_attitude_euler_t *attitude_desired,
+				   const rdd2_rc_channels_t *rc, float dt,
+				   rdd2_rate_triplet_t *rate_desired)
 {
 	QuadrotorState state;
 

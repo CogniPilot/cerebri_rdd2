@@ -2,6 +2,6 @@
 
 description: RDD2 native_sim RC input device
 
-compatible: "cognipilot,sitl-rc"
+compatible: "cognipilot,lockstep-rc"
 
 include: base.yaml

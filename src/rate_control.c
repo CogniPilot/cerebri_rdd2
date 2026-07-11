@@ -6,7 +6,7 @@
 
 #include "rdd2_efmi_control.h"
 
-static void quadrotor_from_rc(QuadrotorState *state, const synapse_topic_RcChannels16_t *rc)
+static void quadrotor_from_rc(QuadrotorState *state, const rdd2_rc_channels_t *rc)
 {
 	rdd2_efmi_quadrotor_init_from_rc(state, rc, RDD2_ROLL_CHANNEL_INDEX,
 					 RDD2_PITCH_CHANNEL_INDEX, RDD2_THROTTLE_CHANNEL_INDEX,
@@ -32,7 +32,7 @@ void rdd2_rate_controller_reset(struct rdd2_rate_controller *controller)
 	rdd2_efmi_pid_axis_reset(&controller->yaw);
 }
 
-bool rdd2_rate_arm_switch_high(const synapse_topic_RcChannels16_t *rc)
+bool rdd2_rate_arm_switch_high(const rdd2_rc_channels_t *rc)
 {
 	QuadrotorState state;
 
@@ -41,12 +41,12 @@ bool rdd2_rate_arm_switch_high(const synapse_topic_RcChannels16_t *rc)
 	return state.armSwitchHigh;
 }
 
-int32_t rdd2_rate_throttle_us(const synapse_topic_RcChannels16_t *rc)
+int32_t rdd2_rate_throttle_us(const rdd2_rc_channels_t *rc)
 {
 	return rdd2_topic_rc_channels_data_const(rc)[RDD2_THROTTLE_CHANNEL_INDEX];
 }
 
-float rdd2_rate_throttle_input_from_rc(const synapse_topic_RcChannels16_t *rc)
+float rdd2_rate_throttle_input_from_rc(const rdd2_rc_channels_t *rc)
 {
 	QuadrotorState state;
 
@@ -77,7 +77,7 @@ bool rdd2_rate_pid_integrate(float throttle_input, bool armed)
 	return state.ratePidIntegrate;
 }
 
-float rdd2_rate_yaw_desired_from_rc(const synapse_topic_RcChannels16_t *rc)
+float rdd2_rate_yaw_desired_from_rc(const rdd2_rc_channels_t *rc)
 {
 	QuadrotorState state;
 
@@ -86,8 +86,8 @@ float rdd2_rate_yaw_desired_from_rc(const synapse_topic_RcChannels16_t *rc)
 	return (float)state.yawRateDesired;
 }
 
-void rdd2_rate_desired_from_rc(const synapse_topic_RcChannels16_t *rc,
-			       synapse_topic_RateTriplet_t *rate_desired)
+void rdd2_rate_desired_from_rc(const rdd2_rc_channels_t *rc,
+			       rdd2_rate_triplet_t *rate_desired)
 {
 	QuadrotorState state;
 
@@ -99,12 +99,12 @@ void rdd2_rate_desired_from_rc(const synapse_topic_RcChannels16_t *rc,
 }
 
 void rdd2_rate_controller_step(struct rdd2_rate_controller *controller,
-			       const synapse_topic_RateTriplet_t *rate_desired,
-			       const synapse_topic_Vec3f_t *gyro, float dt, bool integrate,
-			       synapse_topic_RateTriplet_t *rate_cmd)
+			       const rdd2_rate_triplet_t *rate_desired,
+			       const rdd2_vec3f_t *gyro, float dt, bool integrate,
+			       rdd2_rate_triplet_t *rate_cmd)
 {
 	if (dt <= 0.0f) {
-		*rate_cmd = (synapse_topic_RateTriplet_t){0};
+		*rate_cmd = (rdd2_rate_triplet_t){0};
 		return;
 	}
 
@@ -121,8 +121,8 @@ void rdd2_rate_controller_step(struct rdd2_rate_controller *controller,
 					 integrate);
 }
 
-void rdd2_mix_quad_x(float throttle, const synapse_topic_RateTriplet_t *rate_cmd,
-		     synapse_topic_MotorValues4f_t *motors)
+void rdd2_mix_quad_x(float throttle, const rdd2_rate_triplet_t *rate_cmd,
+		     rdd2_motor_values_t *motors)
 {
 	QuadrotorState state;
 

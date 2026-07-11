@@ -206,7 +206,9 @@
                 modules/fs/fatfs \
                 modules/lib/cmsis-dsp \
                 modules/lib/zenoh-pico \
+                modules/lib/cerebri_lockstep \
                 modules/lib/zros \
+                modules/lib/csyn \
                 modules/lib/zephyr_boards
               do
                 if [ ! -d "$workspace/$path" ]; then
@@ -439,7 +441,7 @@
           build-native-sim = {
             type = "app";
             program = "${packages.rdd2-build-native-sim}/bin/rdd2-build-native-sim";
-            meta.description = "Build RDD2 SITL for native_sim/native/64";
+            meta.description = "Build RDD2 lockstep firmware for native_sim/native/64";
           };
 
           flash = {

@@ -5,9 +5,9 @@
 #include "imu_stream.h"
 
 #include "rate_control.h"
-#if defined(CONFIG_RDD2_SITL)
-#include "sitl_flatbuffer.h"
-#include "sitl_transport.h"
+#if defined(CONFIG_RDD2_LOCKSTEP)
+#include "lockstep_input.h"
+#include "lockstep_transport.h"
 #endif
 
 #include <errno.h>
@@ -30,10 +30,10 @@ LOG_MODULE_DECLARE(rdd2, LOG_LEVEL_INF);
 #define RDD2_IMU_RTIO_BUF_COUNT 32U
 #define RDD2_IMU_RTIO_BUF_SIZE  128U
 
-static void imu_outputs_zero(synapse_topic_Vec3f_t *gyro, synapse_topic_Vec3f_t *accel)
+static void imu_outputs_zero(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel)
 {
-	*gyro = (synapse_topic_Vec3f_t){0};
-	*accel = (synapse_topic_Vec3f_t){0};
+	*gyro = (rdd2_vec3f_t){0};
+	*accel = (rdd2_vec3f_t){0};
 }
 
 #if DT_NODE_HAS_COMPAT(IMU_NODE, invensense_icm45686) && defined(CONFIG_SENSOR_ASYNC_API)
@@ -64,8 +64,8 @@ static const struct sensor_chan_spec g_imu_gyro_chan = {
 };
 
 static void imu_sensor_axes_to_body(float gyro_x, float gyro_y, float gyro_z, float accel_x,
-				    float accel_y, float accel_z, synapse_topic_Vec3f_t *gyro_out,
-				    synapse_topic_Vec3f_t *accel_out)
+				    float accel_y, float accel_z, rdd2_vec3f_t *gyro_out,
+				    rdd2_vec3f_t *accel_out)
 {
 
 	/*
@@ -136,8 +136,8 @@ static void imu_stream_restart(const char *reason, int rc)
 	}
 }
 
-static bool imu_stream_decode_latest(const uint8_t *buf, synapse_topic_Vec3f_t *gyro,
-				     synapse_topic_Vec3f_t *accel, uint64_t *sample_ns)
+static bool imu_stream_decode_latest(const uint8_t *buf, rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel,
+				     uint64_t *sample_ns)
 {
 	struct sensor_three_axis_data accel_data = {0};
 	struct sensor_three_axis_data gyro_data = {0};
@@ -199,7 +199,7 @@ int rdd2_imu_stream_init(void)
 	return 0;
 }
 
-bool rdd2_imu_stream_wait_next(synapse_topic_Vec3f_t *gyro, synapse_topic_Vec3f_t *accel, float *dt,
+bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *dt,
 			       uint64_t *interrupt_timestamp_ns)
 {
 	struct rtio_cqe *cqe;
@@ -255,58 +255,71 @@ bool rdd2_imu_stream_wait_next(synapse_topic_Vec3f_t *gyro, synapse_topic_Vec3f_
 
 #else
 
-#if defined(CONFIG_RDD2_SITL)
-static uint32_t g_sitl_imu_generation;
-static uint64_t g_sitl_current_boot_time_ns;
-static uint64_t g_sitl_target_boot_time_ns;
+#if defined(CONFIG_RDD2_LOCKSTEP)
+static uint32_t g_lockstep_imu_generation;
+static uint64_t g_lockstep_current_boot_time_ns;
+static uint64_t g_lockstep_target_boot_time_ns;
+static rdd2_vec3f_t g_lockstep_gyro;
+static rdd2_vec3f_t g_lockstep_accel;
 #endif
 
-#if !defined(CONFIG_RDD2_SITL)
+bool rdd2_imu_stream_lockstep_at_target(void)
+{
+#if defined(CONFIG_RDD2_LOCKSTEP)
+	return g_lockstep_current_boot_time_ns >= g_lockstep_target_boot_time_ns;
+#else
+	return true;
+#endif
+}
+
+#if !defined(CONFIG_RDD2_LOCKSTEP)
 static uint64_t imu_timestamp_now_ns(void)
 {
 	return k_cyc_to_ns_floor64(k_cycle_get_64());
 }
 #endif
 
-#if defined(CONFIG_RDD2_SITL)
-static bool sitl_latest_target_boot_time_get(uint64_t *target_boot_time_ns)
+#if defined(CONFIG_RDD2_LOCKSTEP)
+static bool lockstep_latest_sample_get(uint64_t *target_boot_time_ns)
 {
-	uint8_t buf[RDD2_SITL_INPUT_MAX_SIZE];
+	uint8_t buf[RDD2_LOCKSTEP_INPUT_MAX_SIZE];
 	size_t len;
 	uint32_t generation;
 
-	if (!rdd2_sitl_latest_input_get(buf, sizeof(buf), &len, &generation)) {
+	if (!rdd2_lockstep_latest_input_get(buf, sizeof(buf), &len, &generation)) {
 		return false;
 	}
 
-	return rdd2_sitl_fb_unpack_input(buf, len, NULL, NULL, NULL, NULL, NULL, NULL,
-					 target_boot_time_ns);
+	return rdd2_lockstep_decode_inertial(buf, len, &g_lockstep_gyro, &g_lockstep_accel,
+					     target_boot_time_ns);
 }
 
-static bool sitl_wait_until_controller_tick_ready(void)
+static bool lockstep_wait_until_controller_tick_ready(void)
 {
 	uint64_t target_boot_time_ns = 0U;
 
-	while (g_sitl_current_boot_time_ns >= g_sitl_target_boot_time_ns) {
-		if (!rdd2_sitl_input_wait_next(&g_sitl_imu_generation, K_FOREVER)) {
+	while (g_lockstep_current_boot_time_ns >= g_lockstep_target_boot_time_ns) {
+		if (!rdd2_lockstep_input_wait_next(&g_lockstep_imu_generation, K_FOREVER)) {
 			return false;
 		}
 
-		if (!sitl_latest_target_boot_time_get(&target_boot_time_ns)) {
+		if (!lockstep_latest_sample_get(&target_boot_time_ns)) {
 			return false;
 		}
 
-		if (target_boot_time_ns <= g_sitl_current_boot_time_ns) {
-			target_boot_time_ns = g_sitl_current_boot_time_ns + RDD2_CONTROL_PERIOD_NS;
+		if (target_boot_time_ns <= g_lockstep_current_boot_time_ns) {
+			target_boot_time_ns =
+				g_lockstep_current_boot_time_ns + RDD2_CONTROL_PERIOD_NS;
 		}
-		g_sitl_target_boot_time_ns = target_boot_time_ns;
+		g_lockstep_target_boot_time_ns = target_boot_time_ns;
 	}
 
 	return true;
 }
 #endif
 
-static bool imu_fetch_sync(synapse_topic_Vec3f_t *gyro_out, synapse_topic_Vec3f_t *accel_out)
+#if !defined(CONFIG_RDD2_LOCKSTEP)
+static bool imu_fetch_sync(rdd2_vec3f_t *gyro_out, rdd2_vec3f_t *accel_out)
 {
 	const struct device *const imu_dev = DEVICE_DT_GET(IMU_NODE);
 	struct sensor_value gyro[3];
@@ -345,26 +358,27 @@ static bool imu_fetch_sync(synapse_topic_Vec3f_t *gyro_out, synapse_topic_Vec3f_
 
 	return true;
 }
+#endif
 
 int rdd2_imu_stream_init(void)
 {
 	return 0;
 }
 
-bool rdd2_imu_stream_wait_next(synapse_topic_Vec3f_t *gyro, synapse_topic_Vec3f_t *accel, float *dt,
+bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *dt,
 			       uint64_t *interrupt_timestamp_ns)
 {
-#if defined(CONFIG_RDD2_SITL)
+#if defined(CONFIG_RDD2_LOCKSTEP)
 	uint64_t next_boot_time_ns;
 
-	if (!sitl_wait_until_controller_tick_ready()) {
+	if (!lockstep_wait_until_controller_tick_ready()) {
 		imu_outputs_zero(gyro, accel);
 		return false;
 	}
 
-	next_boot_time_ns = g_sitl_current_boot_time_ns + RDD2_CONTROL_PERIOD_NS;
-	if (next_boot_time_ns > g_sitl_target_boot_time_ns) {
-		next_boot_time_ns = g_sitl_target_boot_time_ns;
+	next_boot_time_ns = g_lockstep_current_boot_time_ns + RDD2_CONTROL_PERIOD_NS;
+	if (next_boot_time_ns > g_lockstep_target_boot_time_ns) {
+		next_boot_time_ns = g_lockstep_target_boot_time_ns;
 	}
 #else
 	k_sleep(K_NSEC(RDD2_CONTROL_PERIOD_NS));
@@ -374,16 +388,23 @@ bool rdd2_imu_stream_wait_next(synapse_topic_Vec3f_t *gyro, synapse_topic_Vec3f_
 		*interrupt_timestamp_ns = 0U;
 	}
 
+#if defined(CONFIG_RDD2_LOCKSTEP)
+	/* Decode each generated InertialSample once, then reuse it for the eight
+	 * 1600 Hz controller substeps belonging to a 200 Hz plant input. */
+	*gyro = g_lockstep_gyro;
+	*accel = g_lockstep_accel;
+#else
 	if (!imu_fetch_sync(gyro, accel)) {
 		imu_outputs_zero(gyro, accel);
 		return false;
 	}
+#endif
 
-#if defined(CONFIG_RDD2_SITL)
-	*dt = (float)(next_boot_time_ns - g_sitl_current_boot_time_ns) * 1.0e-9f;
-	g_sitl_current_boot_time_ns = next_boot_time_ns;
+#if defined(CONFIG_RDD2_LOCKSTEP)
+	*dt = (float)(next_boot_time_ns - g_lockstep_current_boot_time_ns) * 1.0e-9f;
+	g_lockstep_current_boot_time_ns = next_boot_time_ns;
 	if (interrupt_timestamp_ns != NULL) {
-		*interrupt_timestamp_ns = g_sitl_current_boot_time_ns;
+		*interrupt_timestamp_ns = g_lockstep_current_boot_time_ns;
 	}
 #else
 	if (interrupt_timestamp_ns != NULL) {

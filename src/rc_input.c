@@ -20,8 +20,8 @@
 #define RC_US_CENTER           1500
 #define RC_US_MIN              1000
 
-static synapse_topic_RcChannels16_t g_rc_staging;
-static synapse_topic_RcChannels16_t g_rc_latest;
+static rdd2_rc_channels_t g_rc_staging;
+static rdd2_rc_channels_t g_rc_latest;
 static bool g_rc_staging_valid;
 static bool g_rc_latest_valid;
 static int64_t g_rc_latest_stamp_ms;
@@ -29,10 +29,10 @@ static atomic_t g_rc_seq;
 static atomic_t g_rc_link_quality;
 static struct zros_node g_rdd2_rc_node;
 static struct zros_pub g_rdd2_rc_pub;
-static synapse_topic_RcChannels16_t g_rdd2_rc_msg;
+static rdd2_rc_channels_t g_rdd2_rc_msg;
 static bool g_rdd2_rc_pub_ready;
 
-static void rc_channels_set_defaults(synapse_topic_RcChannels16_t *rc, bool *valid,
+static void rc_channels_set_defaults(rdd2_rc_channels_t *rc, bool *valid,
 				     int64_t *stamp_ms)
 {
 	int32_t *channels = rdd2_topic_rc_channels_data(rc);
@@ -63,7 +63,7 @@ void rdd2_rc_input_init(void)
 	g_rdd2_rc_pub_ready = (rc == 0);
 }
 
-void rdd2_rc_input_latest_get(synapse_topic_RcChannels16_t *rc, int64_t *stamp_ms, bool *valid)
+void rdd2_rc_input_latest_get(rdd2_rc_channels_t *rc, int64_t *stamp_ms, bool *valid)
 {
 	atomic_val_t seq_start;
 	atomic_val_t seq_end = 0;

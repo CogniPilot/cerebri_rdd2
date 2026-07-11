@@ -1,6 +1,5 @@
 menu "Subsystems"
 
-rsource "sitl/Kconfig"
-rsource "log_sdcard/Kconfig"
+rsource "lockstep/Kconfig"
 
 endmenu

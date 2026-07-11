@@ -2,7 +2,7 @@
 
 description: RDD2 native_sim DSHOT output device
 
-compatible: "cognipilot,sitl-dshot"
+compatible: "cognipilot,lockstep-dshot"
 
 include: sensor-device.yaml
 
