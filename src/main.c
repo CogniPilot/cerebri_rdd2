@@ -110,7 +110,7 @@ static int flight_state_topic_init(void) {
   }
 #if defined(CONFIG_CSYN_ZENOH) && !defined(CONFIG_RDD2_LOCKSTEP)
   if (rc == 0) {
-    g_fastdyn_health_topic = csyn_topic_find("vehicle_health");
+    g_fastdyn_health_topic = csyn_topic_find("health");
     if (g_fastdyn_health_topic == NULL) {
       rc = -ENODEV;
     }

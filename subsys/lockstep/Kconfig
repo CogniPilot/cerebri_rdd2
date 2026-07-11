@@ -10,7 +10,6 @@ config RDD2_LOCKSTEP
 	depends on BOARD_NATIVE_SIM || RDD2_FASTDYN
 	select CEREBRI_LOCKSTEP
 	select CSYN
-	select CSYN_ZROS_BRIDGE_EXTERNAL_TX_TOPICS
 	default y
 	help
 	  Use generated synapse_fbs payloads with direct shared-memory sequencing

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#ifndef RDD2_NATIVE_SIL_TRANSPORT_H_
-#define RDD2_NATIVE_SIL_TRANSPORT_H_
+#ifndef RDD2_LOCKSTEP_SHARED_H_
+#define RDD2_LOCKSTEP_SHARED_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -10,10 +10,10 @@
 #include <synapse/sensors_reader.h>
 #include <synapse/state_reader.h>
 
-#define RDD2_NATIVE_SIL_MAGIC UINT32_C(0x52444432)
+#define RDD2_LOCKSTEP_MAGIC UINT32_C(0x52444432)
 
-/* CUBS2-style lockstep layout containing only generated v0.5 payloads. */
-struct rdd2_native_sil_shared {
+/* Vehicle-owned storage containing only generated synapse_fbs 0.6 payloads. */
+struct rdd2_lockstep_shared {
   uint32_t magic;
   uint32_t input_sequence;
   uint32_t response_sequence;
@@ -27,23 +27,23 @@ struct rdd2_native_sil_shared {
   synapse_topic_ControlLoopMetricsData_t control_loop_metrics;
 };
 
-_Static_assert(sizeof(struct rdd2_native_sil_shared) == 320,
+_Static_assert(sizeof(struct rdd2_lockstep_shared) == 320,
                "native SIL shared layout mismatch");
-_Static_assert(offsetof(struct rdd2_native_sil_shared, inertial_sample) == 16,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, inertial_sample) == 16,
                "inertial sample ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_native_sil_shared, manual_control) == 72,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, manual_control) == 72,
                "manual control ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_native_sil_shared, pwm_signal_outputs) ==
+_Static_assert(offsetof(struct rdd2_lockstep_shared, pwm_signal_outputs) ==
                    112,
                "PWM output ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_native_sil_shared, vehicle_health) == 160,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, vehicle_health) == 160,
                "vehicle health ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_native_sil_shared, attitude_estimate) ==
+_Static_assert(offsetof(struct rdd2_lockstep_shared, attitude_estimate) ==
                    208,
                "attitude estimate ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_native_sil_shared, attitude_command) == 248,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, attitude_command) == 248,
                "attitude command ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_native_sil_shared, control_loop_metrics) ==
+_Static_assert(offsetof(struct rdd2_lockstep_shared, control_loop_metrics) ==
                    296,
                "control loop metrics ABI offset mismatch");
 

@@ -8,7 +8,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-void *rdd2_native_sil_host_map(const char *path, unsigned long size)
+void *rdd2_lockstep_host_map(const char *path, unsigned long size)
 {
 	int fd = open(path, O_RDWR);
 	struct stat status;
@@ -26,7 +26,7 @@ void *rdd2_native_sil_host_map(const char *path, unsigned long size)
 	return mapping == MAP_FAILED ? NULL : mapping;
 }
 
-void rdd2_native_sil_host_unmap(void *mapping, unsigned long size)
+void rdd2_lockstep_host_unmap(void *mapping, unsigned long size)
 {
 	if (mapping != NULL) {
 		(void)munmap(mapping, size);
