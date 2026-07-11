@@ -17,8 +17,8 @@ V1 goals:
 Current implementation scope:
 - CEP-0002 platform layout under `rdd2/`
 - local FlexIO DSHOT driver vendored into this repo
-- generated estimator and controller source isolated under `src/generated/`
-- CRSF -> generated control -> quad-X mixer -> DSHOT
+- Rumoca eFMI control code generated into the build tree
+- CRSF -> handwritten control -> quad-X mixer -> DSHOT
 - `ACRO` and `AUTO_LEVEL` manual flight modes
 - GNSS M10 path documented and devicetree-wired through Zephyr GNSS for later use
 
@@ -28,11 +28,26 @@ Build from this directory:
 west build -b mr_vmu_tropic
 ```
 
-CMake downloads the `synapse_fbs-c.tar.gz` release asset, verifies its SHA256,
-and uses its generated FlatBuffer C headers and reflection schemas from the
-build tree. Active schemas are staged under
-`${CMAKE_BINARY_DIR}/generated/flatbuffers`; generated files are not kept in
-the source tree.
+RDD2 uses the same pinned CSyn module as CUBS2. CSyn owns the `synapse_fbs`
+release, generated C headers, topic catalog, canonical Zenoh keys, payload
+sizes, and transport bridge; RDD2 does not carry a second schema-fetch or
+decoder path.
+
+Deterministic lockstep never uses CSyn, ZROS bridging, Zenoh, or Ethernet for
+pacing. `native_sim` and FastDyn select direct shared-memory backends in the
+same `subsys/lockstep` module and exchange only generated `synapse_fbs`
+payloads. FastDyn resolves the shared block from the ELF instead of relying on
+a fixed firmware address. The normal Ethernet stack remains available, and a
+lockstep communications build may enable CSyn/ZROS plus Zenoh as an
+asynchronous side-channel without changing the direct lockstep coordinator.
+Performance builds may omit the unused network stack; communications builds
+retain ENET and enable CSyn/Zenoh independently of lockstep pacing.
+
+CMake also installs the pinned Rumoca `v0.9.11` release into the build tree
+with Rumoca's binary install script, verifies the installer and binary hashes,
+and generates the `Quadrotor` eFMI Production Code container from `modelica/`
+under `${CMAKE_BINARY_DIR}/generated/rumoca`. Generated Rumoca C code and
+`.efmu` containers are build outputs, not committed source.
 
 To bootstrap a fresh minimal workspace from this repo's manifest, check out
 this repo at `<workspace>/cerebri_rdd2` and initialize west from the workspace
@@ -69,7 +84,7 @@ nix run .#flash
 
 The shell defaults to the `gnuarmemb` Zephyr toolchain for
 `mr_vmu_tropic`. `rdd2-build-native-sim` overrides this to the host toolchain
-for SITL builds and uses `native_sim/native/64` by default to avoid multilib
+for lockstep builds and uses `native_sim/native/64` by default to avoid multilib
 requirements on NixOS. Set `RDD2_NATIVE_SIM_BOARD=native_sim` if you need
 Zephyr's 32-bit native simulator variant. The Nix shell includes x86 multilib
 host support on `x86_64-linux`, so raw `west build -b native_sim` also works.
@@ -120,6 +135,5 @@ Important assumptions:
 - RC channel map is AETR on CRSF channels 1-4, arm is channel 5, and flight
   mode is channel 6.
 - Mixer order is the local default in `src/main.c` and must be verified against the airframe wiring before flight.
-- Imported generated estimator and PID source is transitional and should not be
-  hand-edited; the intended long-term replacement is local Rumoca-generated
-  code.
+- Rumoca-generated control artifacts are build outputs and should not be
+  committed or hand-edited; update the Modelica source and regenerate instead.

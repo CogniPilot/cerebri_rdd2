@@ -1,0 +1,30 @@
+config RDD2_FASTDYN
+	bool "Enable FastDyn hardware-target lockstep adapters"
+	default n
+	help
+	  Build the MR-VMU-Tropic image with the fake RC, IMU, and DSHOT
+	  boundary while retaining the Cortex-M7 image and Zephyr kernel.
+
+config RDD2_LOCKSTEP
+	bool "Enable deterministic lockstep"
+	depends on BOARD_NATIVE_SIM || RDD2_FASTDYN
+	select CEREBRI_LOCKSTEP
+	select CSYN
+	select CSYN_ZROS_BRIDGE_EXTERNAL_TX_TOPICS
+	default y
+	help
+	  Use generated synapse_fbs payloads with direct shared-memory sequencing
+	  for deterministic simulation. CSyn transport and the CSyn/ZROS bridge
+	  are deliberately excluded from the lockstep hot path.
+
+if RDD2_LOCKSTEP
+
+config RDD2_LOCKSTEP_THREAD_PRIORITY
+	int "Lockstep coordinator thread priority"
+	default 5
+
+config RDD2_LOCKSTEP_THREAD_STACK_SIZE
+	int "Lockstep coordinator stack size"
+	default 4096
+
+endif

@@ -63,7 +63,7 @@ static void quaternion_from_euler(struct rdd2_attitude_estimator *estimator, flo
 }
 
 static void attitude_from_quaternion(const struct rdd2_attitude_estimator *estimator,
-				     synapse_topic_AttitudeEuler_t *attitude)
+				     rdd2_attitude_euler_t *attitude)
 {
 	float sinr_cosp =
 		(2.0f * estimator->q_w * estimator->q_x) + (2.0f * estimator->q_y * estimator->q_z);
@@ -83,7 +83,7 @@ static void attitude_from_quaternion(const struct rdd2_attitude_estimator *estim
 	attitude->yaw = atan2f(siny_cosp, cosy_cosp);
 }
 
-static bool accel_correction_valid(const synapse_topic_Vec3f_t *accel, float *ax, float *ay,
+static bool accel_correction_valid(const rdd2_vec3f_t *accel, float *ax, float *ay,
 				   float *az)
 {
 	float accel_norm;
@@ -111,7 +111,7 @@ void rdd2_attitude_estimator_init(struct rdd2_attitude_estimator *estimator)
 }
 
 void rdd2_attitude_estimator_reset_from_accel(struct rdd2_attitude_estimator *estimator,
-					      const synapse_topic_Vec3f_t *accel)
+					      const rdd2_vec3f_t *accel)
 {
 	float roll = 0.0f;
 	float pitch = 0.0f;
@@ -132,8 +132,8 @@ void rdd2_attitude_estimator_reset_from_accel(struct rdd2_attitude_estimator *es
 }
 
 void rdd2_attitude_estimator_predict(struct rdd2_attitude_estimator *estimator,
-				     const synapse_topic_Vec3f_t *gyro,
-				     const synapse_topic_Vec3f_t *accel, float dt)
+				     const rdd2_vec3f_t *gyro,
+				     const rdd2_vec3f_t *accel, float dt)
 {
 	float gx;
 	float gy;
@@ -197,7 +197,7 @@ void rdd2_attitude_estimator_predict(struct rdd2_attitude_estimator *estimator,
 }
 
 void rdd2_attitude_estimator_get_attitude(const struct rdd2_attitude_estimator *estimator,
-					  synapse_topic_AttitudeEuler_t *attitude)
+					  rdd2_attitude_euler_t *attitude)
 {
 	if (estimator == NULL || attitude == NULL) {
 		return;

@@ -1,3 +1,3 @@
-if(CONFIG_RDD2_SITL)
-  target_sources(app PRIVATE sitl_imu.c)
+if(CONFIG_RDD2_LOCKSTEP)
+  target_sources(app PRIVATE lockstep_imu.c)
 endif()

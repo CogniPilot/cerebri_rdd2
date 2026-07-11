@@ -4,13 +4,13 @@
 ACCEPTED
 
 ## Summary
-`RDD2` v1 flight hardware is locked to the Tropic stack of CRSF, FlexIO DSHOT, ICM45686, and staged M10 GNSS on `mr_vmu_tropic`, while `native_sim` is allowed only for non-flight SITL.
+`RDD2` v1 flight hardware is locked to the Tropic stack of CRSF, FlexIO DSHOT, ICM45686, and staged M10 GNSS on `mr_vmu_tropic`, while `native_sim` is allowed only for non-flight lockstep simulation.
 
 ## Specification
 
 **REQUIRED:**
 - `mr_vmu_tropic` is the only supported flight-hardware target.
-- `native_sim` is allowed only for SITL and debug builds.
+- `native_sim` is allowed only for lockstep simulation and debug builds.
 - RC input uses the Zephyr CRSF driver on `DT_ALIAS(rc)`.
 - Motor output uses FlexIO DSHOT only.
 - IMU is the onboard `ICM45686`.
@@ -49,5 +49,5 @@ ACCEPTED
 ## References
 
 - `../boards/mr_vmu_tropic.overlay`
-- `SPEC_0009_NATIVE_SIM_SITL.md`
+- `SPEC_0009_NATIVE_SIM_LOCKSTEP.md`
 - `SPEC_0005_GNSS_STAGING.md`

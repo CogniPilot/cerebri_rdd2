@@ -17,9 +17,9 @@
 
 / {
 	aliases {
-		rc = &sitl_rc0;
-		imu0 = &sitl_imu0;
-		motors = &sitl_dshot0;
+		rc = &lockstep_rc0;
+		imu0 = &lockstep_imu0;
+		motors = &lockstep_dshot0;
 	};
 
 	rdd2_log_disk0 {
@@ -30,18 +30,18 @@
 		status = "okay";
 	};
 
-	sitl_rc0: sitl_rc {
-		compatible = "cognipilot,sitl-rc";
+	lockstep_rc0: lockstep_rc {
+		compatible = "cognipilot,lockstep-rc";
 		status = "okay";
 	};
 
-	sitl_imu0: sitl_imu {
-		compatible = "cognipilot,sitl-imu";
+	lockstep_imu0: lockstep_imu {
+		compatible = "cognipilot,lockstep-imu";
 		status = "okay";
 	};
 
-	sitl_dshot0: sitl_dshot {
-		compatible = "cognipilot,sitl-dshot";
+	lockstep_dshot0: lockstep_dshot {
+		compatible = "cognipilot,lockstep-dshot";
 		status = "okay";
 		channel-count = <4>;
 	};
