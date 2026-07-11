@@ -30,7 +30,7 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(rdd2 LANGUAGES C)
 
 if(TARGET native_simulator)
-  target_sources(native_simulator INTERFACE src/native_sil_host.c)
+  target_sources(native_simulator INTERFACE subsys/lockstep/lockstep_host.c)
 endif()
 
 set(FETCHCONTENT_BASE_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps)

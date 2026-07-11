@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "../../src/native_sil_transport.h"
+#include "lockstep_shared.h"
 #include "lockstep_transport.h"
 #include "synapse_messages.h"
 
@@ -20,7 +20,7 @@ LOG_MODULE_REGISTER(rdd2_lockstep_fastdyn, LOG_LEVEL_INF);
 /* This symbol is deliberately global. The host resolves it from the firmware
  * ELF and maps the corresponding bytes in FastDyn's file-backed QEMU RAM, so
  * neither side hardcodes a firmware address or payload offset. */
-struct rdd2_native_sil_shared rdd2_fastdyn_lockstep_shared;
+struct rdd2_lockstep_shared rdd2_fastdyn_lockstep_shared;
 
 static K_THREAD_STACK_DEFINE(g_fastdyn_stack,
                              CONFIG_RDD2_LOCKSTEP_THREAD_STACK_SIZE);
@@ -88,8 +88,8 @@ static void fastdyn_thread(void *arg0, void *arg1, void *arg2) {
 static int fastdyn_init(void) {
   int rc;
 
-  rdd2_fastdyn_lockstep_shared = (struct rdd2_native_sil_shared){
-      .magic = RDD2_NATIVE_SIL_MAGIC,
+  rdd2_fastdyn_lockstep_shared = (struct rdd2_lockstep_shared){
+      .magic = RDD2_LOCKSTEP_MAGIC,
   };
   rc = cerebri_lockstep_sequence_init(
       &g_lockstep, &rdd2_fastdyn_lockstep_shared.input_sequence,

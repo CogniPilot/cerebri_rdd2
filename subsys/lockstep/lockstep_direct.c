@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "../../src/native_sil_transport.h"
+#include "lockstep_shared.h"
 #include "lockstep_transport.h"
 #include "synapse_messages.h"
 
@@ -20,13 +20,13 @@
 
 LOG_MODULE_REGISTER(rdd2_lockstep_direct, LOG_LEVEL_INF);
 
-void *rdd2_native_sil_host_map(const char *path, unsigned long size);
-void rdd2_native_sil_host_unmap(void *mapping, unsigned long size);
+void *rdd2_lockstep_host_map(const char *path, unsigned long size);
+void rdd2_lockstep_host_unmap(void *mapping, unsigned long size);
 
 static K_THREAD_STACK_DEFINE(g_direct_stack,
                              CONFIG_RDD2_LOCKSTEP_THREAD_STACK_SIZE);
 static struct k_thread g_direct_thread;
-static struct rdd2_native_sil_shared *g_shared;
+static struct rdd2_lockstep_shared *g_shared;
 static struct cerebri_lockstep_sequence g_lockstep;
 
 static void exit_if_terminated(void) {
@@ -92,30 +92,30 @@ static void direct_thread(void *arg0, void *arg1, void *arg2) {
 }
 
 static int direct_init(void) {
-  char *path = nsi_host_getenv("RDD2_NATIVE_SIL_SHM");
+  char *path = nsi_host_getenv("RDD2_LOCKSTEP_SHM");
   int rc;
 
   if (path == NULL || path[0] == '\0') {
-    LOG_ERR("RDD2_NATIVE_SIL_SHM is required for direct SIL transport");
+    LOG_ERR("RDD2_LOCKSTEP_SHM is required for direct lockstep");
     return -EINVAL;
   }
-  g_shared = rdd2_native_sil_host_map(path, sizeof(*g_shared));
+  g_shared = rdd2_lockstep_host_map(path, sizeof(*g_shared));
   if (g_shared == NULL) {
-    LOG_ERR("cannot map direct SIL transport");
+    LOG_ERR("cannot map direct lockstep transport");
     return -EIO;
   }
-  if (g_shared->magic != RDD2_NATIVE_SIL_MAGIC) {
-    rdd2_native_sil_host_unmap(g_shared, sizeof(*g_shared));
+  if (g_shared->magic != RDD2_LOCKSTEP_MAGIC) {
+    rdd2_lockstep_host_unmap(g_shared, sizeof(*g_shared));
     g_shared = NULL;
-    LOG_ERR("direct SIL transport has invalid magic");
+    LOG_ERR("direct lockstep transport has invalid magic");
     return -EIO;
   }
   rc = cerebri_lockstep_sequence_init(
       &g_lockstep, &g_shared->input_sequence, &g_shared->response_sequence,
       &g_shared->terminate,
-      nsi_host_getenv("RDD2_NATIVE_SIL_COOPERATIVE") != NULL);
+      nsi_host_getenv("RDD2_LOCKSTEP_COOPERATIVE") != NULL);
   if (rc != 0) {
-    rdd2_native_sil_host_unmap(g_shared, sizeof(*g_shared));
+    rdd2_lockstep_host_unmap(g_shared, sizeof(*g_shared));
     g_shared = NULL;
     return rc;
   }

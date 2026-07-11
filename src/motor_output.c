@@ -86,7 +86,7 @@ void rdd2_motor_output_init(void) {
                      &topic_pwm_signal_outputs, &g_rdd2_motor_output_blob);
   g_rdd2_motor_output_pub_ready = (rc == 0);
 #if defined(CONFIG_CSYN_ZENOH) && !defined(CONFIG_RDD2_LOCKSTEP)
-  g_fastdyn_pwm_topic = csyn_topic_find("pwm_signal_outputs");
+  g_fastdyn_pwm_topic = csyn_topic_find("pwm");
   if (g_fastdyn_pwm_topic == NULL) {
     g_rdd2_motor_output_pub_ready = false;
   }

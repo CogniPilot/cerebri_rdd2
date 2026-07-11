@@ -43,7 +43,7 @@ manifest:
       path: modules/lib/zros
     - name: csyn
       remote: cognipilot
-      revision: 4cf782e5f57992690d26a476e5ca6b8206da841e # inertial sample bridge (csyn#4)
+      revision: c1fdc903b5eb48e9a4362c716f50e658bed15961 # synapse_fbs 0.7.0, vehicle-owned topics
       path: modules/lib/csyn
     - name: cerebri_modules
       remote: cognipilot
