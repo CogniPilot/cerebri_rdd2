@@ -45,9 +45,9 @@ manifest:
       remote: cognipilot
       revision: 4cf782e5f57992690d26a476e5ca6b8206da841e # inertial sample bridge (csyn#4)
       path: modules/lib/csyn
-    - name: cerebri_lockstep
+    - name: cerebri_modules
       remote: cognipilot
-      revision: 9b102e7608067bb111cdb1d49c8554c5ce3a7f16
+      revision: ef73a4f8adeb4385c34af4344c9af27e43e02033
       path: modules/lib/cerebri_lockstep
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git
