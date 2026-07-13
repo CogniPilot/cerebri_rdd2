@@ -46,22 +46,34 @@ set(RDD2_RUMOCA_INSTALL_SCRIPT_URL
   "https://raw.githubusercontent.com/CogniPilot/rumoca/${RDD2_RUMOCA_VERSION}/infra/install/install.sh"
   CACHE STRING "Pinned Rumoca binary install script URL"
 )
-set(RDD2_RUMOCA_BIN_DIR
-  ${CMAKE_CURRENT_BINARY_DIR}/tools/rumoca/${RDD2_RUMOCA_VERSION}
+set(RDD2_RUMOCA_EXECUTABLE "" CACHE FILEPATH
+  "Existing Rumoca executable; skips the pinned binary download when set"
 )
-set(RDD2_RUMOCA_EXECUTABLE ${RDD2_RUMOCA_BIN_DIR}/rumoca)
 
-add_custom_command(
-  OUTPUT ${RDD2_RUMOCA_EXECUTABLE}
-  COMMAND ${CMAKE_COMMAND}
-          -DRDD2_RUMOCA_VERSION=${RDD2_RUMOCA_VERSION}
-          -DRDD2_RUMOCA_BIN_DIR=${RDD2_RUMOCA_BIN_DIR}
-          -DRDD2_RUMOCA_INSTALL_SCRIPT_URL=${RDD2_RUMOCA_INSTALL_SCRIPT_URL}
-          -DRDD2_RUMOCA_INSTALL_SCRIPT_SHA256=${RDD2_RUMOCA_INSTALL_SCRIPT_SHA256}
-          -P ${CMAKE_CURRENT_LIST_DIR}/cmake/InstallRumoca.cmake
-  COMMENT "Installing pinned Rumoca ${RDD2_RUMOCA_VERSION}"
-  VERBATIM
-)
+if(RDD2_RUMOCA_EXECUTABLE)
+  if(NOT EXISTS "${RDD2_RUMOCA_EXECUTABLE}")
+    message(FATAL_ERROR
+      "RDD2_RUMOCA_EXECUTABLE does not exist: ${RDD2_RUMOCA_EXECUTABLE}"
+    )
+  endif()
+else()
+  set(RDD2_RUMOCA_BIN_DIR
+    ${CMAKE_CURRENT_BINARY_DIR}/tools/rumoca/${RDD2_RUMOCA_VERSION}
+  )
+  set(RDD2_RUMOCA_EXECUTABLE ${RDD2_RUMOCA_BIN_DIR}/rumoca)
+
+  add_custom_command(
+    OUTPUT ${RDD2_RUMOCA_EXECUTABLE}
+    COMMAND ${CMAKE_COMMAND}
+            -DRDD2_RUMOCA_VERSION=${RDD2_RUMOCA_VERSION}
+            -DRDD2_RUMOCA_BIN_DIR=${RDD2_RUMOCA_BIN_DIR}
+            -DRDD2_RUMOCA_INSTALL_SCRIPT_URL=${RDD2_RUMOCA_INSTALL_SCRIPT_URL}
+            -DRDD2_RUMOCA_INSTALL_SCRIPT_SHA256=${RDD2_RUMOCA_INSTALL_SCRIPT_SHA256}
+            -P ${CMAKE_CURRENT_LIST_DIR}/cmake/InstallRumoca.cmake
+    COMMENT "Installing pinned Rumoca ${RDD2_RUMOCA_VERSION}"
+    VERBATIM
+  )
+endif()
 
 add_custom_target(rdd2_rumoca_tool
   DEPENDS ${RDD2_RUMOCA_EXECUTABLE}
