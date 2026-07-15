@@ -103,10 +103,10 @@ The Nix helpers already keep the common build outputs separate:
 The app assumes the west workspace layout documented above:
 `<workspace>/cerebri_rdd2`, `<workspace>/zephyr`, and `<workspace>/modules`.
 
-If this checkout is nested inside a different west workspace, `rdd2-west-update`
-creates a private module workspace under `${XDG_CACHE_HOME:-$HOME/.cache}/cerebri-rdd2`
-and the build helpers use that workspace through `RDD2_WORKSPACE_ROOT`. Set
-`RDD2_WEST_WORKSPACE=/path/to/workspace` to choose that location explicitly.
+The Nix commands use an isolated RDD2 West workspace under
+`.devenv/state/west/` by default. Set `RDD2_WEST_WORKSPACE=/path/to/workspace`
+to choose its location explicitly; the selected workspace is governed only by
+this repository's `west.yml`.
 
 On NixOS, import the module and enable host tools plus debug-probe access:
 

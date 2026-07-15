@@ -74,9 +74,10 @@
             pkgs.xz
             pkgs.zip
             pythonEnv
-          ] ++ hostMultilibTools;
+          ]
+          ++ hostMultilibTools;
 
-          commonScript = ''
+          workspaceScript = ''
             rdd2_find_app() {
               local dir
               dir="$(pwd -P)"
@@ -111,17 +112,13 @@
 
             rdd2_managed_workspace() {
               local app="$1"
-              local cache_root
-              local key
 
               if [ -n "''${RDD2_WEST_WORKSPACE:-}" ]; then
                 realpath -m "$RDD2_WEST_WORKSPACE"
                 return 0
               fi
 
-              cache_root="''${XDG_CACHE_HOME:-$HOME/.cache}/cerebri-rdd2"
-              key="$(printf '%s' "$app" | sha256sum | cut -c1-16)"
-              printf '%s\n' "$cache_root/west-$key"
+              printf '%s\n' "$app/.devenv/state/west"
             }
 
             rdd2_workspace() {
@@ -130,8 +127,8 @@
               local expected_manifest
               local actual_manifest
 
-              if [ -n "''${RDD2_WORKSPACE_ROOT:-}" ]; then
-                realpath -m "$RDD2_WORKSPACE_ROOT"
+              if [ -n "''${RDD2_WEST_WORKSPACE:-}" ]; then
+                rdd2_managed_workspace "$app"
                 return 0
               fi
 
@@ -143,9 +140,7 @@
                 actual_manifest="$(realpath "$actual_manifest")"
               fi
 
-              if [ -z "$actual_manifest" ] ||
-                 [ "$actual_manifest" = "$expected_manifest" ] ||
-                 [ "''${RDD2_ALLOW_FOREIGN_WEST:-0}" = "1" ]; then
+              if [ "$actual_manifest" = "$expected_manifest" ]; then
                 printf '%s\n' "$source_workspace"
               else
                 rdd2_managed_workspace "$app"
@@ -172,12 +167,13 @@
                    ! git diff --cached --quiet; then
                   git -c user.name='cerebri-rdd2 nix' \
                       -c user.email='cerebri-rdd2-nix@example.invalid' \
-                      commit -q -m 'Update cerebri_rdd2 manifest'
+                      commit -q -s -m 'Update cerebri_rdd2 manifest'
                 fi
               )
 
               if [ ! -d "$workspace/.west" ]; then
-                (cd "$workspace" && west init -l manifest)
+                mkdir -p "$workspace/.west"
+                printf '[manifest]\npath = manifest\nfile = west.yml\n' >"$workspace/.west/config"
               fi
 
               actual_manifest="$(rdd2_active_manifest "$workspace")"
@@ -192,6 +188,10 @@
                 return 1
               fi
             }
+          '';
+
+          commonScript = ''
+            ${workspaceScript}
 
             rdd2_require_module_paths() {
               local workspace="$1"
@@ -206,13 +206,21 @@
                 modules/fs/fatfs \
                 modules/lib/cmsis-dsp \
                 modules/lib/zenoh-pico \
-                modules/lib/cerebri_lockstep \
-                modules/lib/zros \
-                modules/lib/csyn \
                 modules/lib/zephyr_boards
               do
                 if [ ! -d "$workspace/$path" ]; then
                   printf 'error: missing required west checkout: %s/%s\n' "$workspace" "$path" >&2
+                  missing=1
+                fi
+              done
+
+              for path in \
+                "$RDD2_CEREBRI_MODULES_ROOT" \
+                "$RDD2_ZROS_ROOT" \
+                "$RDD2_CSYN_ROOT"
+              do
+                if [ ! -d "$path" ]; then
+                  printf 'error: missing required editable module: %s\n' "$path" >&2
                   missing=1
                 fi
               done
@@ -229,8 +237,12 @@
               workspace="$(rdd2_workspace "$app")"
 
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
+              export RDD2_CEREBRI_MODULES_ROOT="''${RDD2_CEREBRI_MODULES_ROOT:-$workspace/modules/lib/cerebri_lockstep}"
+              export RDD2_ZROS_ROOT="''${RDD2_ZROS_ROOT:-$workspace/modules/lib/zros}"
+              export RDD2_CSYN_ROOT="''${RDD2_CSYN_ROOT:-$workspace/modules/lib/csyn}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
               export RDD2_WORKSPACE_ROOT="$workspace"
+              export WEST_TOPDIR="$workspace"
 
               if [ -d "$workspace/zephyr" ]; then
                 export ZEPHYR_BASE="$workspace/zephyr"
@@ -240,12 +252,8 @@
             rdd2_require_workspace() {
               local app="$1"
               local workspace
-              local source_workspace
-              local expected_manifest
               local actual_manifest
               workspace="$(rdd2_workspace "$app")"
-              source_workspace="$(rdd2_source_workspace "$app")"
-              expected_manifest="$(realpath "$app/west.yml")"
 
               if [ ! -d "$workspace/.west" ]; then
                 printf 'error: missing west workspace metadata at %s/.west\n' "$workspace" >&2
@@ -259,15 +267,6 @@
                 return 1
               fi
               actual_manifest="$(realpath "$actual_manifest")"
-
-              if [ "$workspace" = "$source_workspace" ] &&
-                 [ "$actual_manifest" != "$expected_manifest" ] &&
-                 [ "''${RDD2_ALLOW_FOREIGN_WEST:-0}" != "1" ]; then
-                printf 'error: active west manifest is %s\n' "$actual_manifest" >&2
-                printf '       cerebri_rdd2 expects %s\n' "$expected_manifest" >&2
-                printf 'run nix run .#west-update to create/update the managed cerebri_rdd2 workspace\n' >&2
-                return 1
-              fi
 
               if [ -z "''${ZEPHYR_BASE:-}" ] || [ ! -d "$ZEPHYR_BASE" ]; then
                 printf 'error: missing Zephyr checkout; expected %s/zephyr or ZEPHYR_BASE\n' "$workspace" >&2
@@ -285,6 +284,17 @@
               inherit name;
               runtimeInputs = baseTools;
               inherit text;
+            };
+
+          mkWestUpdateApp =
+            name: text:
+            pkgs.writeShellApplication {
+              inherit name text;
+              runtimeInputs = [
+                pkgs.coreutils
+                pkgs.git
+                pkgs.python3Packages.west
+              ];
             };
 
           rdd2-build = mkWestApp "rdd2-build" ''
@@ -364,8 +374,8 @@
             exec west build -b "$board" -d "$build_dir" -t menuconfig "$app" "$@"
           '';
 
-          rdd2-west-update = mkWestApp "rdd2-west-update" ''
-            ${commonScript}
+          rdd2-west-update = mkWestUpdateApp "rdd2-west-update" ''
+            ${workspaceScript}
 
             app="$(rdd2_find_app)"
             workspace="$(rdd2_workspace "$app")"
@@ -374,6 +384,7 @@
 
             if [ "$workspace" != "$source_workspace" ]; then
               printf 'using managed cerebri_rdd2 west workspace: %s\n' "$workspace" >&2
+              export WEST_TOPDIR="$workspace"
               rdd2_prepare_managed_workspace "$app" "$workspace"
               cd "$workspace"
               exec west update "$@"
@@ -392,7 +403,7 @@
               if [ "$actual_manifest" != "$expected_manifest" ]; then
                 printf 'error: refusing to update source workspace with foreign manifest %s\n' "$actual_manifest" >&2
                 printf '       expected %s\n' "$expected_manifest" >&2
-                printf 'unset RDD2_WORKSPACE_ROOT/RDD2_ALLOW_FOREIGN_WEST to use the managed workspace fallback\n' >&2
+                printf 'set RDD2_WEST_WORKSPACE to select another isolated workspace\n' >&2
                 exit 1
               fi
             fi
@@ -510,20 +521,16 @@
                   actual_manifest="$(realpath "$actual_manifest")"
                 fi
 
-                if [ -n "''${RDD2_WORKSPACE_ROOT:-}" ]; then
-                  workspace="$(realpath -m "$RDD2_WORKSPACE_ROOT")"
-                elif [ -z "$actual_manifest" ] ||
-                     [ "$actual_manifest" = "$expected_manifest" ] ||
-                     [ "''${RDD2_ALLOW_FOREIGN_WEST:-0}" = "1" ]; then
+                if [ "$actual_manifest" = "$expected_manifest" ]; then
                   workspace="$source_workspace"
                 elif [ -n "''${RDD2_WEST_WORKSPACE:-}" ]; then
                   workspace="$(realpath -m "$RDD2_WEST_WORKSPACE")"
                 else
-                  key="$(printf '%s' "$app" | sha256sum | cut -c1-16)"
-                  workspace="''${XDG_CACHE_HOME:-$HOME/.cache}/cerebri-rdd2/west-$key"
+                  workspace="$app/.devenv/state/west"
                 fi
 
                 export RDD2_WORKSPACE_ROOT="$workspace"
+                export WEST_TOPDIR="$workspace"
                 if [ -d "$workspace/zephyr" ]; then
                   export ZEPHYR_BASE="$workspace/zephyr"
                 elif [ -z "''${ZEPHYR_BASE:-}" ]; then
