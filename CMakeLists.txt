@@ -23,17 +23,10 @@ set(RDD2_CSYN_ROOT "${WORKSPACE_ROOT}/modules/lib/csyn"
   CACHE PATH "CSyn Zephyr module source"
 )
 
-set(ZEPHYR_MODULES
-  ${WORKSPACE_ROOT}/modules/hal/cmsis
-  ${WORKSPACE_ROOT}/modules/hal/cmsis_6
-  ${WORKSPACE_ROOT}/modules/hal/nxp
-  ${WORKSPACE_ROOT}/modules/fs/fatfs
-  ${WORKSPACE_ROOT}/modules/lib/cmsis-dsp
-  ${WORKSPACE_ROOT}/modules/lib/zenoh-pico
+set(ZEPHYR_EXTRA_MODULES
   ${RDD2_CEREBRI_MODULES_ROOT}
   ${RDD2_ZROS_ROOT}
   ${RDD2_CSYN_ROOT}
-  ${WORKSPACE_ROOT}/modules/lib/zephyr_boards
 )
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})

@@ -12,6 +12,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
 
+#include <zros/private/zros_node_struct.h>
+#include <zros/private/zros_pub_struct.h>
 #include <zros/zros_node.h>
 #include <zros/zros_pub.h>
 
