@@ -10,11 +10,13 @@
 #define AUTO_LEVEL_ROLL_P_GAIN  4.0f
 #define AUTO_LEVEL_PITCH_P_GAIN 4.0f
 
-static void quadrotor_from_rc(QuadrotorState *state, const rdd2_rc_channels_t *rc)
+static void controller_from_rc(Vehicles_Rdd2_ControllerState *state,
+			       const rdd2_rc_channels_t *rc)
 {
-	rdd2_efmi_quadrotor_init_from_rc(state, rc, RDD2_ROLL_CHANNEL_INDEX,
-					 RDD2_PITCH_CHANNEL_INDEX, RDD2_THROTTLE_CHANNEL_INDEX,
-					 RDD2_YAW_CHANNEL_INDEX, RDD2_ARM_CHANNEL_INDEX);
+	rdd2_efmi_controller_init_from_rc(state, rc, RDD2_ROLL_CHANNEL_INDEX,
+					  RDD2_PITCH_CHANNEL_INDEX,
+					  RDD2_THROTTLE_CHANNEL_INDEX,
+					  RDD2_YAW_CHANNEL_INDEX, RDD2_ARM_CHANNEL_INDEX);
 }
 
 void rdd2_attitude_controller_init(struct rdd2_attitude_controller *controller)
@@ -49,17 +51,17 @@ void rdd2_attitude_desired_from_rc(const rdd2_rc_channels_t *rc,
 				   const rdd2_attitude_euler_t *attitude,
 				   rdd2_attitude_euler_t *attitude_desired)
 {
-	QuadrotorState state;
+	Vehicles_Rdd2_ControllerState state;
 
 	if (rc == NULL || attitude == NULL || attitude_desired == NULL) {
 		return;
 	}
 
-	quadrotor_from_rc(&state, rc);
+	controller_from_rc(&state, rc);
 	state.attitudeRoll = (double)attitude->roll;
 	state.attitudePitch = (double)attitude->pitch;
 	state.attitudeYaw = (double)attitude->yaw;
-	rdd2_efmi_quadrotor_step(&state);
+	rdd2_efmi_controller_step(&state);
 	attitude_desired->roll = (float)state.attitudeDesiredRoll;
 	attitude_desired->pitch = (float)state.attitudeDesiredPitch;
 	attitude_desired->yaw = (float)state.attitudeDesiredYaw;
@@ -71,7 +73,7 @@ void rdd2_attitude_controller_step(struct rdd2_attitude_controller *controller,
 				   const rdd2_rc_channels_t *rc, float dt,
 				   rdd2_rate_triplet_t *rate_desired)
 {
-	QuadrotorState state;
+	Vehicles_Rdd2_ControllerState state;
 
 	if (controller == NULL || attitude == NULL || attitude_desired == NULL || rc == NULL ||
 	    rate_desired == NULL || dt <= 0.0f) {
@@ -86,7 +88,7 @@ void rdd2_attitude_controller_step(struct rdd2_attitude_controller *controller,
 		rdd2_efmi_pid_axis_step(&controller->pitch, attitude_desired->pitch,
 					 attitude->pitch, dt, false);
 
-	quadrotor_from_rc(&state, rc);
-	rdd2_efmi_quadrotor_step(&state);
+	controller_from_rc(&state, rc);
+	rdd2_efmi_controller_step(&state);
 	rate_desired->yaw = (float)state.yawRateDesired;
 }

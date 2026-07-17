@@ -43,11 +43,13 @@ asynchronous side-channel without changing the direct lockstep coordinator.
 Performance builds may omit the unused network stack; communications builds
 retain ENET and enable CSyn/Zenoh independently of lockstep pacing.
 
-CMake also installs the pinned Rumoca `v0.9.11` release into the build tree
-with Rumoca's binary install script, verifies the installer and binary hashes,
-and generates the `Quadrotor` eFMI Production Code container from `modelica/`
-under `${CMAKE_BINARY_DIR}/generated/rumoca`. Generated Rumoca C code and
-`.efmu` containers are build outputs, not committed source.
+CMake installs the pinned Rumoca release into the build tree, verifies the
+installer and binary hashes, and generates eFMI Production Code from
+`Vehicles.Rdd2.Controller` in the `modelica_models` West project under
+`${CMAKE_BINARY_DIR}/generated/rumoca`. The reusable quadrotor plant, RDD2
+parameters, controller, and model-level qualification mission all remain in
+that common project. Generated C and `.efmu` containers are build outputs, not
+committed source.
 
 To bootstrap a fresh minimal workspace from this repo's manifest, check out
 this repo at `<workspace>/cerebri_rdd2` and initialize west from the workspace

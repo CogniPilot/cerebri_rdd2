@@ -1,12 +1,12 @@
 #ifndef RDD2_ATTITUDE_CONTROL_H_
 #define RDD2_ATTITUDE_CONTROL_H_
 
-#include "Quadrotor.h"
+#include "Vehicles_Rdd2_Controller.h"
 #include "synapse_messages.h"
 
 struct rdd2_attitude_controller {
-	QuadrotorState roll;
-	QuadrotorState pitch;
+	Vehicles_Rdd2_ControllerState roll;
+	Vehicles_Rdd2_ControllerState pitch;
 };
 
 void rdd2_attitude_controller_init(struct rdd2_attitude_controller *controller);

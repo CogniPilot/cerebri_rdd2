@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "Quadrotor.h"
+#include "Vehicles_Rdd2_Controller.h"
 #include "synapse_messages.h"
 
 #define RDD2_CONTROL_RATE_HZ              1600U
@@ -33,9 +33,9 @@ _Static_assert((RDD2_CONTROL_RATE_HZ % RDD2_FLIGHT_STATE_PUBLISH_RATE_HZ) == 0U,
 	       "flight-state publish rate must divide the control loop rate");
 
 struct rdd2_rate_controller {
-	QuadrotorState roll;
-	QuadrotorState pitch;
-	QuadrotorState yaw;
+	Vehicles_Rdd2_ControllerState roll;
+	Vehicles_Rdd2_ControllerState pitch;
+	Vehicles_Rdd2_ControllerState yaw;
 };
 
 void rdd2_rate_controller_init(struct rdd2_rate_controller *controller);

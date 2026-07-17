@@ -7,5 +7,7 @@ build_native*/
 build-flatfb/
 twister-out/
 __pycache__
+artifacts/
 result
 result-*
+/tools/fastdyn_mission/target/

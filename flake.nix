@@ -217,7 +217,8 @@
               for path in \
                 "$RDD2_CEREBRI_MODULES_ROOT" \
                 "$RDD2_ZROS_ROOT" \
-                "$RDD2_CSYN_ROOT"
+                "$RDD2_CSYN_ROOT" \
+                "$RDD2_MODELICA_MODELS_ROOT"
               do
                 if [ ! -d "$path" ]; then
                   printf 'error: missing required editable module: %s\n' "$path" >&2
@@ -240,6 +241,7 @@
               export RDD2_CEREBRI_MODULES_ROOT="''${RDD2_CEREBRI_MODULES_ROOT:-$workspace/modules/lib/cerebri_lockstep}"
               export RDD2_ZROS_ROOT="''${RDD2_ZROS_ROOT:-$workspace/modules/lib/zros}"
               export RDD2_CSYN_ROOT="''${RDD2_CSYN_ROOT:-$workspace/modules/lib/csyn}"
+              export RDD2_MODELICA_MODELS_ROOT="''${RDD2_MODELICA_MODELS_ROOT:-$workspace/models/modelica_models}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
               export RDD2_WORKSPACE_ROOT="$workspace"
               export WEST_TOPDIR="$workspace"

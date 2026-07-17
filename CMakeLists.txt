@@ -13,14 +13,30 @@ else()
   get_filename_component(WORKSPACE_ROOT ${CMAKE_CURRENT_SOURCE_DIR} DIRECTORY)
 endif()
 
-set(RDD2_CEREBRI_MODULES_ROOT "${WORKSPACE_ROOT}/modules/lib/cerebri_lockstep"
-  CACHE PATH "Cerebri Zephyr module source"
+function(rdd2_cache_path variable fallback description)
+  if(DEFINED ENV{${variable}})
+    set(default "$ENV{${variable}}")
+  else()
+    set(default "${fallback}")
+  endif()
+  set(${variable} "${default}" CACHE PATH "${description}")
+endfunction()
+
+rdd2_cache_path(RDD2_CEREBRI_MODULES_ROOT
+  "${WORKSPACE_ROOT}/modules/lib/cerebri_lockstep"
+  "Cerebri Zephyr module source"
 )
-set(RDD2_ZROS_ROOT "${WORKSPACE_ROOT}/modules/lib/zros"
-  CACHE PATH "ZROS Zephyr module source"
+rdd2_cache_path(RDD2_ZROS_ROOT
+  "${WORKSPACE_ROOT}/modules/lib/zros"
+  "ZROS Zephyr module source"
 )
-set(RDD2_CSYN_ROOT "${WORKSPACE_ROOT}/modules/lib/csyn"
-  CACHE PATH "CSyn Zephyr module source"
+rdd2_cache_path(RDD2_CSYN_ROOT
+  "${WORKSPACE_ROOT}/modules/lib/csyn"
+  "CSyn Zephyr module source"
+)
+rdd2_cache_path(RDD2_MODELICA_MODELS_ROOT
+  "${WORKSPACE_ROOT}/models/modelica_models"
+  "Shared CogniPilot Modelica model library"
 )
 
 set(ZEPHYR_EXTRA_MODULES
@@ -38,7 +54,7 @@ endif()
 
 set(FETCHCONTENT_BASE_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps)
 
-set(RDD2_RUMOCA_VERSION "v0.9.11"
+set(RDD2_RUMOCA_VERSION "v0.9.20"
   CACHE STRING "Pinned Rumoca version used for eFMI control code generation"
 )
 set(RDD2_RUMOCA_INSTALL_SCRIPT_SHA256
@@ -87,13 +103,17 @@ set(RDD2_EFMI_CONTROL_STAMPS)
 set(RDD2_EFMI_CONTROL_SOURCES)
 set(RDD2_EFMI_CONTROL_INCLUDE_DIRS)
 
-function(rdd2_add_efmi_control_model model_name)
-  set(_model_file ${CMAKE_CURRENT_SOURCE_DIR}/modelica/${model_name}.mo)
-  set(_efmu_dir ${RDD2_RUMOCA_GENERATED_DIR}/${model_name})
-  set(_efmu_file ${RDD2_RUMOCA_GENERATED_DIR}/${model_name}.efmu)
-  set(_stamp ${RDD2_RUMOCA_GENERATED_DIR}/${model_name}.galec-production.stamp)
-  set(_source ${_efmu_dir}/ProductionCode/${model_name}.c)
-  set(_header ${_efmu_dir}/ProductionCode/${model_name}.h)
+file(GLOB_RECURSE RDD2_MODELICA_SOURCES CONFIGURE_DEPENDS
+  "${RDD2_MODELICA_MODELS_ROOT}/*.mo"
+)
+
+function(rdd2_add_efmi_control_model model_file model_name generated_name)
+  set(_model_file ${RDD2_MODELICA_MODELS_ROOT}/${model_file})
+  set(_efmu_dir ${RDD2_RUMOCA_GENERATED_DIR}/${generated_name})
+  set(_efmu_file ${RDD2_RUMOCA_GENERATED_DIR}/${generated_name}.efmu)
+  set(_stamp ${RDD2_RUMOCA_GENERATED_DIR}/${generated_name}.galec-production.stamp)
+  set(_source ${_efmu_dir}/ProductionCode/${generated_name}.c)
+  set(_header ${_efmu_dir}/ProductionCode/${generated_name}.h)
 
   add_custom_command(
     OUTPUT ${_stamp}
@@ -113,11 +133,12 @@ function(rdd2_add_efmi_control_model model_name)
             --cache-dir ${CMAKE_CURRENT_BINARY_DIR}/.rumoca-cache
             compile ${_model_file}
             --model ${model_name}
+            --source-root ${RDD2_MODELICA_MODELS_ROOT}
             --target galec-production
             --output ${RDD2_RUMOCA_GENERATED_DIR}
     COMMAND ${CMAKE_COMMAND} -E touch ${_stamp}
     DEPENDS
-      ${_model_file}
+      ${RDD2_MODELICA_SOURCES}
       ${RDD2_RUMOCA_EXECUTABLE}
     COMMENT "Generating ${model_name} eFMI Production Code with Rumoca ${RDD2_RUMOCA_VERSION}"
     VERBATIM
@@ -131,7 +152,11 @@ function(rdd2_add_efmi_control_model model_name)
   set(RDD2_EFMI_CONTROL_INCLUDE_DIRS ${RDD2_EFMI_CONTROL_INCLUDE_DIRS} PARENT_SCOPE)
 endfunction()
 
-rdd2_add_efmi_control_model(Quadrotor)
+rdd2_add_efmi_control_model(
+  Vehicles/Rdd2/Controller.mo
+  Vehicles.Rdd2.Controller
+  Vehicles_Rdd2_Controller
+)
 
 add_custom_target(rdd2_efmi_control_codegen
   DEPENDS ${RDD2_EFMI_CONTROL_STAMPS}

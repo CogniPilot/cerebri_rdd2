@@ -5,36 +5,36 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "Quadrotor.h"
+#include "Vehicles_Rdd2_Controller.h"
 #include "efmi_wrapper.h"
 #include "synapse_messages.h"
 
-static inline void rdd2_efmi_quadrotor_init(QuadrotorState *state)
+static inline void rdd2_efmi_controller_init(Vehicles_Rdd2_ControllerState *state)
 {
-	RDD2_EFMI_INIT(Quadrotor, state);
+	RDD2_EFMI_INIT(Vehicles_Rdd2_Controller, state);
 }
 
-static inline void rdd2_efmi_quadrotor_recalibrate(QuadrotorState *state)
+static inline void rdd2_efmi_controller_recalibrate(Vehicles_Rdd2_ControllerState *state)
 {
-	RDD2_EFMI_RECALIBRATE(Quadrotor, state);
+	RDD2_EFMI_RECALIBRATE(Vehicles_Rdd2_Controller, state);
 }
 
-static inline void rdd2_efmi_quadrotor_step(QuadrotorState *state)
+static inline void rdd2_efmi_controller_step(Vehicles_Rdd2_ControllerState *state)
 {
-	RDD2_EFMI_STEP(Quadrotor, state);
+	RDD2_EFMI_STEP(Vehicles_Rdd2_Controller, state);
 }
 
-static inline void rdd2_efmi_pid_axis_init(QuadrotorState *state)
+static inline void rdd2_efmi_pid_axis_init(Vehicles_Rdd2_ControllerState *state)
 {
-	rdd2_efmi_quadrotor_init(state);
+	rdd2_efmi_controller_init(state);
 }
 
-static inline void rdd2_efmi_pid_axis_recalibrate(QuadrotorState *state)
+static inline void rdd2_efmi_pid_axis_recalibrate(Vehicles_Rdd2_ControllerState *state)
 {
-	rdd2_efmi_quadrotor_recalibrate(state);
+	rdd2_efmi_controller_recalibrate(state);
 }
 
-static inline void rdd2_efmi_pid_axis_reset(QuadrotorState *state)
+static inline void rdd2_efmi_pid_axis_reset(Vehicles_Rdd2_ControllerState *state)
 {
 	state->setpoint = 0.0;
 	state->measurement = 0.0;
@@ -50,26 +50,26 @@ static inline void rdd2_efmi_pid_axis_reset(QuadrotorState *state)
 	state->meas_filt_valid = false;
 }
 
-static inline float rdd2_efmi_pid_axis_step(QuadrotorState *state, float setpoint,
+static inline float rdd2_efmi_pid_axis_step(Vehicles_Rdd2_ControllerState *state, float setpoint,
 					    float measurement, float dt, bool integrate)
 {
 	state->setpoint = (double)setpoint;
 	state->measurement = (double)measurement;
 	state->integrate = integrate ? 1.0 : 0.0;
 	state->samplePeriod = (double)dt;
-	rdd2_efmi_quadrotor_step(state);
+	rdd2_efmi_controller_step(state);
 	return (float)state->pidOutput;
 }
 
-static inline void rdd2_efmi_quadrotor_init_from_rc(QuadrotorState *state,
-						    const rdd2_rc_channels_t *rc,
-						    size_t roll_index, size_t pitch_index,
-						    size_t throttle_index, size_t yaw_index,
-						    size_t arm_index)
+static inline void rdd2_efmi_controller_init_from_rc(Vehicles_Rdd2_ControllerState *state,
+						     const rdd2_rc_channels_t *rc,
+						     size_t roll_index, size_t pitch_index,
+						     size_t throttle_index, size_t yaw_index,
+						     size_t arm_index)
 {
 	const int32_t *channels = rdd2_topic_rc_channels_data_const(rc);
 
-	rdd2_efmi_quadrotor_init(state);
+	rdd2_efmi_controller_init(state);
 	state->rcRollUs = (double)channels[roll_index];
 	state->rcPitchUs = (double)channels[pitch_index];
 	state->rcThrottleUs = (double)channels[throttle_index];

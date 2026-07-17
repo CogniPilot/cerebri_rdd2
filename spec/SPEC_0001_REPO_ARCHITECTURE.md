@@ -18,7 +18,8 @@ lives under `rdd2/` with a platform-local manifest, specs, and build wiring.
   repo-root tooling and workspace ignore rules stay in the root `.gitignore`.
 - `src/main.c` owns the v1 flight hot path.
 - Local app build wiring lives in `src/CMakeLists.txt`, not in one growing root source list.
-- Modelica sources for generated control artifacts live under `modelica/`;
+- Modelica sources for generated control artifacts live in the shared
+  `modelica_models` West project;
   generated Rumoca/eFMI outputs live in the build tree, while handwritten
   eFMI wrappers and hot-path orchestration stay in normal app modules.
 - Local subsystem build/config wiring lives under `subsys/` with local `CMakeLists.txt` and `Kconfig` files.
