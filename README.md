@@ -6,6 +6,7 @@ Start with [spec/README.md](spec/README.md)
 for platform rules.
 
 V1 goals:
+
 - `mr_vmu_tropic` only
 - CRSF input only
 - DSHOT output only
@@ -14,6 +15,7 @@ V1 goals:
 - no dependency on the legacy `cerebri` module
 
 Current implementation scope:
+
 - CEP-0002 platform layout under `rdd2/`
 - local FlexIO DSHOT driver vendored into this repo
 - Rumoca eFMI control code generated into the build tree
@@ -142,8 +144,10 @@ On NixOS, import the module and enable host tools plus debug-probe access:
 ```
 
 Important assumptions:
+
 - RC channel map is AETR on CRSF channels 1-4, arm is channel 5, and flight
   mode is channel 6.
-- Mixer order is the local default in `src/main.c` and must be verified against the airframe wiring before flight.
+- Mixer order is the local default in `src/main.c` and must be verified against
+  the airframe wiring before flight.
 - Rumoca-generated control artifacts are build outputs and should not be
   committed or hand-edited; update the Modelica source and regenerate instead.
