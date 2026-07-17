@@ -23,6 +23,7 @@
             intelhex
             jinja2
             jsonschema
+            matplotlib
             packaging
             pyelftools
             pykwalify
@@ -414,6 +415,31 @@
             exec west update "$@"
           '';
 
+          rdd2-trajectory-compare = mkWestApp "rdd2-trajectory-compare" ''
+            ${commonScript}
+
+            app="$(rdd2_find_app)"
+            rdd2_export_common "$app"
+            reference_label="''${RDD2_TRAJECTORY_REFERENCE_LABEL:-modelica}"
+            reference="''${RDD2_TRAJECTORY_REFERENCE:-$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/mission-trajectory.csv}"
+            sil="''${RDD2_TRAJECTORY_SIL:-$app/artifacts/sil/mission-trajectory.csv}"
+            bil="''${RDD2_TRAJECTORY_BIL:-$app/artifacts/bil/work/mission-trajectory.csv}"
+            output="''${RDD2_TRAJECTORY_OUTPUT:-$app/artifacts/trajectory-comparison}"
+
+            exec "${pythonEnv}/bin/python" \
+              "$RDD2_MODELICA_MODELS_ROOT/tools/trajectory_compare.py" \
+              --reference "$reference_label=$reference" \
+              --candidate "sil=$sil" \
+              --candidate "bil=$bil" \
+              --output "$output" \
+              --duration-delta-max-s "''${RDD2_TRAJECTORY_DURATION_DELTA_MAX_S:-0.03}" \
+              --position-rmse-max-m "''${RDD2_TRAJECTORY_POSITION_RMSE_MAX_M:-3.75}" \
+              --position-p95-max-m "''${RDD2_TRAJECTORY_POSITION_P95_MAX_M:-10.0}" \
+              --altitude-rmse-max-m "''${RDD2_TRAJECTORY_ALTITUDE_RMSE_MAX_M:-0.02}" \
+              --attitude-p95-max-deg "''${RDD2_TRAJECTORY_ATTITUDE_P95_MAX_DEG:-5.0}" \
+              "$@"
+          '';
+
           host-tools = pkgs.buildEnv {
             name = "cerebri-rdd2-host-tools";
             paths = baseTools ++ [
@@ -422,6 +448,7 @@
               rdd2-flash
               rdd2-menuconfig
               rdd2-west-update
+              rdd2-trajectory-compare
             ];
           };
         in
@@ -433,6 +460,7 @@
             rdd2-flash
             rdd2-menuconfig
             rdd2-west-update
+            rdd2-trajectory-compare
             ;
 
           default = host-tools;
@@ -473,6 +501,12 @@
             type = "app";
             program = "${packages.rdd2-west-update}/bin/rdd2-west-update";
             meta.description = "Initialize or update the RDD2 west workspace";
+          };
+
+          trajectory-compare = {
+            type = "app";
+            program = "${packages.rdd2-trajectory-compare}/bin/rdd2-trajectory-compare";
+            meta.description = "Compare RDD2 mission trajectory logs and render overlays";
           };
         }
       );

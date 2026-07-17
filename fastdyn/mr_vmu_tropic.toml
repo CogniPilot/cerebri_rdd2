@@ -519,6 +519,8 @@ command = [
     "${RDD2_FASTDYN_MISSION_DURATION_S:-20}",
     "--report",
     "${RDD2_FASTDYN_REPORT:-out/cerebri_rdd2_mission.json}",
+    "--trajectory",
+    "${RDD2_MISSION_TRAJECTORY:-out/mission-trajectory.csv}",
 ]
 ready_message = "RDD2 mission runner connected"
 terminate_run_on_exit = true

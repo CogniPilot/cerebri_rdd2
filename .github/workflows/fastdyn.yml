@@ -19,11 +19,14 @@ jobs:
       - name: Check out RDD2
         uses: actions/checkout@v4
 
+      - name: Configure runtime state
+        run: echo "FASTDYN_STATE=$RUNNER_TEMP/fastdyn-state" >> "$GITHUB_ENV"
+
       - name: Check out FastDyn runtime
         uses: actions/checkout@v4
         with:
           repository: jgoppert/FastDyn
-          ref: fix/cerebri-fastdyn-lockstep
+          ref: c235932a60a7bb839e59cac111920fb3b5cbf1aa
           path: FastDyn
 
       - name: Install toolchains
@@ -41,27 +44,29 @@ jobs:
       - name: Build RDD2 rehosting firmware
         run: |
           nix run .#west-update
-          extra_conf="$(realpath fastdyn/prj.conf)"
+          conf_file="$(realpath fastdyn/prj.conf)"
           overlay="$(realpath fastdyn/mr_vmu_tropic.overlay)"
           RDD2_BUILD_DIR="$PWD/build-mr_vmu_tropic-fastdyn" nix run .#build -- -p always -- \
-            -DEXTRA_CONF_FILE="$extra_conf" \
+            -DCONF_FILE="$conf_file" \
             -DDTC_OVERLAY_FILE="$overlay"
 
       - name: Build generic FastDyn runtime
         working-directory: FastDyn
         run: |
-          python -m venv build/venv
-          PATH="$PWD/build/venv/bin:$PATH" \
-            ./setup.sh --venv build/venv --build-qemu --qemu-root build/qemu \
+          python -m venv "$FASTDYN_STATE/venv"
+          PATH="$FASTDYN_STATE/venv/bin:$PATH" \
+            ./setup.sh --venv "$FASTDYN_STATE/venv" \
+              --build-qemu --qemu-root "$FASTDYN_STATE/qemu" \
               --with-rumoca --skip-optifuzz
-          export PATH="$PWD/build/venv/bin:$PATH"
+          export PATH="$FASTDYN_STATE/venv/bin:$PATH"
           export PKG_CONFIG_PATH="$PWD/out/deps/cjson/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
           export LD_LIBRARY_PATH="$PWD/out/deps/cjson/install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          make qemu_path=build/qemu DEV=true PHY=true FLIGHT_CONTROLLERS=true FMU=true
+          make qemu_path="$FASTDYN_STATE/qemu" DEV=true PHY=true FLIGHT_CONTROLLERS=true FMU=true
           cmake -S boardrunner/boardrunner_sdk -B boardrunner/boardrunner_sdk/build \
             -DFASTDYN_INCLUDE_DIR="$PWD/include" \
-            -DQEMU_INCLUDE_DIR="$PWD/build/qemu/include"
+            -DQEMU_INCLUDE_DIR="$FASTDYN_STATE/qemu/include"
           cmake --build boardrunner/boardrunner_sdk/build -j2
+          echo "$FASTDYN_STATE/venv/bin" >> "$GITHUB_PATH"
 
       - name: Test RDD2 mission adapter
         run: cargo test --locked --manifest-path tools/fastdyn_mission/Cargo.toml
@@ -74,6 +79,8 @@ jobs:
       - name: Fly RDD2 mission
         env:
           FASTDYN_ROOT: ${{ github.workspace }}/FastDyn
+          FASTDYN_QEMU_PATH: ${{ env.FASTDYN_STATE }}/qemu/build/qemu-system-arm
+          FASTDYN_MONITOR_ELF: ${{ env.FASTDYN_STATE }}/qemu/ws/monitor.elf
           RDD2_FASTDYN_BUILD_DIR: ${{ github.workspace }}/build-mr_vmu_tropic-fastdyn
           RDD2_WORKSPACE_ROOT: ${{ env.RDD2_WEST_WORKSPACE }}
           RDD2_RUMOCA_PLANT_DESCRIPTION: ${{ env.RDD2_MODELICA_MODELS_ROOT }}/artifacts/vehicles/rdd2/plant/modelDescription.xml

@@ -12,13 +12,12 @@ V1 goals:
 - ICM45686 IMU only
 - one application hot-path thread
 - no dependency on the legacy `cerebri` module
-- no `double` in the control path
 
 Current implementation scope:
 - CEP-0002 platform layout under `rdd2/`
 - local FlexIO DSHOT driver vendored into this repo
 - Rumoca eFMI control code generated into the build tree
-- CRSF -> handwritten control -> quad-X mixer -> DSHOT
+- CRSF -> Rumoca-generated eFMI control and estimation -> quad-X mixer -> DSHOT
 - `ACRO` and `AUTO_LEVEL` manual flight modes
 - GNSS M10 path documented and devicetree-wired through Zephyr GNSS for later use
 
@@ -45,7 +44,8 @@ retain ENET and enable CSyn/Zenoh independently of lockstep pacing.
 
 CMake installs the pinned Rumoca release into the build tree, verifies the
 installer and binary hashes, and generates eFMI Production Code from
-`Vehicles.Rdd2.Controller` in the `modelica_models` West project under
+`Vehicles.Rdd2.Controller` and `Estimation.ComplementaryAttitude` in the
+`modelica_models` West project under
 `${CMAKE_BINARY_DIR}/generated/rumoca`. The reusable quadrotor plant, RDD2
 parameters, controller, and model-level qualification mission all remain in
 that common project. Generated C and `.efmu` containers are build outputs, not
@@ -81,8 +81,16 @@ Common commands are also exposed as flake apps:
 nix run .#west-update
 nix run .#build
 nix run .#build-native-sim
+nix run .#trajectory-compare
 nix run .#flash
 ```
+
+`trajectory-compare` reads the pure Modelica mission log plus the canonical SIL
+and BIL logs, renders full overlays under `artifacts/trajectory-comparison/`,
+and exits nonzero when the vehicle-owned error budget is exceeded. Run the
+three mission producers first. Set `RDD2_MODELICA_MODELS_ROOT` when the
+Modelica checkout is not at the default West path; all repositories may live
+independently.
 
 The shell defaults to the `gnuarmemb` Zephyr toolchain for
 `mr_vmu_tropic`. `rdd2-build-native-sim` overrides this to the host toolchain

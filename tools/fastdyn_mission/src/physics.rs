@@ -57,8 +57,8 @@ pub struct Plant {
     api: Api,
     instance: Instance,
     inputs: [ValueReference; 4],
-    outputs: [ValueReference; 12],
-    output_values: [f64; 12],
+    outputs: [ValueReference; 14],
+    output_values: [f64; 14],
     time: f64,
 }
 
@@ -82,6 +82,8 @@ impl Plant {
         let outputs = names_to_references(
             &references,
             &[
+                "x_m",
+                "y_m",
                 "z_m",
                 "vz_m_s",
                 "roll_rad",
@@ -150,7 +152,7 @@ impl Plant {
             instance,
             inputs,
             outputs,
-            output_values: [0.0; 12],
+            output_values: [0.0; 14],
             time: 0.0,
         };
         plant.read_outputs()?;
@@ -158,32 +160,40 @@ impl Plant {
     }
 
     pub fn altitude(&self) -> f64 {
-        self.output_values[0]
+        self.output_values[2]
     }
 
     pub fn vertical_speed(&self) -> f64 {
-        self.output_values[1]
+        self.output_values[3]
+    }
+
+    pub fn position(&self) -> [f64; 3] {
+        [
+            self.output_values[0],
+            self.output_values[1],
+            self.output_values[2],
+        ]
     }
 
     pub fn euler(&self) -> [f64; 3] {
         [
-            self.output_values[2],
-            self.output_values[3],
             self.output_values[4],
+            self.output_values[5],
+            self.output_values[6],
         ]
     }
 
     pub fn imu_flu(&self) -> ([f32; 3], [f32; 3]) {
         (
             [
-                self.output_values[5] as f32,
-                self.output_values[6] as f32,
                 self.output_values[7] as f32,
-            ],
-            [
                 self.output_values[8] as f32,
                 self.output_values[9] as f32,
+            ],
+            [
                 self.output_values[10] as f32,
+                self.output_values[11] as f32,
+                self.output_values[12] as f32,
             ],
         )
     }

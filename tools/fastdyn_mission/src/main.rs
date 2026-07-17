@@ -3,7 +3,8 @@ mod protocol;
 mod shared_memory;
 
 use std::env;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -21,6 +22,7 @@ const CONTROLLER_DT: f64 = 0.000_625;
 #[derive(Debug)]
 struct Options {
     report: PathBuf,
+    trajectory: PathBuf,
     duration: f64,
     response_timeout: Duration,
     controller_benchmark: Option<f64>,
@@ -60,6 +62,9 @@ struct Report {
 
 fn options() -> Result<Options> {
     let mut report = PathBuf::from("out/cerebri_rdd2_mission.json");
+    let mut trajectory = env::var_os("RDD2_MISSION_TRAJECTORY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("out/mission-trajectory.csv"));
     let mut duration: f64 = 20.0;
     let mut timeout_ms = 2_000_u64;
     let mut controller_benchmark = env::var("RDD2_FASTDYN_CONTROLLER_BENCHMARK_S")
@@ -86,6 +91,7 @@ fn options() -> Result<Options> {
         let value = || anyhow!("{arg} requires a value");
         match arg.as_str() {
             "--report" => report = args.next().ok_or_else(value)?.into(),
+            "--trajectory" => trajectory = args.next().ok_or_else(value)?.into(),
             "--duration" => duration = args.next().ok_or_else(value)?.parse()?,
             "--response-timeout-ms" => timeout_ms = args.next().ok_or_else(value)?.parse()?,
             "--controller-benchmark" => {
@@ -102,7 +108,7 @@ fn options() -> Result<Options> {
             "--minimum-speedup" => minimum_speedup = args.next().ok_or_else(value)?.parse()?,
             "-h" | "--help" => {
                 println!(
-                    "cerebri-rdd2-mission --shared-memory PATH (--firmware-elf PATH | --native-sim PATH) --plant-library PATH --plant-description PATH [--report PATH] [--duration SEC] [--controller-benchmark SEC] [--plant-dt SEC] [--minimum-speedup X]"
+                    "cerebri-rdd2-mission --shared-memory PATH (--firmware-elf PATH | --native-sim PATH) --plant-library PATH --plant-description PATH [--report PATH] [--trajectory PATH] [--duration SEC] [--controller-benchmark SEC] [--plant-dt SEC] [--minimum-speedup X]"
                 );
                 std::process::exit(0);
             }
@@ -120,6 +126,7 @@ fn options() -> Result<Options> {
     }
     Ok(Options {
         report,
+        trajectory,
         duration,
         response_timeout: Duration::from_millis(timeout_ms),
         controller_benchmark,
@@ -237,6 +244,17 @@ fn write_report(path: &PathBuf, report: &Report) -> Result<()> {
         .with_context(|| format!("cannot write report {}", path.display()))
 }
 
+fn trajectory_writer(path: &Path) -> Result<BufWriter<File>> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut writer = BufWriter::new(
+        File::create(path).with_context(|| format!("cannot create {}", path.display()))?,
+    );
+    writeln!(writer, "time_s,x_m,y_m,z_m,roll_rad,pitch_rad,yaw_rad")?;
+    Ok(writer)
+}
+
 fn run_controller_benchmark<F>(options: &Options, exchange: &mut F) -> Result<()>
 where
     F: FnMut(
@@ -293,6 +311,7 @@ where
     let wall_start = Instant::now();
     let mut firmware_ready = false;
     let mut firmware_armed = false;
+    let mut trajectory = trajectory_writer(&options.trajectory)?;
 
     let mission_steps = (options.duration / options.plant_dt).round() as u64;
     while report.plant_steps < mission_steps {
@@ -336,6 +355,12 @@ where
         }
 
         let euler = plant.euler();
+        let position = plant.position();
+        writeln!(
+            trajectory,
+            "{simulated_time:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9}",
+            position[0], position[1], position[2], euler[0], euler[1], euler[2]
+        )?;
         let roll = radians_to_degrees(euler[0]).abs();
         let pitch = radians_to_degrees(euler[1]).abs();
         report.max_altitude_m = report.max_altitude_m.max(plant.altitude());
@@ -368,6 +393,7 @@ where
     report.controller_ticks_expected = (report.simulated_seconds / CONTROLLER_DT).round() as u64;
     report.final_altitude_m = plant.altitude();
     report.final_vertical_speed_m_s = plant.vertical_speed();
+    trajectory.flush()?;
     evaluate(&mut report);
     write_report(&options.report, &report)?;
     println!(

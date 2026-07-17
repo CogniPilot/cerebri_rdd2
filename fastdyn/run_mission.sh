@@ -13,6 +13,7 @@ export RDD2_FASTDYN_BUILD_DIR="${RDD2_FASTDYN_BUILD_DIR:-$vehicle_root/build-mr_
 config="${FASTDYN_RDD2_CONFIG:-$vehicle_root/fastdyn/mr_vmu_tropic.toml}"
 work_dir="${FASTDYN_RDD2_WORK_DIR:-$vehicle_root/artifacts/bil/work}"
 report="${FASTDYN_RDD2_REPORT:-$work_dir/cerebri_rdd2_mission.json}"
+trajectory="${FASTDYN_RDD2_TRAJECTORY:-$work_dir/mission-trajectory.csv}"
 log_file="${FASTDYN_RDD2_LOG:-$vehicle_root/artifacts/bil/mission.log}"
 timeout_sec="${FASTDYN_RDD2_TIMEOUT_SEC:-300}"
 network_setup="${FASTDYN_RDD2_NETWORK_SETUP:-false}"
@@ -59,6 +60,7 @@ if [[ "$network_setup" == "true" ]]; then
 fi
 
 export RDD2_FASTDYN_REPORT="$report"
+export RDD2_MISSION_TRAJECTORY="$trajectory"
 export FASTDYN_QEMU_MEMORY_DIR="$work_dir/memory"
 export FASTDYN_QMP_SOCKET="/tmp/fastdyn-rdd2-ci-qmp.sock"
 
@@ -71,8 +73,8 @@ run_rc=$?
 set -e
 overall_end_ns="$(date +%s%N)"
 
-if [[ ! -s "$report" ]]; then
-  echo "[ci] RDD2 mission did not produce $report (fastdyn rc=$run_rc)" >&2
+if [[ ! -s "$report" || ! -s "$trajectory" ]]; then
+  echo "[ci] RDD2 mission did not produce its report and trajectory (fastdyn rc=$run_rc)" >&2
   tail -200 "$log_file" >&2
   exit 1
 fi

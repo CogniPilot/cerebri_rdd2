@@ -158,6 +158,12 @@ rdd2_add_efmi_control_model(
   Vehicles_Rdd2_Controller
 )
 
+rdd2_add_efmi_control_model(
+  Estimation/ComplementaryAttitude.mo
+  Estimation.ComplementaryAttitude
+  Estimation_ComplementaryAttitude
+)
+
 add_custom_target(rdd2_efmi_control_codegen
   DEPENDS ${RDD2_EFMI_CONTROL_STAMPS}
 )

@@ -51,7 +51,7 @@ manifest:
       path: modules/lib/cerebri_lockstep
     - name: modelica_models
       remote: cognipilot
-      revision: c6cf47f5cbd0bb4dc77d16d19a685e534487d0da
+      revision: d319854bcbe5758f8beace3c99c6068796585d3f
       path: models/modelica_models
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git

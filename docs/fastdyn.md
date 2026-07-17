@@ -27,11 +27,11 @@ nix run .#west-update
 Build the ARM binary and mission host:
 
 ```sh
-extra_conf="$(realpath fastdyn/prj.conf)"
+conf_file="$(realpath fastdyn/prj.conf)"
 overlay="$(realpath fastdyn/mr_vmu_tropic.overlay)"
 RDD2_BUILD_DIR="$PWD/build-mr_vmu_tropic-fastdyn" \
   nix run .#build -- -p always -- \
-    -DEXTRA_CONF_FILE="$extra_conf" \
+    -DCONF_FILE="$conf_file" \
     -DDTC_OVERLAY_FILE="$overlay"
 
 cargo test --locked --manifest-path tools/fastdyn_mission/Cargo.toml
@@ -65,6 +65,7 @@ The default 20 ms plant macro-step advances all 32 controller ticks at
 asynchronous diagnostics channel, and set `FASTDYN_RDD2_NETWORK_SETUP=true`
 for that profile.
 
-The mission writes its report and log below `artifacts/bil/`. It verifies
-arming, takeoff, roll and pitch response, eventful landing contact, final
-disarm, and execution speed.
+The mission writes its report and log below `artifacts/bil/`, plus the
+canonical `work/mission-trajectory.csv` consumed by
+`nix run .#trajectory-compare`. It verifies arming, takeoff, roll and pitch
+response, eventful landing contact, final disarm, and execution speed.
