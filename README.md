@@ -71,6 +71,22 @@ west build -b mr_vmu_tropic cerebri_rdd2
 This repo includes a flake for repeatable Zephyr host tooling on NixOS and
 other Linux systems with Nix:
 
+> First-time Nix setup:
+>Install Nix using the install script from nixos.org https://nixos.org/download/
+> 
+>Add a config file:
+>```sh
+>mkdir -p ~/.config/nix
+>```
+
+Allow experimental features needed to run the next commands:
+
+```sh
+echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+```
+
+Build the workspace:
+
 ```sh
 nix develop
 rdd2-west-update
