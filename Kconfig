@@ -1,5 +1,10 @@
 source "Kconfig.zephyr"
 
+config TOP_SHELL
+    bool "Enable top-like screen in shell"
+    depends on SHELL
+    default y
+    
 menu "RDD2"
 
 rsource "subsys/Kconfig"
