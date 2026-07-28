@@ -23,12 +23,6 @@ Current implementation scope:
 - `ACRO` and `AUTO_LEVEL` manual flight modes
 - GNSS M10 path documented and devicetree-wired through Zephyr GNSS for later use
 
-Build from this directory:
-
-```sh
-west build -b mr_vmu_tropic
-```
-
 RDD2 uses the same pinned CSyn module as CUBS2. CSyn owns the `synapse_fbs`
 release, generated C headers, topic catalog, canonical Zenoh keys, payload
 sizes, and transport bridge; RDD2 does not carry a second schema-fetch or
@@ -53,17 +47,30 @@ parameters, controller, and model-level qualification mission all remain in
 that common project. Generated C and `.efmu` containers are build outputs, not
 committed source.
 
-To bootstrap a fresh minimal workspace from this repo's manifest, check out
-this repo at `<workspace>/cerebri_rdd2` and initialize west from the workspace
-root:
+## Raw Zephyr Build 
+
+To bootstrap a fresh minimal workspace from this repo's manifest, you must first
+install Zephyr's dependencies to the [getting started guide]
+(https://docs.zephyrproject.org/latest/develop/getting_started/index.html), 
+then check out this repo at `<workspace>/cerebri_rdd2` and initialize west from the
+workspace root:
 
 ```sh
+sudo apt-get install --no-install-recommends git cmake ninja-build gperf \
+  ccache dfu-util device-tree-compiler wget \
+  python3-dev python3-pip python3-setuptools python3-tk python3-wheel xz-utils file \
+  make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1
 mkdir -p /tmp/cerebri-ws
 git clone <repo-url> /tmp/cerebri-ws/cerebri_rdd2
 cd /tmp/cerebri-ws
+python -m venv .venv
+source .venv/activate/bin
+pip install west
 west init -l cerebri_rdd2
 west update
-west build -b mr_vmu_tropic cerebri_rdd2
+west packages pip --install
+west sdk install -t arm-zephyr-eabi
+west build -p -b mr_vmu_tropic cerebri_rdd2
 ```
 
 ## Nix / NixOS

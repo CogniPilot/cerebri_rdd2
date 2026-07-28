@@ -9,6 +9,7 @@
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/misc/nxp_flexio_dshot/nxp_flexio_dshot.h>
+#include <zephyr/drivers/pwm.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
 
@@ -19,7 +20,11 @@
 
 #include <csyn/csyn.h>
 
-#define DSHOT_NODE DT_ALIAS(motors)
+#if defined (CONFIG_PWM)
+#define PWM_FREQ CONFIG_PWM_FREQUENCY
+#endif
+
+#define MOTOR_NODE DT_ALIAS(motors)
 
 static atomic_t g_motor_test_active;
 static rdd2_motor_values_t g_motor_test_values;
@@ -74,10 +79,14 @@ static uint16_t motor_to_dshot(float normalized, bool armed) {
 }
 
 static uint64_t motor_output_trigger_and_timestamp(void) {
-  const struct device *const dshot_dev = DEVICE_DT_GET(DSHOT_NODE);
+  const struct device *const dshot_dev = DEVICE_DT_GET(MOTOR_NODE);
 
+#if defined(CONFIG_RDD2_DSHOT)
   nxp_flexio_dshot_trigger(dshot_dev);
   return nxp_flexio_dshot_last_trigger_ns_get(dshot_dev);
+#else
+  return (uint64_t)k_uptime_get_32();
+#endif
 }
 
 void rdd2_motor_output_init(void) {
@@ -107,7 +116,7 @@ void rdd2_motor_output_init(void) {
 }
 
 bool rdd2_motor_output_ready(void) {
-  return device_is_ready(DEVICE_DT_GET(DSHOT_NODE));
+  return device_is_ready(DEVICE_DT_GET(MOTOR_NODE));
 }
 
 uint64_t rdd2_motor_output_write_all(const rdd2_motor_values_t *motors,
@@ -125,16 +134,22 @@ uint64_t rdd2_motor_output_write_all(const rdd2_motor_values_t *motors,
   if (!rdd2_imu_stream_lockstep_at_target()) {
     return 0U;
   }
-#endif
-
+#elif defined(CONFIG_RDD2_DSHOT)
   for (size_t i = 0; i < 4U; i++) {
     applied_values[i] =
         armed ? clampf(motor_values[i], min_output, 1.0f) : 0.0f;
     raw_values[i] =
         motor_to_dshot(applied_values[i], armed && applied_values[i] > 0.0f);
-    nxp_flexio_dshot_data_set(DEVICE_DT_GET(DSHOT_NODE), i, raw_values[i],
+    nxp_flexio_dshot_data_set(DEVICE_DT_GET(MOTOR_NODE), i, raw_values[i],
                               false);
   }
+#else
+  for (size_t i = 0; i < 4U; i++) {
+    applied_values[i] =
+        armed ? clampf(motor_values[i], min_output, 1.0f) : 0.0f;
+    pwm_set(DEVICE_DT_GET(MOTOR_NODE), i, PWM_HZ(PWM_FREQ), PWM_HZ(PWM_FREQ) / UINT16_MAX * applied_values[i], PWM_POLARITY_NORMAL);
+  }
+#endif
 
   motor_output_publish(&applied, &raw, armed, test_mode);
   return motor_output_trigger_and_timestamp();
@@ -153,8 +168,7 @@ uint64_t rdd2_motor_output_write_all_raw(const rdd2_motor_raw_t *raw,
   if (!rdd2_imu_stream_lockstep_at_target()) {
     return 0U;
   }
-#endif
-
+#elif defined(CONFIG_RDD2_DSHOT)
   for (size_t i = 0; i < 4U; i++) {
     uint16_t value = raw_values[i];
 
@@ -173,8 +187,15 @@ uint64_t rdd2_motor_output_write_all_raw(const rdd2_motor_raw_t *raw,
           (float)(value - DSHOT_MIN) / (float)(DSHOT_MAX - DSHOT_MIN);
       armed = true;
     }
-    nxp_flexio_dshot_data_set(DEVICE_DT_GET(DSHOT_NODE), i, value, false);
+    nxp_flexio_dshot_data_set(DEVICE_DT_GET(MOTOR_NODE), i, value, false);
   }
+#else
+  for (size_t i = 0; i < 4U; i++) {
+    applied_values[i] =
+        armed ? clampf(raw_values[i], 0.0f, 1.0f) : 0.0f;
+    pwm_set(DEVICE_DT_GET(MOTOR_NODE), i, PWM_HZ(PWM_FREQ), PWM_HZ(PWM_FREQ) * applied_values[i], PWM_POLARITY_NORMAL);
+  }
+#endif
 
   motor_output_publish(&applied, &clamped, armed, test_mode);
   return motor_output_trigger_and_timestamp();
