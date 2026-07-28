@@ -4,6 +4,11 @@ config TOP_SHELL
     bool "Enable top-like screen in shell"
     depends on SHELL
     default y
+
+config PWM_FREQUENCY
+    int "PWM motors frequency in Hz"
+    depends on PWM
+    default 400
     
 menu "RDD2"
 
