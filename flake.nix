@@ -27,6 +27,9 @@
             packaging
             pyelftools
             pykwalify
+            # Required by Zephyr's jlink runner: runners/jlink.py imports
+            # pylink and refuses to run without it.
+            pylink-square
             pyserial
             pyyaml
             requests
