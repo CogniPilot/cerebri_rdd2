@@ -21,13 +21,46 @@ Current implementation scope:
 - Rumoca eFMI control code generated into the build tree
 - CRSF -> Rumoca-generated eFMI control and estimation -> quad-X mixer -> DSHOT
 - `ACRO` and `AUTO_LEVEL` manual flight modes
-- GNSS M10 path documented and devicetree-wired through Zephyr GNSS for later use
+- GNSS on the `gnss` topic from either the onboard M10 through Zephyr GNSS or
+  a fix injected over the telemetry radio
 
 Build from this directory:
 
 ```sh
-west build -b mr_vmu_tropic
+west build -b mr_vmu_tropic                   # GNSS from the onboard M10
+west build -b mr_vmu_tropic -S mocap-gnss     # GNSS injected over the radio
 ```
+
+## Choosing the GNSS source
+
+One `gnss` topic, one 64-byte catalog contract, two possible producers. The
+topic's direction is the selector, so the two are mutually exclusive by
+construction and a fix can never have two origins:
+
+| Source | Topic direction | How |
+|---|---|---|
+| Onboard M10 via Zephyr GNSS | `CSYN_DIR_TX` | default |
+| Injected over the telemetry radio | `CSYN_DIR_RX` | `-S mocap-gnss` |
+
+Consumers read the fix through `rdd2_topic_gnss_copy()` and cannot tell which
+filled it. The default follows the devicetree: an enabled `gnss` node selects
+the onboard source, and disabling it falls back to injection, so the node
+status and the Kconfig choice cannot disagree.
+
+`mocap-gnss` is the indoor configuration — position comes from motion capture
+over the radio, and the onboard driver is left out entirely so `lpuart2` stays
+free. `test_scripts/publish_gps_synapse.py` is the bridge that feeds it.
+
+For the onboard default, `current-speed` on `lpuart2` in
+`boards/mr_vmu_tropic.overlay` must match the receiver's actual serial rate;
+it is set to 38400, the u-blox M10 factory default on UART1. Generic NMEA
+reports no accuracy figures, so those fields are published saturated at 65535
+— "unusable" — rather than claiming a precision the driver does not have, and
+vertical velocity and receiver yaw are absent with their validity bits clear.
+Real accuracy needs a UBX driver.
+
+See `test_scripts/README.md` for injecting a fix from a laptop or from motion
+capture, and `tools/synapse_serial/README.md` for the wire format.
 
 RDD2 uses the same pinned CSyn module as CUBS2. CSyn owns the `synapse_fbs`
 release, generated C headers, topic catalog, canonical Zenoh keys, payload
