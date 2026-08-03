@@ -11,3 +11,4 @@ artifacts/
 result
 result-*
 /tools/fastdyn_mission/target/
+.venv/
