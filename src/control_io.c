@@ -19,7 +19,6 @@ LOG_MODULE_DECLARE(rdd2, LOG_LEVEL_INF);
 #define RC_NODE    DT_ALIAS(rc)
 #define IMU_NODE   DT_ALIAS(imu0)
 #define DSHOT_NODE DT_ALIAS(motors)
-#define GNSS_NODE  DT_ALIAS(gnss)
 
 static bool ready_or_log(const struct device *dev, const char *name)
 {
@@ -36,7 +35,6 @@ int rdd2_control_io_init(void)
 	const struct device *const rc_dev = DEVICE_DT_GET(RC_NODE);
 	const struct device *const imu_dev = DEVICE_DT_GET(IMU_NODE);
 	const struct device *const dshot_dev = DEVICE_DT_GET(DSHOT_NODE);
-	const struct device *const gnss_dev = DEVICE_DT_GET_OR_NULL(GNSS_NODE);
 
 	rdd2_rc_input_init();
 
@@ -47,9 +45,8 @@ int rdd2_control_io_init(void)
 	ready_or_log(rc_dev, "rc");
 	ready_or_log(imu_dev, "imu");
 
-	if (gnss_dev != NULL && device_is_ready(gnss_dev)) {
-		LOG_INF("gnss path ready");
-	}
+	/* GNSS is not a control input and brings itself up in
+	 * subsys/gnss_source, which reports through `gnss status`. */
 
 	if (nxp_flexio_dshot_channel_count(dshot_dev) != 4U) {
 		LOG_ERR("expected 4 dshot channels");

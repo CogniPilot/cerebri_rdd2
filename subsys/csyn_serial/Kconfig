@@ -1,0 +1,96 @@
+config RDD2_CSYN_SERIAL
+	bool "Enable the CSyn serial transport"
+	depends on CSYN
+	depends on SERIAL
+	depends on SERIAL_SUPPORT_INTERRUPT
+	select UART_INTERRUPT_DRIVEN
+	select RING_BUFFER
+	select CRC
+	default n
+	help
+	  Carry declared CSyn topics over a plain UART using the compact
+	  synapse serial framing described in fbs/transport.fbs:
+	  [sync][len][topic_id][seq][flags][bare payload][crc16].
+
+	  This is the transport for constrained links such as a SiK
+	  telemetry radio. Inbound frames are published into the CSyn topic
+	  store, outbound topics are rate limited to fit the air rate.
+	  Requires a "csyn-serial" devicetree alias naming the UART.
+
+if RDD2_CSYN_SERIAL
+
+config RDD2_CSYN_SERIAL_MAX_PAYLOAD
+	int "Largest topic payload carried over the serial link"
+	default 128
+	range 8 512
+	help
+	  Frames with a larger payload are dropped and counted. Fixed-layout
+	  struct topics are at most 64 bytes in synapse_fbs 0.7, so the
+	  default leaves headroom without reserving a full flatbuffer buffer.
+
+config RDD2_CSYN_SERIAL_TX_MIN_INTERVAL_MS
+	int "Minimum milliseconds between frames of the same topic"
+	default 200
+	range 0 10000
+	help
+	  Per-topic decimation for the outbound direction. The flight state
+	  topics publish at 200 Hz, which is roughly seven times what a
+	  57600 baud SiK link can carry, so outbound topics are throttled
+	  rather than dropped at the UART. 200 ms gives 5 Hz per topic.
+
+config RDD2_CSYN_SERIAL_RX_RING_SIZE
+	int "Receive ring buffer size in bytes"
+	default 512
+	range 64 4096
+
+config RDD2_CSYN_SERIAL_TX_RING_SIZE
+	int "Transmit ring buffer size in bytes"
+	default 1024
+	range 64 8192
+
+config RDD2_CSYN_SERIAL_MAX_TOPICS
+	int "Maximum declared CSyn topics tracked by this transport"
+	default 32
+	range 1 64
+
+config RDD2_CSYN_SERIAL_POLL_MS
+	int "Transport thread poll period in milliseconds"
+	default 5
+	range 1 100
+
+config RDD2_CSYN_SERIAL_THREAD_PRIORITY
+	int "Transport thread priority"
+	default 7
+	help
+	  Must stay below the control loop and the CRSF input thread. The
+	  transport never touches the rate loop.
+
+config RDD2_CSYN_SERIAL_THREAD_STACK_SIZE
+	int "Transport thread stack size"
+	default 2048
+	range 1024 8192
+
+config RDD2_CSYN_SERIAL_ECHO_KEY
+	string "Also transmit this inbound topic"
+	default ""
+	help
+	  Wire key of one CSYN_DIR_RX topic to stream back out as telemetry in
+	  addition to accepting it inbound. Empty, the default, echoes nothing.
+
+	  This exists for the case where the vehicle's only knowledge of some
+	  state is what was injected into it. With the gnss topic inbound there
+	  is no onboard receiver and no estimator downstream of the fix, so a
+	  ground station would otherwise get no position at all; echoing the
+	  accepted fix is what lets it draw the vehicle on a map, and it doubles
+	  as proof the injected frame was accepted rather than counted as an
+	  error.
+
+	  The echo is rate-limited and change-detected like any other outbound
+	  topic, so it costs one frame per TX interval, not one per injection.
+	  A ground station must not re-inject what it receives here: that closes
+	  a loop the transport cannot detect, because an echoed frame is
+	  indistinguishable from a fresh one.
+
+	  An unknown key is reported at init and otherwise ignored.
+
+endif

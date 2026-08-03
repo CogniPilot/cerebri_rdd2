@@ -30,6 +30,17 @@ CSYN_TOPIC_DEFINE(att_sp, "att_sp", CSYN_DIR_TX,
                   sizeof(synapse_topic_AttitudeCommandData_t));
 CSYN_TOPIC_DEFINE(loop, "loop", CSYN_DIR_TX,
                   sizeof(synapse_topic_ControlLoopMetricsData_t));
+/* The fix lands on one 64-byte catalog contract whatever produced it, so
+ * consumers never care which source filled it. The direction is the source
+ * selector, which makes the two mutually exclusive by construction: injected
+ * over the radio it is RX and the transport accepts it inbound; produced by
+ * the onboard receiver it is TX and the transport streams it out. */
+#if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
+#define RDD2_GNSS_TOPIC_DIR CSYN_DIR_TX
+#else
+#define RDD2_GNSS_TOPIC_DIR CSYN_DIR_RX
+#endif
+CSYN_TOPIC_DEFINE(gnss, "gnss", RDD2_GNSS_TOPIC_DIR, sizeof(synapse_topic_GnssFixData_t));
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(manual_control, struct csyn_manual_control);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(inertial_sample,
                                    synapse_topic_InertialSampleData_t);
@@ -89,6 +100,33 @@ bool rdd2_topic_flight_state_copy_blob(uint8_t *buf, size_t buf_size,
   }
   *len = sizeof(*state);
   return true;
+}
+
+/* Called from the GNSS driver's own workqueue, never the control loop. */
+bool rdd2_topic_gnss_publish(const synapse_topic_GnssFixData_t *fix) {
+  struct csyn_topic *topic = csyn_topic_find("gnss");
+
+  if (fix == NULL || topic == NULL) {
+    return false;
+  }
+
+  return csyn_topic_publish(topic, fix, sizeof(*fix));
+}
+
+/* The CSyn store is already the latest-value store for the fix, so GNSS gets
+ * no zros mirror and no thread of its own until something in the firmware
+ * actually consumes it. SPEC_0005 forbids GNSS in the rate loop, so every
+ * caller of this is off the hot path by construction. */
+bool rdd2_topic_gnss_copy(synapse_topic_GnssFixData_t *fix, uint32_t *generation) {
+  struct csyn_topic *topic = csyn_topic_find("gnss");
+  size_t len = 0U;
+
+  if (fix == NULL || topic == NULL) {
+    return false;
+  }
+
+  return csyn_topic_copy(topic, fix, sizeof(*fix), &len, generation) &&
+         len == sizeof(*fix);
 }
 
 uint32_t rdd2_topic_motor_output_generation(void) {
