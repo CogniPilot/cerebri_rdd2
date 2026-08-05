@@ -24,13 +24,6 @@ Current implementation scope:
 - GNSS on the `gnss` topic from either the onboard M10 through Zephyr GNSS or
   a fix injected over the telemetry radio
 
-Build from this directory:
-
-```sh
-west build -b mr_vmu_tropic                   # GNSS from the onboard M10
-west build -b mr_vmu_tropic -S mocap-gnss     # GNSS injected over the radio
-```
-
 ## Choosing the GNSS source
 
 One `gnss` topic, one 64-byte catalog contract, two possible producers. The
@@ -86,17 +79,30 @@ parameters, controller, and model-level qualification mission all remain in
 that common project. Generated C and `.efmu` containers are build outputs, not
 committed source.
 
-To bootstrap a fresh minimal workspace from this repo's manifest, check out
-this repo at `<workspace>/cerebri_rdd2` and initialize west from the workspace
-root:
+## Raw Zephyr Build 
+
+To bootstrap a fresh minimal workspace from this repo's manifest, you must first
+install Zephyr's dependencies to the [getting started guide]
+(https://docs.zephyrproject.org/latest/develop/getting_started/index.html), 
+then check out this repo at `<workspace>/cerebri_rdd2` and initialize west from the
+workspace root:
 
 ```sh
+sudo apt-get install --no-install-recommends git cmake ninja-build gperf \
+  ccache dfu-util device-tree-compiler wget \
+  python3-dev python3-pip python3-setuptools python3-tk python3-wheel xz-utils file \
+  make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1
 mkdir -p /tmp/cerebri-ws
 git clone <repo-url> /tmp/cerebri-ws/cerebri_rdd2
 cd /tmp/cerebri-ws
+python -m venv .venv
+source .venv/activate/bin
+pip install west
 west init -l cerebri_rdd2
 west update
-west build -b mr_vmu_tropic cerebri_rdd2
+west packages pip --install
+west sdk install -t arm-zephyr-eabi
+west build -p -b mr_vmu_tropic cerebri_rdd2
 ```
 
 ## Nix / NixOS
@@ -126,15 +132,38 @@ rdd2-west-update
 rdd2-build
 ```
 
+On NixOS, add the SEGGER udev rule to the configuration of each development
+host so logged-in users can access J-Link USB probes:
+
+```nix
+{
+  services.udev.extraRules = ''
+    SUBSYSTEM=="usb", ATTR{idVendor}=="1366", MODE="0660", GROUP="dialout", TAG+="uaccess"
+  '';
+
+  users.users.your-user.extraGroups = [ "dialout" ];
+}
+```
+
+Run `sudo nixos-rebuild switch --flake .#your-host`, then reconnect the probe.
+The `rdd2-flash` command detects an inaccessible J-Link and reports this setup
+requirement before invoking West.
+
 Common commands are also exposed as flake apps:
 
 ```sh
 nix run .#west-update
 nix run .#build
 nix run .#build-native-sim
+nix run .#console
 nix run .#trajectory-compare
 nix run .#flash
 ```
+
+`rdd2-console` opens a serial console at 115200 baud using stable
+`/dev/serial/by-id` names. When multiple adapters are connected, it asks which
+one to use and remembers the selection. Run `rdd2-console --select` to choose
+again, or override it with `--device PATH` and `--baud RATE`.
 
 `trajectory-compare` reads the pure Modelica mission log plus the canonical SIL
 and BIL logs, renders full overlays under `artifacts/trajectory-comparison/`,
@@ -168,29 +197,6 @@ The Nix commands use an isolated RDD2 West workspace under
 `.devenv/state/west/` by default. Set `RDD2_WEST_WORKSPACE=/path/to/workspace`
 to choose its location explicitly; the selected workspace is governed only by
 this repository's `west.yml`.
-
-On NixOS, import the module and enable host tools plus debug-probe access:
-
-```nix
-{
-  inputs.cerebri-rdd2.url = "path:/path/to/cerebri_rdd2";
-
-  outputs = { self, nixpkgs, cerebri-rdd2, ... }: {
-    nixosConfigurations.devbox = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        cerebri-rdd2.nixosModules.default
-        {
-          programs.cerebri-rdd2 = {
-            enable = true;
-            users = [ "alice" ];
-          };
-        }
-      ];
-    };
-  };
-}
-```
 
 Important assumptions:
 

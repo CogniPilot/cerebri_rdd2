@@ -14,7 +14,20 @@
         "aarch64-linux"
       ];
       forAllSystems = lib.genAttrs supportedSystems;
-      pkgsFor = system: import nixpkgs { inherit system; };
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          config = {
+            allowUnfreePredicate =
+              pkg:
+              builtins.elem (lib.getName pkg) [
+                "segger-jlink"
+                "segger-systemview"
+              ];
+            segger-jlink.acceptLicense = true;
+          };
+        };
       mkPythonEnv =
         pkgs:
         pkgs.python3.withPackages (
@@ -46,8 +59,56 @@
           pkgs = pkgsFor system;
           pythonEnv = mkPythonEnv pkgs;
           hostCc = if system == "x86_64-linux" then pkgs.gcc_multi else pkgs.stdenv.cc;
+          jlinkCli = pkgs.segger-jlink-headless.overrideAttrs {
+            postInstall = ''
+              install -Dm755 JLinkExe $out/opt/SEGGER/JLink/JLinkExe
+              mkdir -p $out/bin
+              ln -s $out/opt/SEGGER/JLink/JLinkExe $out/bin/JLinkExe
+              ln -s $out/opt/SEGGER/JLink/JLinkExe $out/bin/JLink
+            '';
+          };
+          systemView = pkgs.stdenv.mkDerivation {
+            pname = "segger-systemview";
+            version = "4.10b";
+            src = pkgs.fetchurl {
+              name = "SystemView_Linux_V410b_x86_64.tgz";
+              url = "https://www.segger.com/downloads/systemview/systemview_linux_tgz64";
+              hash = "sha256-RFH+ZfMp+VO8q8W91Q0GzAbPEJgUWfIKWYu+dGdagRc=";
+              curlOpts = "--data accept_license_agreement=accepted";
+            };
+            nativeBuildInputs = [ pkgs.autoPatchelfHook ];
+            buildInputs = with pkgs; [
+              fontconfig
+              freetype
+              libGL
+              libice
+              libsm
+              libx11
+              libxcursor
+              libxext
+              libxfixes
+              libxrandr
+              libxrender
+              stdenv.cc.cc.lib
+            ];
+            dontBuild = true;
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/bin $out/opt/SEGGER/SystemView
+              cp -R . $out/opt/SEGGER/SystemView
+              ln -s $out/opt/SEGGER/SystemView/SystemView $out/bin/SystemView
+              runHook postInstall
+            '';
+            meta = {
+              description = "SEGGER SystemView real-time software analysis tool";
+              homepage = "https://www.segger.com/products/development-tools/systemview/";
+              license = lib.licenses.unfree;
+              platforms = [ "x86_64-linux" ];
+            };
+          };
           hostMultilibTools = lib.optionals (system == "x86_64-linux") [
             pkgs.glibc_multi.dev
+            systemView
           ];
 
           baseTools = [
@@ -72,6 +133,8 @@
             pkgs.picocom
             pkgs.pkg-config
             pkgs.python3Packages.pyocd
+            pkgs.screen
+            jlinkCli
             hostCc
             pkgs.unzip
             pkgs.which
@@ -196,6 +259,8 @@
 
           commonScript = ''
             ${workspaceScript}
+
+            export LD_LIBRARY_PATH="${jlinkCli}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             rdd2_require_module_paths() {
               local workspace="$1"
@@ -341,6 +406,28 @@
           rdd2-flash = mkWestApp "rdd2-flash" ''
             ${commonScript}
 
+            rdd2_require_jlink_access() {
+              local sysdev busnum devnum usbdev
+
+              for sysdev in /sys/bus/usb/devices/*; do
+                [ -r "$sysdev/idVendor" ] || continue
+                [ "$(<"$sysdev/idVendor")" = "1366" ] || continue
+                [ -r "$sysdev/busnum" ] || continue
+                [ -r "$sysdev/devnum" ] || continue
+
+                busnum="$(<"$sysdev/busnum")"
+                devnum="$(<"$sysdev/devnum")"
+                usbdev="$(printf '/dev/bus/usb/%03d/%03d' "$((10#$busnum))" "$((10#$devnum))")"
+
+                if [ ! -r "$usbdev" ] || [ ! -w "$usbdev" ]; then
+                  printf 'error: J-Link USB device %s is not accessible to user %s\n' "$usbdev" "$(id -un)" >&2
+                  printf '       on NixOS, add the SEGGER udev rule documented in README.md and rebuild the system\n' >&2
+                  printf '       then reconnect the probe before running rdd2-flash again\n' >&2
+                  return 1
+                fi
+              done
+            }
+
             app="$(rdd2_find_app)"
             rdd2_export_common "$app"
             rdd2_require_workspace "$app"
@@ -351,11 +438,15 @@
             board="''${RDD2_BOARD:-mr_vmu_tropic}"
             board_slug="''${board//\//_}"
             build_dir="''${RDD2_BUILD_DIR:-$app/build-$board_slug}"
-            runner="''${RDD2_FLASH_RUNNER:-pyocd}"
+            runner="''${RDD2_FLASH_RUNNER:-jlink}"
             runner_args=()
 
             if [ -n "$runner" ]; then
               runner_args=(--runner "$runner")
+            fi
+
+            if [ "$runner" = "jlink" ]; then
+              rdd2_require_jlink_access
             fi
 
             cd "$workspace"
@@ -443,6 +534,101 @@
               "$@"
           '';
 
+          rdd2-console = pkgs.writeShellApplication {
+            name = "rdd2-console";
+            runtimeInputs = [ pkgs.coreutils pkgs.screen ];
+            text = ''
+              baud="''${RDD2_CONSOLE_BAUD:-115200}"
+              device="''${RDD2_CONSOLE_DEVICE:-}"
+              force_select=0
+              state_dir="''${XDG_STATE_HOME:-$HOME/.local/state}/cerebri-rdd2"
+              state_file="$state_dir/console-device"
+
+              usage() {
+                printf 'usage: rdd2-console [--select] [--device PATH] [--baud RATE]\n'
+              }
+
+              while [ "$#" -gt 0 ]; do
+                case "$1" in
+                  --select)
+                    force_select=1
+                    shift
+                    ;;
+                  --device)
+                    [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+                    device="$2"
+                    shift 2
+                    ;;
+                  --baud)
+                    [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+                    baud="$2"
+                    shift 2
+                    ;;
+                  -h|--help)
+                    usage
+                    exit 0
+                    ;;
+                  *)
+                    printf 'error: unknown argument: %s\n' "$1" >&2
+                    usage >&2
+                    exit 2
+                    ;;
+                esac
+              done
+
+              if [ -z "$device" ] && [ "$force_select" -eq 0 ] && [ -r "$state_file" ]; then
+                device="$(<"$state_file")"
+                if [ ! -e "$device" ]; then
+                  printf 'remembered serial device is disconnected: %s\n' "$device" >&2
+                  device=""
+                fi
+              fi
+
+              if [ -z "$device" ]; then
+                shopt -s nullglob
+                devices=(/dev/serial/by-id/*)
+
+                if [ "''${#devices[@]}" -eq 0 ]; then
+                  printf 'error: no stable serial devices found under /dev/serial/by-id\n' >&2
+                  exit 1
+                elif [ "''${#devices[@]}" -eq 1 ]; then
+                  device="''${devices[0]}"
+                else
+                  if [ ! -t 0 ]; then
+                    printf 'error: multiple serial devices found; rerun interactively or use --device PATH\n' >&2
+                    exit 1
+                  fi
+
+                  printf 'Select the RDD2 serial device:\n'
+                  for i in "''${!devices[@]}"; do
+                    printf '  %d) %s -> %s\n' "$((i + 1))" "''${devices[$i]##*/}" "$(readlink -f "''${devices[$i]}")"
+                  done
+
+                  while true; do
+                    read -r -p "Device [1-''${#devices[@]}]: " choice
+                    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "''${#devices[@]}" ]; then
+                      device="''${devices[$((choice - 1))]}"
+                      break
+                    fi
+                    printf 'Please enter a number from 1 to %d.\n' "''${#devices[@]}" >&2
+                  done
+                fi
+
+                mkdir -p "$state_dir"
+                printf '%s\n' "$device" > "$state_file"
+                printf 'Remembering %s (change with rdd2-console --select).\n' "$device"
+              fi
+
+              if [ ! -r "$device" ] || [ ! -w "$device" ]; then
+                printf 'error: serial device is not accessible: %s\n' "$device" >&2
+                printf 'check dialout group membership and the NixOS udev setup in README.md\n' >&2
+                exit 1
+              fi
+
+              exec screen "$device" "$baud"
+            '';
+          };
+
           host-tools = pkgs.buildEnv {
             name = "cerebri-rdd2-host-tools";
             paths = baseTools ++ [
@@ -450,6 +636,7 @@
               rdd2-build-native-sim
               rdd2-flash
               rdd2-menuconfig
+              rdd2-console
               rdd2-west-update
               rdd2-trajectory-compare
             ];
@@ -462,6 +649,7 @@
             rdd2-build-native-sim
             rdd2-flash
             rdd2-menuconfig
+            rdd2-console
             rdd2-west-update
             rdd2-trajectory-compare
             ;
@@ -500,6 +688,12 @@
             meta.description = "Run Zephyr menuconfig for RDD2";
           };
 
+          console = {
+            type = "app";
+            program = "${packages.rdd2-console}/bin/rdd2-console";
+            meta.description = "Open a remembered RDD2 serial console at 115200 baud";
+          };
+
           west-update = {
             type = "app";
             program = "${packages.rdd2-west-update}/bin/rdd2-west-update";
@@ -529,6 +723,7 @@
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
               export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
+              export LD_LIBRARY_PATH="${packages.host-tools}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
               rdd2_shell_find_app() {
                 local dir
@@ -579,7 +774,7 @@
                 export ZEPHYR_BASE="$PWD/zephyr"
               fi
 
-              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-flash"
+              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-flash, rdd2-console"
             '';
           };
         }

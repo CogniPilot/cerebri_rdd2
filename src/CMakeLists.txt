@@ -18,7 +18,7 @@ target_sources(app PRIVATE
   synapse_messages.c
 )
 
-target_sources_ifdef(CONFIG_SHELL app PRIVATE
+target_sources_ifdef(CONFIG_TOP_SHELL app PRIVATE
   top_shell.c
 )
 

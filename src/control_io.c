@@ -18,7 +18,7 @@ LOG_MODULE_DECLARE(rdd2, LOG_LEVEL_INF);
 
 #define RC_NODE    DT_ALIAS(rc)
 #define IMU_NODE   DT_ALIAS(imu0)
-#define DSHOT_NODE DT_ALIAS(motors)
+#define MOTOR_NODE DT_ALIAS(motors)
 
 static bool ready_or_log(const struct device *dev, const char *name)
 {
@@ -34,13 +34,9 @@ int rdd2_control_io_init(void)
 {
 	const struct device *const rc_dev = DEVICE_DT_GET(RC_NODE);
 	const struct device *const imu_dev = DEVICE_DT_GET(IMU_NODE);
-	const struct device *const dshot_dev = DEVICE_DT_GET(DSHOT_NODE);
+	const struct device *const motor_dev = DEVICE_DT_GET(MOTOR_NODE);
 
 	rdd2_rc_input_init();
-
-	if (!ready_or_log(dshot_dev, "dshot")) {
-		return -ENODEV;
-	}
 
 	ready_or_log(rc_dev, "rc");
 	ready_or_log(imu_dev, "imu");
@@ -48,10 +44,25 @@ int rdd2_control_io_init(void)
 	/* GNSS is not a control input and brings itself up in
 	 * subsys/gnss_source, which reports through `gnss status`. */
 
-	if (nxp_flexio_dshot_channel_count(dshot_dev) != 4U) {
+#if defined(CONFIG_RDD2_DSHOT)
+	if (!ready_or_log(motor_dev, "dshot")) {
+		return -ENODEV;
+	}
+
+	if (nxp_flexio_dshot_channel_count(motor_dev) != 4U) {
 		LOG_ERR("expected 4 dshot channels");
 		return -EINVAL;
 	}
+#elif defined(CONFIG_PWM)
+	if (!device_is_ready(motor_dev)) {
+		LOG_ERR("PWM device not found!");
+		return -EINVAL;
+	}
+#else
+
+#pragma message( "Using Virtual Output" )
+
+#endif
 
 	return rdd2_imu_stream_init();
 }
