@@ -100,15 +100,38 @@ rdd2-west-update
 rdd2-build
 ```
 
+On NixOS, add the SEGGER udev rule to the configuration of each development
+host so logged-in users can access J-Link USB probes:
+
+```nix
+{
+  services.udev.extraRules = ''
+    SUBSYSTEM=="usb", ATTR{idVendor}=="1366", MODE="0660", GROUP="dialout", TAG+="uaccess"
+  '';
+
+  users.users.your-user.extraGroups = [ "dialout" ];
+}
+```
+
+Run `sudo nixos-rebuild switch --flake .#your-host`, then reconnect the probe.
+The `rdd2-flash` command detects an inaccessible J-Link and reports this setup
+requirement before invoking West.
+
 Common commands are also exposed as flake apps:
 
 ```sh
 nix run .#west-update
 nix run .#build
 nix run .#build-native-sim
+nix run .#console
 nix run .#trajectory-compare
 nix run .#flash
 ```
+
+`rdd2-console` opens a serial console at 115200 baud using stable
+`/dev/serial/by-id` names. When multiple adapters are connected, it asks which
+one to use and remembers the selection. Run `rdd2-console --select` to choose
+again, or override it with `--device PATH` and `--baud RATE`.
 
 `trajectory-compare` reads the pure Modelica mission log plus the canonical SIL
 and BIL logs, renders full overlays under `artifacts/trajectory-comparison/`,
@@ -142,29 +165,6 @@ The Nix commands use an isolated RDD2 West workspace under
 `.devenv/state/west/` by default. Set `RDD2_WEST_WORKSPACE=/path/to/workspace`
 to choose its location explicitly; the selected workspace is governed only by
 this repository's `west.yml`.
-
-On NixOS, import the module and enable host tools plus debug-probe access:
-
-```nix
-{
-  inputs.cerebri-rdd2.url = "path:/path/to/cerebri_rdd2";
-
-  outputs = { self, nixpkgs, cerebri-rdd2, ... }: {
-    nixosConfigurations.devbox = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        cerebri-rdd2.nixosModules.default
-        {
-          programs.cerebri-rdd2 = {
-            enable = true;
-            users = [ "alice" ];
-          };
-        }
-      ];
-    };
-  };
-}
-```
 
 Important assumptions:
 
