@@ -79,9 +79,9 @@ static uint16_t motor_to_dshot(float normalized, bool armed) {
 }
 
 static uint64_t motor_output_trigger_and_timestamp(void) {
+#if defined(CONFIG_RDD2_DSHOT) && !defined(CONFIG_RDD2_LOCKSTEP)
   const struct device *const dshot_dev = DEVICE_DT_GET(MOTOR_NODE);
 
-#if defined(CONFIG_RDD2_DSHOT)
   nxp_flexio_dshot_trigger(dshot_dev);
   return nxp_flexio_dshot_last_trigger_ns_get(dshot_dev);
 #else
@@ -134,14 +134,18 @@ uint64_t rdd2_motor_output_write_all(const rdd2_motor_values_t *motors,
   if (!rdd2_imu_stream_lockstep_at_target()) {
     return 0U;
   }
-#elif defined(CONFIG_RDD2_DSHOT)
+#endif
+
+#if defined(CONFIG_RDD2_DSHOT) || defined(CONFIG_RDD2_LOCKSTEP)
   for (size_t i = 0; i < 4U; i++) {
     applied_values[i] =
         armed ? clampf(motor_values[i], min_output, 1.0f) : 0.0f;
     raw_values[i] =
         motor_to_dshot(applied_values[i], armed && applied_values[i] > 0.0f);
+#if defined(CONFIG_RDD2_DSHOT) && !defined(CONFIG_RDD2_LOCKSTEP)
     nxp_flexio_dshot_data_set(DEVICE_DT_GET(MOTOR_NODE), i, raw_values[i],
                               false);
+#endif
   }
 #else
   for (size_t i = 0; i < 4U; i++) {
@@ -168,7 +172,9 @@ uint64_t rdd2_motor_output_write_all_raw(const rdd2_motor_raw_t *raw,
   if (!rdd2_imu_stream_lockstep_at_target()) {
     return 0U;
   }
-#elif defined(CONFIG_RDD2_DSHOT)
+#endif
+
+#if defined(CONFIG_RDD2_DSHOT) || defined(CONFIG_RDD2_LOCKSTEP)
   for (size_t i = 0; i < 4U; i++) {
     uint16_t value = raw_values[i];
 
@@ -187,7 +193,9 @@ uint64_t rdd2_motor_output_write_all_raw(const rdd2_motor_raw_t *raw,
           (float)(value - DSHOT_MIN) / (float)(DSHOT_MAX - DSHOT_MIN);
       armed = true;
     }
+#if defined(CONFIG_RDD2_DSHOT) && !defined(CONFIG_RDD2_LOCKSTEP)
     nxp_flexio_dshot_data_set(DEVICE_DT_GET(MOTOR_NODE), i, value, false);
+#endif
   }
 #else
   for (size_t i = 0; i < 4U; i++) {

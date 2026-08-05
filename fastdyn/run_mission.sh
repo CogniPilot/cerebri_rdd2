@@ -64,11 +64,23 @@ export RDD2_MISSION_TRAJECTORY="$trajectory"
 export FASTDYN_QEMU_MEMORY_DIR="$work_dir/memory"
 export FASTDYN_QMP_SOCKET="/tmp/fastdyn-rdd2-ci-qmp.sock"
 
+rm -f "$report" "$trajectory"
 echo "[ci] launching rehosted cerebri_rdd2 mission" | tee -a "$log_file"
 overall_start_ns="$(date +%s%N)"
+stopped_after_report=false
 set +e
-timeout --signal=INT --kill-after=10 "$timeout_sec" \
-  fastdyn run -c "$config" -o "$work_dir" >>"$log_file" 2>&1
+setsid timeout --signal=INT --kill-after=10 "$timeout_sec" \
+  fastdyn run -c "$config" -o "$work_dir" >>"$log_file" 2>&1 &
+run_pid=$!
+while kill -0 "$run_pid" 2>/dev/null; do
+  if [[ -s "$report" && -s "$trajectory" ]]; then
+    stopped_after_report=true
+    kill -INT -- "-$run_pid" 2>/dev/null || true
+    break
+  fi
+  sleep 0.1
+done
+wait "$run_pid"
 run_rc=$?
 set -e
 overall_end_ns="$(date +%s%N)"
@@ -113,7 +125,7 @@ if [[ "$passed" != "true" ]]; then
   exit 1
 fi
 
-if ((run_rc != 0)); then
+if [[ "$stopped_after_report" != "true" ]] && ((run_rc != 0)); then
   echo "[ci] FastDyn exited with status $run_rc after producing the report" >&2
   exit "$run_rc"
 fi

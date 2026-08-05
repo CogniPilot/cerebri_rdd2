@@ -14,7 +14,9 @@ manifest:
   projects:
     - name: zephyr
       remote: cognipilot
-      revision: bf19ff6eb2cff5aac91242af56b514273cdf9a94 # upstream main 8/5/26 plus minimal RDD2 patches
+      # branch: rdd2-upstream-main
+      # pinned: 2026-08-05
+      revision: bf19ff6eb2cff5aac91242af56b514273cdf9a94
       path: zephyr
       west-commands: scripts/west-commands.yml
     - name: cmsis

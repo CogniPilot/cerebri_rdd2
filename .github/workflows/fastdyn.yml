@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: jgoppert/FastDyn
-          ref: c235932a60a7bb839e59cac111920fb3b5cbf1aa
+          ref: 94c85f3e47be410e8d760b7f8207eb1580d7cd4c
           path: FastDyn
 
       - name: Install toolchains
@@ -35,8 +35,8 @@ jobs:
           sudo apt-get install -y \
             build-essential cmake device-tree-compiler git jq \
             libexpat1-dev libfdt-dev libglib2.0-dev libprotobuf-dev \
-            libpixman-1-dev libssl-dev meson ninja-build pkg-config \
-            protobuf-compiler python3-venv zlib1g-dev
+            libpixman-1-dev libssl-dev libudev-dev meson ninja-build pkg-config \
+            protobuf-compiler python3-venv universal-ctags zlib1g-dev
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: cachix/install-nix-action@v31
@@ -69,7 +69,9 @@ jobs:
           echo "$FASTDYN_STATE/venv/bin" >> "$GITHUB_PATH"
 
       - name: Test RDD2 mission adapter
-        run: cargo test --locked --manifest-path tools/fastdyn_mission/Cargo.toml
+        run: |
+          cargo test --locked --manifest-path tools/fastdyn_mission/Cargo.toml
+          cargo build --release --locked --manifest-path tools/fastdyn_mission/Cargo.toml
 
       - name: Export RDD2 FMI plant
         run: |

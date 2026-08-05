@@ -49,6 +49,26 @@
             west
           ]
         );
+      mkFastDynCiTools =
+        pkgs: with pkgs; [
+          cargo
+          rustc
+          universal-ctags
+          meson
+          jq
+          pkg-config
+          protobuf
+        ];
+      mkFastDynCiLibraries =
+        pkgs: with pkgs; [
+          dtc
+          expat
+          glib
+          openssl
+          pixman
+          systemd
+          zlib
+        ];
     in
     {
       packages = forAllSystems (
@@ -187,6 +207,7 @@
             jlinkCli
             hostCc
             pkgs.unzip
+            pkgs.util-linux
             pkgs.which
             pkgs.xz
             pkgs.zip
@@ -885,15 +906,19 @@
           pkgs = pkgsFor system;
           pythonEnv = mkPythonEnv pkgs;
           packages = self.packages.${system};
+          fastDynCiTools = mkFastDynCiTools pkgs;
+          fastDynCiLibraries = mkFastDynCiLibraries pkgs;
         in
         {
           default = pkgs.mkShell {
-            packages = [ packages.host-tools ];
+            nativeBuildInputs = [ packages.host-tools ] ++ fastDynCiTools;
+            buildInputs = fastDynCiLibraries;
 
             shellHook = ''
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
               export ZEPHYR_SDK_INSTALL_DIR="''${ZEPHYR_SDK_INSTALL_DIR:-${packages.zephyr-sdk}}"
               export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
+              export CMAKE_POLICY_VERSION_MINIMUM="''${CMAKE_POLICY_VERSION_MINIMUM:-3.5}"
               export LD_LIBRARY_PATH="${packages.host-tools}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
               rdd2_shell_find_app() {
