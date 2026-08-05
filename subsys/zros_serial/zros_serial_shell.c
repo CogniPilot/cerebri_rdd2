@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "csyn_serial.h"
+#include "zros_serial.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,26 +13,26 @@
 #include <zephyr/shell/shell.h>
 
 /* Reads stored counters only; the transport thread is never disturbed. */
-static int cmd_csyn_serial_status(const struct shell *sh, size_t argc, char **argv)
+static int cmd_zros_serial_status(const struct shell *sh, size_t argc, char **argv)
 {
-	struct rdd2_csyn_serial_stats stats;
+	struct rdd2_zros_serial_stats stats;
 
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
-	rdd2_csyn_serial_stats_get(&stats);
+	rdd2_zros_serial_stats_get(&stats);
 
-	shell_print(sh, "port=%s baud=%u ready=%s init_rc=%d", rdd2_csyn_serial_port_name(),
-		    (unsigned int)rdd2_csyn_serial_baud(),
-		    rdd2_csyn_serial_ready() ? "yes" : "no", rdd2_csyn_serial_init_result());
+	shell_print(sh, "port=%s baud=%u ready=%s init_rc=%d", rdd2_zros_serial_port_name(),
+		    (unsigned int)rdd2_zros_serial_baud(),
+		    rdd2_zros_serial_ready() ? "yes" : "no", rdd2_zros_serial_init_result());
 	shell_print(sh, "rx  frames=%u crc_err=%u bad_len=%u unknown=%u wrong_dir=%u",
 		    (unsigned int)stats.rx_frames, (unsigned int)stats.rx_crc_errors,
 		    (unsigned int)stats.rx_bad_length, (unsigned int)stats.rx_unknown_topic,
 		    (unsigned int)stats.rx_wrong_direction);
 	shell_print(sh, "rx  seq_gaps=%u ring_overrun=%u", (unsigned int)stats.rx_seq_gaps,
 		    (unsigned int)stats.rx_ring_overrun);
-	shell_print(sh, "tx  frames=%u dropped=%u oversize=%u", (unsigned int)stats.tx_frames,
-		    (unsigned int)stats.tx_dropped, (unsigned int)stats.tx_oversize);
+	shell_print(sh, "tx  frames=%u dropped=%u", (unsigned int)stats.tx_frames,
+		    (unsigned int)stats.tx_dropped);
 
 	return 0;
 }
@@ -40,7 +40,7 @@ static int cmd_csyn_serial_status(const struct shell *sh, size_t argc, char **ar
 /*
  * Which UART the radio is actually plugged into is a wiring question the
  * firmware cannot infer, and rebuilding once per candidate is slow. The scan
- * listens on every port named by a csyn-scanN alias at once and reports where
+ * listens on every port named by a zros-scanN alias at once and reports where
  * bytes appear, so one flash answers it.
  */
 struct scan_port {
@@ -95,7 +95,7 @@ static void scan_port_open(const struct scan_port *port, struct scan_state *st, 
 
 	/* Taking RX interrupts back keeps the transport from eating the very
 	 * bytes the scan is looking for on its own port. */
-	if (rdd2_csyn_serial_owns(port->dev)) {
+	if (rdd2_zros_serial_owns(port->dev)) {
 		uart_irq_rx_disable(port->dev);
 		st->reclaimed = true;
 	}
@@ -128,7 +128,7 @@ static void scan_port_close(const struct scan_port *port, struct scan_state *st)
 	}
 }
 
-static int cmd_csyn_serial_scan(const struct shell *sh, size_t argc, char **argv)
+static int cmd_zros_serial_scan(const struct shell *sh, size_t argc, char **argv)
 {
 	struct scan_state state[ARRAY_SIZE(g_scan_ports)] = {0};
 	size_t count = ARRAY_SIZE(g_scan_ports) - 1U;
@@ -138,7 +138,7 @@ static int cmd_csyn_serial_scan(const struct shell *sh, size_t argc, char **argv
 	uint32_t total = 0U;
 
 	if (count == 0U) {
-		shell_warn(sh, "no csyn-scanN devicetree aliases defined");
+		shell_warn(sh, "no zros-scanN devicetree aliases defined");
 		return 0;
 	}
 
@@ -156,7 +156,7 @@ static int cmd_csyn_serial_scan(const struct shell *sh, size_t argc, char **argv
 
 	/* Must happen before any port is reconfigured: the transport and this
 	 * command otherwise race on the same peripheral register. */
-	rdd2_csyn_serial_pause(true);
+	rdd2_zros_serial_pause(true);
 
 	for (size_t i = 0U; i < count; i++) {
 		if (!device_is_ready(g_scan_ports[i].dev)) {
@@ -180,8 +180,8 @@ static int cmd_csyn_serial_scan(const struct shell *sh, size_t argc, char **argv
 
 			while (uart_poll_in(g_scan_ports[i].dev, &c) == 0) {
 				state[i].bytes++;
-				if (state[i].prev == RDD2_CSYN_SERIAL_SYNC0 &&
-				    c == RDD2_CSYN_SERIAL_SYNC1) {
+				if (state[i].prev == RDD2_ZROS_SERIAL_SYNC0 &&
+				    c == RDD2_ZROS_SERIAL_SYNC1) {
 					state[i].syncs++;
 				}
 				/*
@@ -215,7 +215,7 @@ static int cmd_csyn_serial_scan(const struct shell *sh, size_t argc, char **argv
 		scan_port_close(&g_scan_ports[i], &state[i]);
 	}
 
-	rdd2_csyn_serial_pause(false);
+	rdd2_zros_serial_pause(false);
 
 	shell_print(sh, "%-10s %-20s %8s %6s %6s %6s  %s", "alias", "node", "bytes", "sync", "nmea",
 		    "ubx", "verdict");
@@ -235,7 +235,7 @@ static int cmd_csyn_serial_scan(const struct shell *sh, size_t argc, char **argv
 			verdict = "not scanned (device not ready)";
 		} else if (sync_hits >= SCAN_MIN_HITS && sync_hits >= nmea_hits &&
 			   sync_hits >= ubx_hits) {
-			verdict = "SYNAPSE FRAMES -- point csyn-serial here";
+			verdict = "SYNAPSE FRAMES -- point zros-serial here";
 		} else if (nmea_hits >= SCAN_MIN_HITS && nmea_hits >= ubx_hits) {
 			verdict = "NMEA -- point the gnss node here at this baud";
 		} else if (ubx_hits >= SCAN_MIN_HITS) {
@@ -247,7 +247,7 @@ static int cmd_csyn_serial_scan(const struct shell *sh, size_t argc, char **argv
 		}
 
 		total += state[i].bytes;
-		shell_print(sh, "csyn-scan%-3u %-20s %8u %6u %6u %6u  %s", (unsigned int)i,
+		shell_print(sh, "zros-scan%-3u %-20s %8u %6u %6u %6u  %s", (unsigned int)i,
 			    g_scan_ports[i].name, (unsigned int)state[i].bytes,
 			    (unsigned int)state[i].syncs, (unsigned int)state[i].nmea,
 			    (unsigned int)state[i].ubx, verdict);
@@ -267,7 +267,7 @@ static int cmd_csyn_serial_scan(const struct shell *sh, size_t argc, char **argv
  * means a misframed text protocol, b5 62 means UBX, d3 means RTCM, and evenly
  * distributed high bits mean the rate is simply wrong.
  */
-static int cmd_csyn_serial_dump(const struct shell *sh, size_t argc, char **argv)
+static int cmd_zros_serial_dump(const struct shell *sh, size_t argc, char **argv)
 {
 	static uint8_t buf[256];
 	struct scan_state state = {0};
@@ -293,7 +293,7 @@ static int cmd_csyn_serial_dump(const struct shell *sh, size_t argc, char **argv
 		return -ENODEV;
 	}
 
-	rdd2_csyn_serial_pause(true);
+	rdd2_zros_serial_pause(true);
 	scan_port_open(&g_scan_ports[idx], &state, baud);
 
 	deadline = k_uptime_get() + 5000;
@@ -307,7 +307,7 @@ static int cmd_csyn_serial_dump(const struct shell *sh, size_t argc, char **argv
 	}
 
 	scan_port_close(&g_scan_ports[idx], &state);
-	rdd2_csyn_serial_pause(false);
+	rdd2_zros_serial_pause(false);
 
 	shell_print(sh, "%s @ %u baud: %u bytes", g_scan_ports[idx].name, (unsigned int)baud,
 		    (unsigned int)got);
@@ -330,15 +330,15 @@ static int cmd_csyn_serial_dump(const struct shell *sh, size_t argc, char **argv
 	return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_csyn_serial,
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_zros_serial,
 			       SHELL_CMD(status, NULL, "serial link counters",
-					 cmd_csyn_serial_status),
+					 cmd_zros_serial_status),
 			       SHELL_CMD_ARG(scan, NULL,
 					     "find the radio's port: scan [seconds] [baud]",
-					     cmd_csyn_serial_scan, 1, 2),
+					     cmd_zros_serial_scan, 1, 2),
 			       SHELL_CMD_ARG(dump, NULL,
 					     "hex dump a port: dump <scanN> <baud> [bytes]",
-					     cmd_csyn_serial_dump, 3, 1),
+					     cmd_zros_serial_dump, 3, 1),
 			       SHELL_SUBCMD_SET_END);
 
-SHELL_CMD_REGISTER(csyn_serial, &sub_csyn_serial, "csyn serial transport diagnostics", NULL);
+SHELL_CMD_REGISTER(zros_serial, &sub_zros_serial, "zros serial transport diagnostics", NULL);

@@ -8,10 +8,10 @@
 		imu0 = &icm45686;
 		motors = &dshot;
 		gnss = &gnss0;
-		csyn-serial = &lpuart4;
+		zros-serial = &lpuart4;
 
 		/*
-		 * Candidates for `csyn_serial scan`, which listens on all of
+		 * Candidates for `zros_serial scan`, which listens on all of
 		 * them at once to find which header the radio is on. Only
 		 * UARTs no driver owns may be listed: the scan reconfigures
 		 * the baud and polls for bytes, which would fight any driver
@@ -19,16 +19,16 @@
 		 * and lpuart2 belongs to the GNSS receiver in the default
 		 * build, so the mocap-gnss snippet adds lpuart2 instead.
 		 */
-		csyn-scan0 = &lpuart3;
-		csyn-scan1 = &lpuart4;
-		csyn-scan2 = &lpuart5;
+		zros-scan0 = &lpuart3;
+		zros-scan1 = &lpuart4;
+		zros-scan2 = &lpuart5;
 	};
 };
 
 /*
  * SiK telemetry radio carrying the compact synapse serial framing. All three
  * candidate TELEM ports carry the radio's rate, not just the one the
- * csyn-serial alias currently names: `csyn_serial scan` configures the baud
+ * zros-serial alias currently names: `zros_serial scan` configures the baud
  * itself and restores it afterwards, so a port that scans clean at 57600
  * would otherwise still come up at the devicetree default and see nothing.
  * 57600 is the SiK factory default; change all three together if the radios

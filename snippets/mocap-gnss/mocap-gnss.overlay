@@ -4,9 +4,9 @@
  * Take the gnss topic from an injected fix instead of the onboard receiver:
  * motion capture or a ground station supplies it over the telemetry radio.
  *
- * Disabling the node drops CONFIG_GNSS_NMEA_GENERIC, so the driver and its
- * modem chat machinery are not compiled at all and lpuart2 stays free. That
- * also makes lpuart2 scannable with `csyn_serial scan`, which is the easy way
+ * Disabling the node deselects RDD2_GNSS_SOURCE_ONBOARD, so the UBX reader in
+ * subsys/gnss_source is not compiled at all and lpuart2 stays free. That
+ * also makes lpuart2 scannable with `zros_serial scan`, which is the easy way
  * to find what serial rate the receiver is actually running at before
  * switching back to the onboard default.
  */
@@ -22,6 +22,6 @@
 		 * legal scan target. This is how you find what serial rate the
 		 * receiver actually runs at before switching back to onboard.
 		 */
-		csyn-scan3 = &lpuart2;
+		zros-scan3 = &lpuart2;
 	};
 };

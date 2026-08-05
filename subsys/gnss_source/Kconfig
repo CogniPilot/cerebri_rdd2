@@ -3,18 +3,18 @@ choice RDD2_GNSS_SOURCE
 	default RDD2_GNSS_SOURCE_ONBOARD if DT_HAS_COGNIPILOT_UBX_GNSS_ENABLED
 	default RDD2_GNSS_SOURCE_RADIO
 	help
-	  Which producer fills the synapse gnss topic. The two are mutually
-	  exclusive by construction: the choice also sets the topic direction,
-	  so a fix can only ever have one origin and an injected fix cannot
-	  silently race an onboard one.
+	  Which producer publishes the gnss_fix topic. The two are mutually
+	  exclusive by construction: the choice decides which one registers as
+	  the topic's single publisher, so a fix can only ever have one origin
+	  and an injected fix cannot silently race an onboard one.
 
 config RDD2_GNSS_SOURCE_RADIO
-	bool "Injected over the csyn serial link"
+	bool "Injected over the zros serial link"
 	help
-	  The gnss topic is declared CSYN_DIR_RX. A ground station or a mocap
-	  bridge supplies the fix over the radio and the transport accepts it
-	  inbound. This is the right choice for indoor flight, where the
-	  receiver may be plugged in but has no sky view and position comes
+	  The serial transport carries the gnss_fix topic inbound and is its
+	  registered publisher. A ground station or a mocap bridge supplies the
+	  fix over the radio. This is the right choice for indoor flight, where
+	  the receiver may be plugged in but has no sky view and position comes
 	  from motion capture instead.
 
 	  Reached with the mocap-gnss snippet, which also disables the
@@ -27,9 +27,9 @@ config RDD2_GNSS_SOURCE_ONBOARD
 	select RING_BUFFER
 	select UART_INTERRUPT_DRIVEN
 	help
-	  The gnss topic is declared CSYN_DIR_TX: the onboard receiver fills
-	  it and the serial transport streams it out as telemetry. This is the
-	  default whenever the devicetree gnss node is enabled.
+	  This reader publishes the gnss_fix topic and the serial transport
+	  streams it out as telemetry. This is the default whenever the
+	  devicetree gnss node is enabled.
 
 	  Decodes UBX-NAV-PVT, which the receiver streams unprompted, so
 	  nothing is sent to the module and no configuration is required. That

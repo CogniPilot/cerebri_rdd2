@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Ground-side peer for the RDD2 CSyn serial transport.
+"""Ground-side peer for the RDD2 synapse serial transport.
 
 Speaks the compact synapse serial framing that ``fbs/transport.fbs`` points
 constrained byte-stream links at, so it can inject a GNSS fix into the vehicle
@@ -35,7 +35,7 @@ HEADER_SIZE = 8
 TRAILER_SIZE = 2
 CRC_SEED = 0xFFFF
 
-# Must match CONFIG_RDD2_CSYN_SERIAL_MAX_PAYLOAD (subsys/csyn_serial/Kconfig).
+# Must match CONFIG_RDD2_ZROS_SERIAL_MAX_PAYLOAD (subsys/zros_serial/Kconfig).
 # Accepting a larger length here than the firmware does is not permissive, it
 # is wrong: the firmware rejects an over-long length immediately and recovers
 # the frame behind it, while a decoder that waits for the bogus payload

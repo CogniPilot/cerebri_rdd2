@@ -1,6 +1,6 @@
 menu "Subsystems"
 
-rsource "csyn_serial/Kconfig"
+rsource "zros_serial/Kconfig"
 rsource "gnss_source/Kconfig"
 rsource "lockstep/Kconfig"
 

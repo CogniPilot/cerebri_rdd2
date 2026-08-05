@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 /*
- * Opt-in harness: points the csyn serial transport at native_sim's second PTY
+ * Opt-in harness: points the zros serial transport at native_sim's second PTY
  * UART so the real firmware framer and parser can be driven from the host by
  * synapse_serial.py. Not part of any default image; pass it explicitly with
  * EXTRA_DTC_OVERLAY_FILE. See README.md.
@@ -13,10 +13,10 @@
 
 / {
 	aliases {
-		csyn-serial = &uart1;
-		/* Same port, so `csyn_serial scan` can be exercised too: the
+		zros-serial = &uart1;
+		/* Same port, so `zros_serial scan` can be exercised too: the
 		 * scan takes RX interrupts back from the transport for its
 		 * duration and returns them afterwards. */
-		csyn-scan0 = &uart1;
+		zros-scan0 = &uart1;
 	};
 };

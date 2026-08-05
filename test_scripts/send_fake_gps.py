@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stream a fake GNSS fix to the drone over the SiK telemetry radio.
 
-Bring-up check for the csyn serial transport: answers "is the drone receiving
+Bring-up check for the zros serial transport: answers "is the drone receiving
 anything at all?" without needing a real GPS.
 
     ./send_fake_gps.py                     # /dev/ttyUSB0 at 57600
@@ -11,7 +11,7 @@ anything at all?" without needing a real GPS.
 
 Then on the drone shell:
 
-    csyn_serial status      -> rx frames= should be climbing
+    zros_serial status      -> rx frames= should be climbing
     csyn topic echo gnss    -> latitude should be ticking upward
 
 The position walks slowly north on purpose, so a frozen value on the drone
@@ -59,7 +59,7 @@ def main() -> int:
         return 1
 
     print(f"sending fake gnss -> {args.device} @ {args.baud} baud, {args.rate} Hz")
-    print("watch the drone with:  csyn_serial status   /   csyn topic echo gnss")
+    print("watch the drone with:  zros_serial status   /   csyn topic echo gnss")
     print("ctrl-c to stop\n")
 
     lat_e7 = int(round(args.lat * 1e7))

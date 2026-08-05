@@ -1,8 +1,13 @@
 # synapse_serial
 
-Ground-side peer for the RDD2 CSyn serial transport (`subsys/csyn_serial/`),
-plus an opt-in `native_sim` harness for exercising that transport without
-hardware.
+Ground-side peer for the RDD2 synapse serial transport
+(`subsys/zros_serial/`), plus an opt-in `native_sim` harness for exercising
+that transport without hardware.
+
+The directory and Kconfig names still say `csyn`, but the transport carries
+ZROS topics and does not link CSyn. What it shares with CSyn is the
+`synapse_fbs` catalog the `topic_id` field indexes, which is why the ids below
+match the ones the Ethernet side uses.
 
 The link carries bare fixed-layout `synapse_fbs` payload structs inside the
 compact framing `fbs/transport.fbs` prescribes for constrained byte streams:
@@ -30,8 +35,8 @@ Needs `pyserial`. The default baud matches the SiK factory setting.
 ./synapse_serial.py monitor   /dev/ttyUSB0       # decode what the vehicle sends
 ```
 
-On the vehicle: `csyn topic echo gnss` for the fix, `csyn_serial status` for
-link counters.
+On the vehicle: `zros topic echo gnss_fix` for the fix, `zros_serial status`
+for link counters.
 
 ## Running it without a radio
 
@@ -51,7 +56,7 @@ The binary prints `uart_1 connected to pseudotty: /dev/pts/N`; point
 `send-gnss` or `monitor` at that path.
 
 `-wait_uart` matters: the transport emits its first outbound frame within one
-`CONFIG_RDD2_CSYN_SERIAL_TX_MIN_INTERVAL_MS` of boot, and without the flag
+`CONFIG_RDD2_ZROS_SERIAL_TX_MIN_INTERVAL_MS` of boot, and without the flag
 that frame is gone before a client can attach.
 
 Note the sim's control loop only advances under lockstep, so flight-state

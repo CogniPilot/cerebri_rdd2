@@ -4,7 +4,10 @@
 
 #include "topic_bus.h"
 
+/* Only this file bridges the two buses: it declares the CSyn side of the
+ * Ethernet path and defines the zros storage its bridge mirrors into. */
 #include <csyn/csyn.h>
+#include <csyn/csyn_zros.h>
 
 #include <zephyr/sys/atomic.h>
 
@@ -30,17 +33,6 @@ CSYN_TOPIC_DEFINE(att_sp, "att_sp", CSYN_DIR_TX,
                   sizeof(synapse_topic_AttitudeCommandData_t));
 CSYN_TOPIC_DEFINE(loop, "loop", CSYN_DIR_TX,
                   sizeof(synapse_topic_ControlLoopMetricsData_t));
-/* The fix lands on one 64-byte catalog contract whatever produced it, so
- * consumers never care which source filled it. The direction is the source
- * selector, which makes the two mutually exclusive by construction: injected
- * over the radio it is RX and the transport accepts it inbound; produced by
- * the onboard receiver it is TX and the transport streams it out. */
-#if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
-#define RDD2_GNSS_TOPIC_DIR CSYN_DIR_TX
-#else
-#define RDD2_GNSS_TOPIC_DIR CSYN_DIR_RX
-#endif
-CSYN_TOPIC_DEFINE(gnss, "gnss", RDD2_GNSS_TOPIC_DIR, sizeof(synapse_topic_GnssFixData_t));
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(manual_control, struct csyn_manual_control);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(inertial_sample,
                                    synapse_topic_InertialSampleData_t);
@@ -54,6 +46,10 @@ ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(attitude_command,
                                    synapse_topic_AttitudeCommandData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(control_loop_metrics,
                                    synapse_topic_ControlLoopMetricsData_t);
+/* GNSS is internal-bus only. The serial transport carries it to and from the
+ * ground directly off this topic; nothing mirrors it onto CSyn, so a fix does
+ * not appear on the Ethernet/Zenoh side. */
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(gnss_fix, synapse_topic_GnssFixData_t);
 
 uint32_t rdd2_topic_generation(const struct zros_topic *topic) {
   return (uint32_t)atomic_get((atomic_t *)&topic->_lockless_generation);
@@ -102,31 +98,21 @@ bool rdd2_topic_flight_state_copy_blob(uint8_t *buf, size_t buf_size,
   return true;
 }
 
-/* Called from the GNSS driver's own workqueue, never the control loop. */
-bool rdd2_topic_gnss_publish(const synapse_topic_GnssFixData_t *fix) {
-  struct csyn_topic *topic = csyn_topic_find("gnss");
-
-  if (fix == NULL || topic == NULL) {
-    return false;
-  }
-
-  return csyn_topic_publish(topic, fix, sizeof(*fix));
-}
-
-/* The CSyn store is already the latest-value store for the fix, so GNSS gets
- * no zros mirror and no thread of its own until something in the firmware
- * actually consumes it. SPEC_0005 forbids GNSS in the rate loop, so every
- * caller of this is off the hot path by construction. */
+/* SPEC_0005 forbids GNSS in the rate loop, so every caller of this is off the
+ * hot path by construction. The generation is sampled after the read so it
+ * describes the sample the caller actually got: the single-publisher backend
+ * retries the copy under a concurrent publish, which would leave a
+ * before-the-read generation describing data that was already replaced. */
 bool rdd2_topic_gnss_copy(synapse_topic_GnssFixData_t *fix, uint32_t *generation) {
-  struct csyn_topic *topic = csyn_topic_find("gnss");
-  size_t len = 0U;
-
-  if (fix == NULL || topic == NULL) {
+  if (fix == NULL || !rdd2_topic_has_sample(&topic_gnss_fix) ||
+      zros_topic_read(&topic_gnss_fix, fix) != 0) {
     return false;
   }
 
-  return csyn_topic_copy(topic, fix, sizeof(*fix), &len, generation) &&
-         len == sizeof(*fix);
+  if (generation != NULL) {
+    *generation = rdd2_topic_generation(&topic_gnss_fix);
+  }
+  return true;
 }
 
 uint32_t rdd2_topic_motor_output_generation(void) {

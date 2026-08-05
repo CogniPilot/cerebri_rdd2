@@ -7,7 +7,7 @@ Listen on a zenoh session and report what is publishing, so "is anything on
 this network, and is it what I think it is?" can be answered before pointing
 ``publish_gps_zenoh.py`` at it.
 
-This is the zenoh-side counterpart of ``csyn_serial scan`` on the vehicle, and
+This is the zenoh-side counterpart of ``zros_serial scan`` on the vehicle, and
 it separates the same failure modes: whether the session reached the router at
 all, and whether anything is publishing once it has.
 

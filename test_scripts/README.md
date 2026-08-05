@@ -5,9 +5,11 @@ build; the wire format is imported from `tools/synapse_serial/` so these never
 carry a second copy of it.
 
 **These need the vehicle built with `-S mocap-gnss`.** The default image takes
-the `gnss` topic from the onboard receiver and declares it `CSYN_DIR_TX`, so an
-injected fix is rejected into the `wrong_dir` counter rather than accepted. The
-snippet flips the topic to `CSYN_DIR_RX` and leaves the onboard driver out.
+the `gnss_fix` topic from the onboard receiver, which is then its only
+publisher and the radio carries it outbound, so an injected fix is rejected
+into the `wrong_dir` counter rather than accepted. The snippet leaves the
+onboard driver out and makes the serial transport the topic's publisher, which
+is what lets a fix arrive over the radio.
 
 ## send_fake_gps.py
 
@@ -26,8 +28,8 @@ stale data rather than a live link. `--still` disables that.
 On the drone shell:
 
 ```
-csyn_serial status      # rx frames= climbing
-csyn topic echo gnss    # latitude ticking upward
+zros_serial status         # rx frames= climbing
+zros topic echo gnss_fix   # latitude ticking upward
 ```
 
 A healthy run looks like this, with every counter but `frames` at zero:
@@ -192,7 +194,7 @@ zenoh session at all.
 
 ## zenoh_scan.py
 
-The zenoh-side counterpart of `csyn_serial scan`: it reports what is
+The zenoh-side counterpart of `zros_serial scan`: it reports what is
 publishing, so you can find the right `--namespace` and `--topic` instead of
 guessing at them one bridge restart at a time.
 
@@ -235,22 +237,22 @@ which is also how `publish_gps_zenoh.py` behaves. Both take the same
 ## Finding which port the radio is on
 
 If you do not know which TELEM header the SiK is plugged into, do not rebuild
-once per guess. `csyn_serial scan` listens on every free UART at the same time
+once per guess. `zros_serial scan` listens on every free UART at the same time
 and reports where the bytes land.
 
 On the drone shell:
 
 ```
-csyn_serial scan 10 57600      # seconds, baud (both optional)
+zros_serial scan 10 57600      # seconds, baud (both optional)
 ```
 
 While it counts down, start the sender on the laptop. A hit looks like:
 
 ```
 alias    node                    bytes   sync  verdict
-csyn-scan0 uart@4018c000             0      0  silent
-csyn-scan1 uart@40190000          2220     30  SYNAPSE FRAMES -- point csyn-serial here
-csyn-scan2 uart@40194000             0      0  silent
+zros-scan0 uart@4018c000             0      0  silent
+zros-scan1 uart@40190000          2220     30  SYNAPSE FRAMES -- point zros-serial here
+zros-scan2 uart@40194000             0      0  silent
 ```
 
 `bytes` with no `sync` means the link is alive but the framing is not being
@@ -260,38 +262,38 @@ The candidates on `mr_vmu_tropic`:
 
 | alias | UART | node | notes |
 |---|---|---|---|
-| `csyn-scan0` | `lpuart3` | `uart@4018c000` | |
-| `csyn-scan1` | `lpuart4` | `uart@40190000` | current `csyn-serial` port |
-| `csyn-scan2` | `lpuart5` | `uart@40194000` | |
-| `csyn-scan3` | `lpuart2` | `uart@40188000` | GPS connector — **`-S mocap-gnss` builds only** |
+| `zros-scan0` | `lpuart3` | `uart@4018c000` | |
+| `zros-scan1` | `lpuart4` | `uart@40190000` | current `zros-serial` port |
+| `zros-scan2` | `lpuart5` | `uart@40194000` | |
+| `zros-scan3` | `lpuart2` | `uart@40188000` | GPS connector — **`-S mocap-gnss` builds only** |
 
 Only UARTs that no driver owns may be scanned, because the scan reconfigures
 the baud and polls for bytes. `lpuart6` (console) and `lpuart8` (CRSF) are
 therefore always excluded, and `lpuart2` appears only in `mocap-gnss` builds,
 where the GNSS receiver is not compiled in and the port is free.
 
-Once you know the port, set `csyn-serial` to it in
+Once you know the port, set `zros-serial` to it in
 `boards/mr_vmu_tropic.overlay` and rebuild. Scanning the port the transport
 already owns is safe: the scan borrows RX interrupts for its duration and
 hands them back, so the link keeps working afterwards.
 
 ## When nothing arrives
 
-Read `csyn_serial status` first — the counters separate the failure modes:
+Read `zros_serial status` first — the counters separate the failure modes:
 
 | Symptom | Meaning |
 |---|---|
-| `ready=no`, non-zero `init_rc` | Transport never started. `-19` is `ENODEV`: the UART behind the `csyn-serial` alias is not present or not ready. Nothing else matters until this is fixed. |
+| `ready=no`, non-zero `init_rc` | Transport never started. `-19` is `ENODEV`: the UART behind the `zros-serial` alias is not present or not ready. Nothing else matters until this is fixed. |
 | Everything stays `0` | No bytes reaching the MCU at all. Wrong UART, wrong wiring, or the radios are not paired. |
 | `crc_err` climbing, `frames` at 0 | Bytes are arriving but garbled — almost always a baud mismatch between the drone's `current-speed` and the radio. |
-| `ring_overrun` climbing | Bytes arriving faster than the transport drains them. Lower `--rate`, or raise `CONFIG_RDD2_CSYN_SERIAL_RX_RING_SIZE`. |
-| `unknown` climbing | Frames are intact, but the vehicle does not declare that topic. Check `csyn topic list`. |
-| `wrong_dir` climbing | Topic is declared, but as `CSYN_DIR_TX`. Inbound topics must be `CSYN_DIR_RX`. |
+| `ring_overrun` climbing | Bytes arriving faster than the transport drains them. Lower `--rate`, or raise `CONFIG_RDD2_ZROS_SERIAL_RX_RING_SIZE`. |
+| `unknown` climbing | Frames are intact, but this link does not carry that topic. The set it carries is the table at the top of `subsys/zros_serial/zros_serial.c`. |
+| `wrong_dir` climbing | The link carries that topic, but outbound only. Injecting `gnss` needs `-S mocap-gnss`, which is what makes the transport its publisher. |
 | `bad_len` climbing | Length field disagrees with the catalog payload size — usually a schema version mismatch between the two ends. |
 
 Three things to check on the hardware itself:
 
-1. **Which UART.** `boards/mr_vmu_tropic.overlay` aliases `csyn-serial` to
+1. **Which UART.** `boards/mr_vmu_tropic.overlay` aliases `zros-serial` to
    `lpuart4`. If the radio is on a different TELEM header, repoint it at
    `lpuart3` or `lpuart5` and rebuild.
 2. **Baud agreement.** Three places must match: both SiK radios, and

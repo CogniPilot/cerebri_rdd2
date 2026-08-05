@@ -5,7 +5,7 @@ Everything here is derived from the pinned `synapse_fbs` **0.7.0** catalog
 (schema set hash `2fd857effb6c7558d6869f4307a5354c`) and from what
 `src/synapse_messages.c` actually populates.
 
-Vehicle side is `subsys/csyn_serial/`. A working reference implementation of
+Vehicle side is `subsys/zros_serial/`. A working reference implementation of
 this document lives in `tools/synapse_serial/synapse_serial.py` — read it
 before writing a new decoder.
 
@@ -17,7 +17,7 @@ A transparent serial link, normally a SiK radio pair.
 |---|---|
 | Default baud | 57600 8N1 |
 | Byte order | little-endian throughout |
-| Vehicle port | whatever the `csyn-serial` devicetree alias names |
+| Vehicle port | whatever the `zros-serial` devicetree alias names |
 
 There is **no handshake, no heartbeat and no request/response**. The vehicle
 streams unsolicited frames; a ground station that wants a liveness signal
@@ -68,7 +68,7 @@ def crc16_ccitt_false(data: bytes, seed: int = 0xFFFF) -> int:
   a single corrupted byte cannot cause unbounded work. A ground station has
   no such constraint and may rescan unconditionally; the two then differ only
   on doubly-corrupted input.
-- **Reject any `len` above 128** (`CONFIG_RDD2_CSYN_SERIAL_MAX_PAYLOAD`).
+- **Reject any `len` above 128** (`CONFIG_RDD2_ZROS_SERIAL_MAX_PAYLOAD`).
   Accepting more is not permissive: the vehicle rejects an over-long length
   immediately and recovers the frame behind it, so a decoder that waits for
   the bogus payload swallows that frame instead.
@@ -80,14 +80,15 @@ def crc16_ccitt_false(data: bytes, seed: int = 0xFFFF) -> int:
 ## Downlink: what the vehicle sends
 
 Six topics, in both build variants, each rate-limited to **5 Hz**
-(`CONFIG_RDD2_CSYN_SERIAL_TX_MIN_INTERVAL_MS=200`). A topic is only
-transmitted when its value has changed, so a topic that never updates is
-never sent.
+(`CONFIG_RDD2_ZROS_SERIAL_TX_MIN_INTERVAL_MS=200`). A topic is transmitted
+when it has been *published* again, not when its value differs: republishing
+an identical sample still sends it. A topic nothing ever publishes is never
+sent, which is the only way a topic goes quiet.
 
 | Topic | id | Payload | Frame | Notes |
 |---|---|---|---|---|
 | `VehicleHealth` | 1 | 48 B | 58 B | arming, mode, RC link |
-| `GnssFix` | 8 | 64 B | 74 B | the onboard fix, or the injected one echoed back — see "Build variants" |
+| `GnssFix` | 8 | 64 B | 74 B | the onboard fix, or the injected one returned — see "Build variants" |
 | `AttitudeEstimate` | 11 | 40 B | 50 B | estimated attitude and rates |
 | `AttitudeCommand` | 19 | 48 B | 58 B | desired attitude and rates |
 | `PwmSignalOutputs` | 25 | 48 B | 58 B | motor outputs |
@@ -181,17 +182,17 @@ zero, which plots as a position off West Africa. Treat any sample with
 about it. Publishing those samples is deliberate: it distinguishes "receiver
 alive, still acquiring" from "receiver silent".
 
-**The three position/velocity accuracy fields are `65535` when produced by the
-onboard receiver** — `horizontal_accuracy_mm`, `vertical_accuracy_mm` and
-`velocity_accuracy_mm_s`. The generic NMEA driver reports no accuracy, and the
-schema defines 65535 as "at or above 65.535 m, unusable". Do not read that as
-a large-but-real figure.
+The three position/velocity accuracy fields — `horizontal_accuracy_mm`,
+`vertical_accuracy_mm` and `velocity_accuracy_mm_s` — carry the receiver's own
+estimates from UBX-NAV-PVT, saturated at 65535, which the schema defines as
+"at or above 65.535 m, unusable". A value below that is a real figure and can
+be trusted as one; 65535 itself cannot.
 
-`yaw_accuracy_cdeg` is the exception: it is **left at 0**, not saturated, so it
-must not be read as a perfect heading accuracy. `vdop_centi`,
-`velocity_up_cm_s`, `yaw_cdeg` and `satellites_visible` are likewise
-unpopulated by the NMEA path and stay 0. For all of these, trust the validity
-flags and `fix_type`, never the value.
+`yaw_cdeg` and `yaw_accuracy_cdeg` stay **0** with `YawValid` clear: NAV-PVT
+does not carry receiver yaw, so 0 must not be read as a north heading with
+perfect accuracy. `satellites_visible` is reported as the same count as
+`satellites_used` rather than a separate figure. For all of these, trust the
+validity flags and `fix_type`, never the value.
 
 ### AttitudeEstimate — id 11, 40 bytes
 
@@ -272,49 +273,54 @@ render them as real data:
 
 ## Uplink: what the ground station may send
 
-The vehicle accepts frames only for topics it declares as inbound; anything
-else is counted and dropped. In the default build the inbound set is:
+The vehicle accepts frames only for topics this link carries inbound; anything
+else is counted and dropped.
 
-| Topic | id | Payload | Purpose |
-|---|---|---|---|
-| `ManualControlCommand` | 4 | 40 B | pilot input |
-| `InertialSample` | 5 | 56 B | IMU injection, simulation only |
+`GnssFix` (id 8) is the only inbound topic, and only in the mocap build
+variant, where the vehicle accepts an externally supplied fix. In the default
+build `GnssFix` is outbound and an injected fix is rejected.
 
-`GnssFix` (id 8) is inbound **only** in the mocap build variant, where the
-vehicle accepts an externally supplied fix. In the default build `GnssFix` is
-outbound and an injected fix is rejected.
+`ManualControlCommand` (id 4) and `InertialSample` (id 5) were once accepted
+here and no longer are. Nothing on the vehicle consumed either, and pilot
+input comes from the CRSF receiver, not this link. Both are still carried over
+Ethernet by the CSyn transport, which is where an injected IMU sample or a
+simulated pilot belongs.
 
 Payload length must exactly match the catalog size for fixed-layout topics;
 short frames are rejected rather than zero-extended.
 
 ## Build variants
 
-The vehicle chooses its GNSS source at build time, and the direction of the
-`gnss` topic follows:
+The vehicle chooses its GNSS source at build time, and the direction the radio
+carries `GnssFix` follows from which producer publishes it:
 
-| Vehicle build | `GnssFix` direction | Effect on the ground station |
+| Vehicle build | `GnssFix` | Effect on the ground station |
 |---|---|---|
-| default (onboard receiver) | outbound | GNSS arrives as telemetry; injection rejected |
-| `-S mocap-gnss` | inbound, **echoed back** | GNSS must be supplied; the accepted fix is telemetered |
+| default (onboard receiver) | outbound only | GNSS arrives as telemetry; injection rejected |
+| `-S mocap-gnss` | outbound **and** inbound | GNSS must be supplied; the accepted fix is telemetered back |
 
-`GnssFix` therefore arrives in both builds, and a ground station can treat it
-as the vehicle's position without knowing which one it is talking to. What
-differs is the meaning: outbound it is what the receiver measured, echoed it
-is what the vehicle accepted from the ground station.
+`GnssFix` is outbound in **every** build — the link always carries it as
+telemetry, whoever produced it. The build only decides whether the vehicle
+also *accepts* it inbound. So a ground station can treat it as the vehicle's
+position without knowing which build it is talking to. What differs is the
+meaning: from the onboard receiver it is what the vehicle measured, in a mocap
+build it is what the vehicle accepted from the ground station.
 
-The echo exists because in a mocap build there is no onboard receiver and no
+That matters because in a mocap build there is no onboard receiver and no
 estimator downstream of the fix, so the injected position is the only one the
 vehicle holds. It is rate-limited and change-detected like any other outbound
-topic, so it costs one frame per TX interval rather than one per injection.
+topic, so it costs one frame per TX interval rather than one per injection,
+and the returned frame doubles as proof the injected one was accepted rather
+than counted as an error.
 
-**Do not re-inject an echoed fix.** The transport cannot tell an echoed frame
+**Do not re-inject a returned fix.** The transport cannot tell a returned frame
 from a fresh one, so feeding telemetry back into the uplink closes a loop it
 has no way to break. A ground station that both injects and displays GNSS must
 keep the two paths separate.
 
 ## Diagnosing from the vehicle side
 
-The vehicle shell reports link counters with `csyn_serial status`:
+The vehicle shell reports link counters with `zros_serial status`:
 
 ```
 port=uart@40190000 baud=57600 ready=yes init_rc=0

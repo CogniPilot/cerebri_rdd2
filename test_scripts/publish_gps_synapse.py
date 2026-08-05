@@ -4,12 +4,12 @@ publish_gps_synapse.py
 ======================
 ROS 2 node that subscribes to a nav_msgs/Odometry topic, converts the
 local-frame position & velocity into WGS-84 GPS coordinates, and streams
-synapse ``GnssFix`` payloads to the vehicle over the csyn serial transport.
+synapse ``GnssFix`` payloads to the vehicle over the zros serial transport.
 
 This is the synapse counterpart of ``publish_gps.py``: identical odometry
 handling, frame conventions and geodetic math, but instead of MAVLink
 GPS_INPUT (#232) it emits the bare 64-byte ``GnssFixData`` struct inside the
-compact synapse serial framing that ``subsys/csyn_serial/`` speaks. The
+compact synapse serial framing that ``subsys/zros_serial/`` speaks. The
 vehicle publishes it on the ``gnss`` topic (catalog id 8).
 
 The node treats the odometry frame as a local ENU (East-North-Up) frame
@@ -38,7 +38,7 @@ Usage
 Check it landed, on the vehicle shell:
 
   csyn topic echo gnss
-  csyn_serial status
+  zros_serial status
 
 Requirements
 ------------

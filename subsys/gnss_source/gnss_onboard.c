@@ -32,6 +32,9 @@
 #include <zephyr/sys/ring_buffer.h>
 #include <zephyr/sys/util.h>
 
+#include <zros/zros_node.h>
+#include <zros/zros_pub.h>
+
 LOG_MODULE_REGISTER(gnss_onboard, LOG_LEVEL_INF);
 
 #define GNSS_NODE DT_ALIAS(gnss)
@@ -70,6 +73,13 @@ static K_THREAD_STACK_DEFINE(g_stack, CONFIG_RDD2_GNSS_UBX_THREAD_STACK_SIZE);
 static struct k_thread g_thread;
 
 static struct rdd2_gnss_onboard_stats g_stats;
+
+/* This build is the sole producer of the fix: the Kconfig choice compiles in
+ * either this reader or the transport's inbound path, never both, so the
+ * single-publisher topic has exactly one registered publisher. */
+static struct zros_node g_node;
+static struct zros_pub g_pub;
+static synapse_topic_GnssFixData_t g_fix;
 
 static enum rx_state g_state;
 static uint8_t g_header[4]; /* class, id, len lo, len hi */
@@ -234,7 +244,8 @@ static void publish_nav_pvt(const struct ubx_nav_pvt *pvt)
 	g_stats.last_hdop_centi = fix.hdop_centi;
 	g_stats.last_hacc_mm = fix.horizontal_accuracy_mm;
 
-	if (!rdd2_topic_gnss_publish(&fix)) {
+	g_fix = fix;
+	if (zros_pub_update(&g_pub) != 0) {
 		g_stats.publish_failed++;
 		return;
 	}
@@ -355,6 +366,15 @@ static int gnss_onboard_init(void)
 	}
 
 	ring_buf_init(&g_ring, sizeof(g_ring_buf), g_ring_buf);
+
+	/* Registered before the reader thread exists, so the first decoded
+	 * frame cannot reach an unpublishable topic. */
+	zros_node_init(&g_node, "rdd2_gnss");
+	rc = zros_pub_init(&g_pub, &g_node, &topic_gnss_fix, &g_fix);
+	if (rc != 0) {
+		LOG_ERR("gnss publisher init failed: %d", rc);
+		return rc;
+	}
 
 	rc = uart_irq_callback_user_data_set(g_uart, uart_isr, NULL);
 	if (rc != 0) {

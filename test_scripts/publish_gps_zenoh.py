@@ -49,7 +49,7 @@ Requirements
 Check it landed, on the vehicle shell:
 
     csyn topic echo gnss
-    csyn_serial status
+    zros_serial status
 """
 
 from __future__ import annotations
