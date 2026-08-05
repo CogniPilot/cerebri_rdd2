@@ -25,4 +25,5 @@ uint32_t rdd2_topic_flight_state_generation(void);
 bool rdd2_topic_flight_state_copy_blob(uint8_t *buf, size_t buf_size, size_t *len);
 uint32_t rdd2_topic_motor_output_generation(void);
 bool rdd2_topic_motor_output_copy_blob(uint8_t *buf, size_t buf_size, size_t *len);
+void rdd2_topic_shell_formatters_init(void);
 #endif

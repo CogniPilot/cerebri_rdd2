@@ -57,6 +57,57 @@
           pkgs = pkgsFor system;
           pythonEnv = mkPythonEnv pkgs;
           hostCc = if system == "x86_64-linux" then pkgs.gcc_multi else pkgs.stdenv.cc;
+          sdkPlatform = if system == "x86_64-linux" then "x86_64" else "aarch64";
+          sdkMinimalHash =
+            if system == "x86_64-linux" then
+              "sha256-ypvA/2b6/KHaydWSo22VPPFtCWqdCbHANX8CHPn2p+s="
+            else
+              "sha256-15xb/GjmeUiGWb6iiaQCblKmTwMziHXIychQ//E87jA=";
+          sdkArmHash =
+            if system == "x86_64-linux" then
+              "sha256-IbhZgctaGBjZvFPYKvgPIIlG7AOLmC/xkHKHVy7TpjQ="
+            else
+              "sha256-uYBbaR8vCokmySaUyuN40Fuge3arynReIW/MUnU8xNY=";
+          zephyrSdk = pkgs.stdenvNoCC.mkDerivation {
+            pname = "zephyr-sdk-arm";
+            version = "1.0.1";
+            sdkMinimal = pkgs.fetchurl {
+              url = "https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v1.0.1/zephyr-sdk-1.0.1_linux-${sdkPlatform}_minimal.tar.xz";
+              hash = sdkMinimalHash;
+            };
+            sdkArm = pkgs.fetchurl {
+              url = "https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v1.0.1/toolchain_gnu_linux-${sdkPlatform}_arm-zephyr-eabi.tar.xz";
+              hash = sdkArmHash;
+            };
+            nativeBuildInputs = [ pkgs.autoPatchelfHook ];
+            buildInputs = with pkgs; [
+              ncurses
+              python312
+              stdenv.cc.cc.lib
+              zlib
+            ];
+            dontConfigure = true;
+            dontBuild = true;
+            unpackPhase = ''
+              runHook preUnpack
+              mkdir source
+              tar -xJf "$sdkMinimal" --strip-components=1 -C source
+              mkdir source/gnu
+              tar -xJf "$sdkArm" -C source/gnu
+              runHook postUnpack
+            '';
+            installPhase = ''
+              runHook preInstall
+              cp -R source "$out"
+              runHook postInstall
+            '';
+            meta = {
+              description = "Zephyr SDK with the GNU Arm toolchain";
+              homepage = "https://github.com/zephyrproject-rtos/sdk-ng";
+              license = lib.licenses.asl20;
+              platforms = supportedSystems;
+            };
+          };
           jlinkCli = pkgs.segger-jlink-headless.overrideAttrs {
             postInstall = ''
               install -Dm755 JLinkExe $out/opt/SEGGER/JLink/JLinkExe
@@ -94,6 +145,8 @@
               runHook preInstall
               mkdir -p $out/bin $out/opt/SEGGER/SystemView
               cp -R . $out/opt/SEGGER/SystemView
+              ln -s ${jlinkCli}/opt/SEGGER/JLink/libjlinkarm.so \
+                $out/opt/SEGGER/SystemView/libjlinkarm.so
               ln -s $out/opt/SEGGER/SystemView/SystemView $out/bin/SystemView
               runHook postInstall
             '';
@@ -117,7 +170,6 @@
             pkgs.dtc
             pkgs.file
             pkgs.findutils
-            pkgs.gcc-arm-embedded
             pkgs.git
             pkgs.gitRepo
             pkgs.gnumake
@@ -139,6 +191,7 @@
             pkgs.xz
             pkgs.zip
             pythonEnv
+            zephyrSdk
           ]
           ++ hostMultilibTools;
 
@@ -258,7 +311,7 @@
           commonScript = ''
             ${workspaceScript}
 
-            export LD_LIBRARY_PATH="${jlinkCli}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export LD_LIBRARY_PATH="${jlinkCli}/opt/SEGGER/JLink''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             rdd2_require_module_paths() {
               local workspace="$1"
@@ -270,6 +323,7 @@
                 modules/hal/cmsis \
                 modules/hal/cmsis_6 \
                 modules/hal/nxp \
+                modules/debug/segger \
                 modules/fs/fatfs \
                 modules/lib/cmsis-dsp \
                 modules/lib/zenoh-pico \
@@ -309,7 +363,7 @@
               export RDD2_ZROS_ROOT="''${RDD2_ZROS_ROOT:-$workspace/modules/lib/zros}"
               export RDD2_CSYN_ROOT="''${RDD2_CSYN_ROOT:-$workspace/modules/lib/csyn}"
               export RDD2_MODELICA_MODELS_ROOT="''${RDD2_MODELICA_MODELS_ROOT:-$workspace/models/modelica_models}"
-              export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
+              export ZEPHYR_SDK_INSTALL_DIR="''${ZEPHYR_SDK_INSTALL_DIR:-${zephyrSdk}}"
               export RDD2_WORKSPACE_ROOT="$workspace"
               export WEST_TOPDIR="$workspace"
 
@@ -374,7 +428,7 @@
             rdd2_require_workspace "$app"
             workspace="$RDD2_WORKSPACE_ROOT"
 
-            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
+            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
 
             board="''${RDD2_BOARD:-mr_vmu_tropic}"
             board_slug="''${board//\//_}"
@@ -431,7 +485,7 @@
             rdd2_require_workspace "$app"
             workspace="$RDD2_WORKSPACE_ROOT"
 
-            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
+            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
 
             board="''${RDD2_BOARD:-mr_vmu_tropic}"
             board_slug="''${board//\//_}"
@@ -459,7 +513,7 @@
             rdd2_require_workspace "$app"
             workspace="$RDD2_WORKSPACE_ROOT"
 
-            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
+            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
 
             board="''${RDD2_BOARD:-mr_vmu_tropic}"
             board_slug="''${board//\//_}"
@@ -627,6 +681,107 @@
             '';
           };
 
+          rdd2-systemview =
+            if system == "x86_64-linux" then
+              mkWestApp "rdd2-systemview" ''
+                ${commonScript}
+
+                app="$(rdd2_find_app)"
+                rdd2_export_common "$app"
+                rdd2_require_workspace "$app"
+
+                board="''${RDD2_BOARD:-mr_vmu_tropic}"
+                board_slug="''${board//\//_}"
+                build_dir="''${RDD2_BUILD_DIR:-$app/build-$board_slug}"
+                elf="$build_dir/zephyr/zephyr.elf"
+
+                if [ ! -r "$elf" ]; then
+                  printf 'error: firmware ELF not found: %s\n' "$elf" >&2
+                  printf 'build the firmware with rdd2-build first\n' >&2
+                  exit 1
+                fi
+
+                rtt_addr="$(${zephyrSdk}/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm "$elf" \
+                  | sed -n 's/^\([0-9a-fA-F]\+\) [A-Za-z] _SEGGER_RTT$/0x\1/p' \
+                  | head -n 1)"
+                if [ -z "$rtt_addr" ]; then
+                  printf 'error: _SEGGER_RTT not found in %s\n' "$elf" >&2
+                  printf 'rebuild with CONFIG_SEGGER_SYSTEMVIEW enabled\n' >&2
+                  exit 1
+                fi
+
+                usb_args=(-usb)
+                if [ -n "''${RDD2_JLINK_SERIAL:-}" ]; then
+                  usb_args=(-usb "$RDD2_JLINK_SERIAL")
+                fi
+
+                printf 'Starting SystemView for MIMXRT1064 via SWD; RTT control block %s\n' "$rtt_addr"
+                exec "${systemView}/bin/SystemView" \
+                  -single \
+                  -recorder J-Link \
+                  -device MIMXRT1064 \
+                  "''${usb_args[@]}" \
+                  -if SWD \
+                  -speed "''${RDD2_JLINK_SPEED_KHZ:-4000}" \
+                  -rttcbaddr "$rtt_addr" \
+                  -start \
+                  "$@"
+              ''
+            else
+              pkgs.writeShellApplication {
+                name = "rdd2-systemview";
+                text = ''
+                  printf 'error: SEGGER SystemView is supported by this flake only on x86_64-linux\n' >&2
+                  exit 1
+                '';
+              };
+
+          rdd2-systemview-capture = pkgs.writeShellApplication {
+            name = "rdd2-systemview-capture";
+            runtimeInputs = [ pkgs.coreutils ];
+            text = ''
+              trace_root="''${RDD2_TRACE_DIR:-$PWD/traces}"
+
+              mkdir -p "$trace_root"
+              trace_root="$(realpath "$trace_root")"
+              capture_dir="$trace_root/$(date +%Y%m%d-%H%M%S)"
+              if [ -e "$capture_dir" ]; then
+                capture_dir="$capture_dir-$$"
+              fi
+              mkdir -p "$capture_dir"
+
+              printf 'Output directory: %s\n' "$capture_dir"
+              printf 'Accept the SFL dialog and wait for the SystemView window to finish opening.\n'
+
+              ${rdd2-systemview}/bin/rdd2-systemview &
+              systemview_pid=$!
+
+              printf 'Press Enter to start recording...'
+              IFS= read -r _
+              if ! kill -0 "$systemview_pid" 2>/dev/null; then
+                printf 'error: SystemView exited before recording could start\n' >&2
+                wait "$systemview_pid" || true
+                exit 1
+              fi
+
+              "${systemView}/bin/SystemView" -single -start
+              printf 'Recording. Exercise the system now.\n'
+              printf 'Press Enter to stop, export, and close SystemView...'
+              IFS= read -r _
+
+              "${systemView}/bin/SystemView" \
+                -single \
+                -stop \
+                -save "$capture_dir/rdd2.SVDat" \
+                -export "$capture_dir/rdd2-events.csv" \
+                -export-contexts "$capture_dir/rdd2-contexts.csv" \
+                -quit
+
+              wait "$systemview_pid"
+              printf 'SystemView trace saved to %s\n' "$capture_dir"
+            '';
+          };
+
           host-tools = pkgs.buildEnv {
             name = "cerebri-rdd2-host-tools";
             paths = baseTools ++ [
@@ -635,12 +790,16 @@
               rdd2-flash
               rdd2-menuconfig
               rdd2-console
+              rdd2-systemview
+              rdd2-systemview-capture
               rdd2-west-update
               rdd2-trajectory-compare
             ];
           };
         in
         {
+          zephyr-sdk = zephyrSdk;
+
           inherit
             host-tools
             rdd2-build
@@ -648,6 +807,8 @@
             rdd2-flash
             rdd2-menuconfig
             rdd2-console
+            rdd2-systemview
+            rdd2-systemview-capture
             rdd2-west-update
             rdd2-trajectory-compare
             ;
@@ -692,6 +853,18 @@
             meta.description = "Open a remembered RDD2 serial console at 115200 baud";
           };
 
+          systemview = {
+            type = "app";
+            program = "${packages.rdd2-systemview}/bin/rdd2-systemview";
+            meta.description = "Start SEGGER SystemView for the RDD2 firmware";
+          };
+
+          systemview-capture = {
+            type = "app";
+            program = "${packages.rdd2-systemview-capture}/bin/rdd2-systemview-capture";
+            meta.description = "Record and export an RDD2 SystemView trace";
+          };
+
           west-update = {
             type = "app";
             program = "${packages.rdd2-west-update}/bin/rdd2-west-update";
@@ -719,8 +892,8 @@
 
             shellHook = ''
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
-              export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
-              export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
+              export ZEPHYR_SDK_INSTALL_DIR="''${ZEPHYR_SDK_INSTALL_DIR:-${packages.zephyr-sdk}}"
+              export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
               export LD_LIBRARY_PATH="${packages.host-tools}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
               rdd2_shell_find_app() {
@@ -772,7 +945,7 @@
                 export ZEPHYR_BASE="$PWD/zephyr"
               fi
 
-              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-flash, rdd2-console"
+              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-flash, rdd2-console, rdd2-systemview, rdd2-systemview-capture"
             '';
           };
         }
