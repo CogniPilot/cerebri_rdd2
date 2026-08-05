@@ -113,9 +113,18 @@
           jlinkCli = pkgs.segger-jlink-headless.overrideAttrs {
             postInstall = ''
               install -Dm755 JLinkExe $out/opt/SEGGER/JLink/JLinkExe
+              # Zephyr's jlink runner spawns a GDB server named JLinkGDBServer;
+              # upstream ships that as a symlink to the CL binary, which is the
+              # headless one. RTOSPlugin_Zephyr.so is what makes gdb see threads
+              # instead of one opaque context, so it belongs next to the server.
+              install -Dm755 JLinkGDBServerCLExe $out/opt/SEGGER/JLink/JLinkGDBServerCLExe
+              install -Dm644 GDBServer/RTOSPlugin_Zephyr.so \
+                $out/opt/SEGGER/JLink/GDBServer/RTOSPlugin_Zephyr.so
               mkdir -p $out/bin
               ln -s $out/opt/SEGGER/JLink/JLinkExe $out/bin/JLinkExe
               ln -s $out/opt/SEGGER/JLink/JLinkExe $out/bin/JLink
+              ln -s $out/opt/SEGGER/JLink/JLinkGDBServerCLExe $out/bin/JLinkGDBServerCLExe
+              ln -s $out/opt/SEGGER/JLink/JLinkGDBServerCLExe $out/bin/JLinkGDBServer
             '';
           };
           systemView = pkgs.stdenv.mkDerivation {
@@ -310,6 +319,33 @@
             }
           '';
 
+          # Shared by every command that drives the probe: flashing and
+          # attaching a debugger fail the same way when the udev rule is
+          # missing, and the message is the useful part.
+          jlinkAccessScript = ''
+            rdd2_require_jlink_access() {
+              local sysdev busnum devnum usbdev
+
+              for sysdev in /sys/bus/usb/devices/*; do
+                [ -r "$sysdev/idVendor" ] || continue
+                [ "$(<"$sysdev/idVendor")" = "1366" ] || continue
+                [ -r "$sysdev/busnum" ] || continue
+                [ -r "$sysdev/devnum" ] || continue
+
+                busnum="$(<"$sysdev/busnum")"
+                devnum="$(<"$sysdev/devnum")"
+                usbdev="$(printf '/dev/bus/usb/%03d/%03d' "$((10#$busnum))" "$((10#$devnum))")"
+
+                if [ ! -r "$usbdev" ] || [ ! -w "$usbdev" ]; then
+                  printf 'error: J-Link USB device %s is not accessible to user %s\n' "$usbdev" "$(id -un)" >&2
+                  printf '       on NixOS, add the SEGGER udev rule documented in README.md and rebuild the system\n' >&2
+                  printf '       then reconnect the probe and try again\n' >&2
+                  return 1
+                fi
+              done
+            }
+          '';
+
           commonScript = ''
             ${workspaceScript}
 
@@ -459,28 +495,7 @@
 
           rdd2-flash = mkWestApp "rdd2-flash" ''
             ${commonScript}
-
-            rdd2_require_jlink_access() {
-              local sysdev busnum devnum usbdev
-
-              for sysdev in /sys/bus/usb/devices/*; do
-                [ -r "$sysdev/idVendor" ] || continue
-                [ "$(<"$sysdev/idVendor")" = "1366" ] || continue
-                [ -r "$sysdev/busnum" ] || continue
-                [ -r "$sysdev/devnum" ] || continue
-
-                busnum="$(<"$sysdev/busnum")"
-                devnum="$(<"$sysdev/devnum")"
-                usbdev="$(printf '/dev/bus/usb/%03d/%03d' "$((10#$busnum))" "$((10#$devnum))")"
-
-                if [ ! -r "$usbdev" ] || [ ! -w "$usbdev" ]; then
-                  printf 'error: J-Link USB device %s is not accessible to user %s\n' "$usbdev" "$(id -un)" >&2
-                  printf '       on NixOS, add the SEGGER udev rule documented in README.md and rebuild the system\n' >&2
-                  printf '       then reconnect the probe before running rdd2-flash again\n' >&2
-                  return 1
-                fi
-              done
-            }
+            ${jlinkAccessScript}
 
             app="$(rdd2_find_app)"
             rdd2_export_common "$app"
@@ -505,6 +520,61 @@
 
             cd "$workspace"
             exec west flash -d "$build_dir" "''${runner_args[@]}" "$@"
+          '';
+
+          # `west debug` attaches gdb to the running target through the J-Link
+          # GDB server. `rdd2-debug attach` maps to `west attach`, which leaves
+          # the firmware running instead of resetting and halting it -- the
+          # difference matters when you are chasing something that only happens
+          # after the vehicle has been up for a while.
+          rdd2-debug = mkWestApp "rdd2-debug" ''
+            ${commonScript}
+            ${jlinkAccessScript}
+
+            mode="debug"
+            case "''${1:-}" in
+            attach)
+              mode="attach"
+              shift
+              ;;
+            server)
+              mode="debugserver"
+              shift
+              ;;
+            debug)
+              shift
+              ;;
+            esac
+
+            app="$(rdd2_find_app)"
+            rdd2_export_common "$app"
+            rdd2_require_workspace "$app"
+            workspace="$RDD2_WORKSPACE_ROOT"
+
+            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
+
+            board="''${RDD2_BOARD:-mr_vmu_tropic}"
+            board_slug="''${board//\//_}"
+            build_dir="''${RDD2_BUILD_DIR:-$app/build-$board_slug}"
+            runner="''${RDD2_DEBUG_RUNNER:-jlink}"
+            runner_args=()
+
+            if [ ! -d "$build_dir" ]; then
+              printf 'error: no build at %s\n' "$build_dir" >&2
+              printf '       build the firmware with rdd2-build first\n' >&2
+              exit 1
+            fi
+
+            if [ -n "$runner" ]; then
+              runner_args=(--runner "$runner")
+            fi
+
+            if [ "$runner" = "jlink" ]; then
+              rdd2_require_jlink_access
+            fi
+
+            cd "$workspace"
+            exec west "$mode" -d "$build_dir" "''${runner_args[@]}" "$@"
           '';
 
           rdd2-menuconfig = mkWestApp "rdd2-menuconfig" ''
@@ -790,6 +860,7 @@
               rdd2-build
               rdd2-build-native-sim
               rdd2-flash
+              rdd2-debug
               rdd2-menuconfig
               rdd2-console
               rdd2-systemview
@@ -807,6 +878,7 @@
             rdd2-build
             rdd2-build-native-sim
             rdd2-flash
+            rdd2-debug
             rdd2-menuconfig
             rdd2-console
             rdd2-systemview
@@ -841,6 +913,12 @@
             type = "app";
             program = "${packages.rdd2-flash}/bin/rdd2-flash";
             meta.description = "Flash the RDD2 firmware build";
+          };
+
+          debug = {
+            type = "app";
+            program = "${packages.rdd2-debug}/bin/rdd2-debug";
+            meta.description = "Attach gdb to the RDD2 firmware over J-Link";
           };
 
           menuconfig = {
@@ -947,7 +1025,7 @@
                 export ZEPHYR_BASE="$PWD/zephyr"
               fi
 
-              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-flash, rdd2-console, rdd2-systemview, rdd2-systemview-capture"
+              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-flash, rdd2-debug, rdd2-console, rdd2-systemview, rdd2-systemview-capture"
             '';
           };
         }
