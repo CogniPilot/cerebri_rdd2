@@ -24,7 +24,6 @@
 LOG_MODULE_DECLARE(rdd2, LOG_LEVEL_INF);
 
 #define IMU_NODE                DT_ALIAS(imu0)
-#define RDD2_IMU_TIMEOUT_NS     (4ULL * RDD2_CONTROL_PERIOD_NS)
 #define RDD2_IMU_RTIO_SQ_COUNT  16U
 #define RDD2_IMU_RTIO_CQ_COUNT  16U
 #define RDD2_IMU_RTIO_BUF_COUNT 32U
@@ -117,6 +116,40 @@ static void imu_stream_drain_cq(void)
 	}
 }
 
+/*
+ * The rate loop now blocks indefinitely for its sample, so a stream that stops
+ * producing would never be noticed there. This watches it from outside instead:
+ * the loop only bumps a counter, and a low-rate work item restarts the stream
+ * when that counter stops moving. Checking every RDD2_IMU_WATCHDOG_MS rather
+ * than re-arming per sample keeps the 1600 Hz path down to one atomic add.
+ */
+#define RDD2_IMU_WATCHDOG_MS 100
+
+static atomic_t g_imu_sample_count;
+static uint32_t g_imu_watchdog_last_count;
+static bool g_imu_watchdog_primed;
+
+static void imu_stream_restart(const char *reason, int rc);
+
+static void imu_watchdog_work(struct k_work *work)
+{
+	uint32_t count = (uint32_t)atomic_get(&g_imu_sample_count);
+
+	ARG_UNUSED(work);
+
+	/* Only after a first sample has been seen: before that the stream is
+	 * still coming up and restarting it would fight its own start. */
+	if (g_imu_watchdog_primed && count == g_imu_watchdog_last_count) {
+		imu_stream_restart("watchdog", -ETIMEDOUT);
+	}
+
+	g_imu_watchdog_primed = (count != 0U);
+	g_imu_watchdog_last_count = count;
+	(void)k_work_reschedule(k_work_delayable_from_work(work), K_MSEC(RDD2_IMU_WATCHDOG_MS));
+}
+
+static K_WORK_DELAYABLE_DEFINE(g_imu_watchdog, imu_watchdog_work);
+
 static void imu_stream_restart(const char *reason, int rc)
 {
 	int restart_rc;
@@ -196,6 +229,7 @@ int rdd2_imu_stream_init(void)
 	}
 
 	imu_stream_timing_reset();
+	(void)k_work_schedule(&g_imu_watchdog, K_MSEC(RDD2_IMU_WATCHDOG_MS));
 	return 0;
 }
 
@@ -213,9 +247,18 @@ bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *d
 		*interrupt_timestamp_ns = 0U;
 	}
 
-	if (rtio_cqe_copy_out(&rdd2_imu_rtio, &cqe, 1, K_NSEC(RDD2_IMU_TIMEOUT_NS)) != 1) {
+	/*
+	 * K_FOREVER, because RTIO only blocks on its consume semaphore for that
+	 * timeout: every finite one takes the non-blocking consume and spins on
+	 * Z_SPIN_DELAY until it expires. At this thread's priority that spin
+	 * burned the whole period between samples -- 137 us of work out of 625,
+	 * the rest polling -- and starved every lower-priority thread, which is
+	 * why the shell never reached SHELL_STATE_ACTIVE. The stuck-stream case
+	 * the old timeout covered is now the watchdog's job, below.
+	 */
+	if (rtio_cqe_copy_out(&rdd2_imu_rtio, &cqe, 1, K_FOREVER) != 1) {
 		imu_outputs_zero(gyro, accel);
-		imu_stream_restart("timeout", -ETIMEDOUT);
+		imu_stream_restart("consume", -EIO);
 		return false;
 	}
 
@@ -248,6 +291,8 @@ bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *d
 
 	g_last_sample_ns = sample_ns;
 	g_have_last_sample = true;
+	/* The watchdog's only evidence that the stream is alive. */
+	atomic_inc(&g_imu_sample_count);
 	return true;
 }
 
