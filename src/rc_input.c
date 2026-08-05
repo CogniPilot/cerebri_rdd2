@@ -6,9 +6,10 @@
 
 #include "topic_bus.h"
 
-#include <zephyr/drivers/input/input_crsf.h>
 #include <zephyr/input/input.h>
+#include <zephyr/input/input_crsf.h>
 #include <zephyr/kernel.h>
+#include <zephyr/shell/shell.h>
 #include <zephyr/sys/atomic.h>
 
 #include <zros/private/zros_node_struct.h>
@@ -126,3 +127,38 @@ static void rc_input_cb(struct input_event *evt, void *user_data)
 }
 
 INPUT_CALLBACK_DEFINE(DEVICE_DT_GET(RC_NODE), rc_input_cb, NULL);
+
+#if DT_NODE_HAS_COMPAT(RC_NODE, tbs_crsf)
+static int cmd_crsf_status(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = DEVICE_DT_GET(RC_NODE);
+	struct crsf_diagnostics diag = input_crsf_get_diagnostics(dev);
+	struct crsf_link_stats link = input_crsf_get_link_stats(dev);
+	int64_t stamp_ms;
+	bool valid;
+	rdd2_rc_channels_t channels;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	rdd2_rc_input_latest_get(&channels, &stamp_ms, &valid);
+
+	shell_print(sh, "device=%s ready=%s rc_valid=%s last_rc_age_ms=%lld",
+		    dev->name, device_is_ready(dev) ? "yes" : "no", valid ? "yes" : "no",
+		    stamp_ms > 0 ? (long long)(k_uptime_get() - stamp_ms) : -1LL);
+	shell_print(sh, "bytes=%u valid_frames=%u channel_frames=%u link_frames=%u",
+		    diag.uart_rx_bytes, diag.valid_frames, diag.channel_frames, diag.link_frames);
+	shell_print(sh, "crc_errors=%u unsupported=%u queue_drops=%u",
+		    diag.crc_errors, diag.unsupported_frames, diag.queue_drops);
+	shell_print(sh, "uart_stopped=%u uart_restarts=%u uart_errors=%u",
+		    diag.uart_rx_stopped, diag.uart_rx_restarts, diag.uart_errors);
+	shell_print(sh, "uplink_lq=%u rssi1=-%u rssi2=-%u snr=%d rf_mode=%u",
+		    link.uplink_link_quality, link.uplink_rssi_1, link.uplink_rssi_2,
+		    link.uplink_snr, link.rf_mode);
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(crsf_cmds,
+	SHELL_CMD(status, NULL, "Show CRSF UART and frame diagnostics.", cmd_crsf_status),
+	SHELL_SUBCMD_SET_END);
+SHELL_CMD_REGISTER(crsf, &crsf_cmds, "CRSF receiver diagnostics.", NULL);
+#endif

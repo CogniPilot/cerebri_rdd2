@@ -214,6 +214,8 @@ int main(void) {
     return rc;
   }
 
+  rdd2_topic_shell_formatters_init();
+
   LOG_INF("RDD2 flight stack starting");
 
   while (true) {

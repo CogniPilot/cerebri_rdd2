@@ -189,6 +189,8 @@ nix run .#west-update
 nix run .#build
 nix run .#build-native-sim
 nix run .#console
+nix run .#systemview
+nix run .#systemview-capture
 nix run .#trajectory-compare
 nix run .#flash
 ```
@@ -197,6 +199,19 @@ nix run .#flash
 `/dev/serial/by-id` names. When multiple adapters are connected, it asks which
 one to use and remembers the selection. Run `rdd2-console --select` to choose
 again, or override it with `--device PATH` and `--baud RATE`.
+
+`rdd2-systemview` starts SEGGER SystemView with the MIMXRT1064 SWD settings
+and reads the RTT control-block address from the current firmware ELF. Build
+and flash the firmware first, then run `rdd2-systemview`. Set
+`RDD2_JLINK_SERIAL` when more than one probe is connected and
+`RDD2_JLINK_SPEED_KHZ` to override the default 4000 kHz SWD speed.
+
+`rdd2-systemview-capture` starts an interactive recording. Accept the SFL
+dialog, then press Enter in the terminal to start recording. Exercise the
+system for as long as needed and press Enter again to stop, export, and close
+SystemView. It writes a timestamped
+`.SVDat` recording plus event and context CSV exports under `traces/`. Set
+`RDD2_TRACE_DIR` to change the output directory.
 
 `trajectory-compare` reads the pure Modelica mission log plus the canonical SIL
 and BIL logs, renders full overlays under `artifacts/trajectory-comparison/`,

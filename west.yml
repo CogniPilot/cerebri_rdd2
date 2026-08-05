@@ -14,7 +14,7 @@ manifest:
   projects:
     - name: zephyr
       remote: cognipilot
-      revision: c908d12ebc2baa679d0f5b8e31eeb459ea93caff # cerebri2 4/14/26
+      revision: bf19ff6eb2cff5aac91242af56b514273cdf9a94 # upstream main 8/5/26 plus minimal RDD2 patches
       path: zephyr
       west-commands: scripts/west-commands.yml
     - name: cmsis
@@ -27,19 +27,27 @@ manifest:
       path: modules/lib/cmsis-dsp
     - name: cmsis_6
       remote: zephyrproject-rtos
-      revision: 30a859f44ef8ab4dc8f84b03ed586fd16ccf9d74
+      revision: b2dfbe1a20bbd49c2d2c605073799671074bbb30
       path: modules/hal/cmsis_6
     - name: fatfs
       remote: zephyrproject-rtos
       revision: f4ead3bf4a6dab3a07d7b5f5315795c073db568d
       path: modules/fs/fatfs
     - name: hal_nxp
-      remote: cognipilot
-      revision: cf8f1631e862528ee044850bcc70273975b90771
+      remote: zephyrproject-rtos
+      revision: 53946adb08b54449391c1c0c73cdd094d92a3b6e
       path: modules/hal/nxp
+    - name: hal_tdk
+      remote: zephyrproject-rtos
+      revision: 0f209bd0a4b6511c8c6ffddda75da1fe6988df8f
+      path: modules/hal/tdk
+    - name: segger
+      remote: zephyrproject-rtos
+      revision: 50892fdbcf2f570e67baa72b8894a66b16946f72
+      path: modules/debug/segger
     - name: zros
       remote: cognipilot
-      revision: 959bce412d6e12b3a49fb8b55c219affcf7f6d0e # cerebri2 4/14/26
+      revision: 20ab07983224ca078f17e2e851b4fe8cb92eb517 # Zephyr main module schema
       path: modules/lib/zros
     - name: csyn
       remote: cognipilot
@@ -59,5 +67,5 @@ manifest:
       path: modules/lib/zenoh-pico
     - name: zephyr_boards
       remote: cognipilot
-      revision: d006ec84e621ee33f43c233a96380c8c3f6470eb # cerebri2 4/14/26
+      revision: a21d0040d455e3520816e1a64335ae4a9b740cab # Zephyr main devicetree migration
       path: modules/lib/zephyr_boards

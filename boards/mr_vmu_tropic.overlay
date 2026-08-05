@@ -4,7 +4,7 @@
 
 / {
 	aliases {
-		rc = &sbus0;
+		rc = &crsf0;
 		imu0 = &icm45686;
 		motors = &dshot;
 		gnss = &gnss0;

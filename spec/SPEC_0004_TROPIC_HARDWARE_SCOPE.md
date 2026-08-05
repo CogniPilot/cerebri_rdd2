@@ -18,7 +18,7 @@ ACCEPTED
 - Four motor outputs are assumed.
 
 **CURRENT BOARD ASSUMPTIONS:**
-- The board DTS exposes the CRSF receiver path as a `tbs,crsf` device even though the node label is legacy `sbus0`.
+- The board DTS exposes the CRSF receiver path as the `crsf0` `tbs,crsf` device.
 - Application code consumes the `rc`, `imu0`, and `motors` aliases, not board-specific node labels.
 - DSHOT defaults to `DSHOT600`.
 - `DSHOT300` is the first fallback check if ESC signaling is marginal.

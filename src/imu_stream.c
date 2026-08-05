@@ -202,7 +202,7 @@ int rdd2_imu_stream_init(void)
 bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *dt,
 			       uint64_t *interrupt_timestamp_ns)
 {
-	struct rtio_cqe *cqe;
+	struct rtio_cqe cqe;
 	uint8_t *buf = NULL;
 	uint32_t buf_len = 0;
 	uint64_t sample_ns = 0;
@@ -213,18 +213,16 @@ bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *d
 		*interrupt_timestamp_ns = 0U;
 	}
 
-	cqe = rtio_cqe_consume_block_timeout(&rdd2_imu_rtio, K_NSEC(RDD2_IMU_TIMEOUT_NS));
-	if (cqe == NULL) {
+	if (rtio_cqe_copy_out(&rdd2_imu_rtio, &cqe, 1, K_NSEC(RDD2_IMU_TIMEOUT_NS)) != 1) {
 		imu_outputs_zero(gyro, accel);
 		imu_stream_restart("timeout", -ETIMEDOUT);
 		return false;
 	}
 
-	rc = cqe->result;
+	rc = cqe.result;
 	if (rc == 0) {
-		rc = rtio_cqe_get_mempool_buffer(&rdd2_imu_rtio, cqe, &buf, &buf_len);
+		rc = rtio_cqe_get_mempool_buffer(&rdd2_imu_rtio, &cqe, &buf, &buf_len);
 	}
-	rtio_cqe_release(&rdd2_imu_rtio, cqe);
 
 	if (rc != 0) {
 		imu_outputs_zero(gyro, accel);

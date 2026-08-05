@@ -52,7 +52,7 @@
 	status = "disabled";
 };
 
-&sbus0 {
+&crsf0 {
 	status = "disabled";
 };
 

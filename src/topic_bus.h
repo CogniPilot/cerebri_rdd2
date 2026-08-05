@@ -43,4 +43,5 @@ uint32_t rdd2_topic_motor_output_generation(void);
 bool rdd2_topic_motor_output_copy_blob(uint8_t *buf, size_t buf_size, size_t *len);
 /* Latest GNSS fix, whatever filled it. Returns false until a fix arrives. */
 bool rdd2_topic_gnss_copy(synapse_topic_GnssFixData_t *fix, uint32_t *generation);
+void rdd2_topic_shell_formatters_init(void);
 #endif
