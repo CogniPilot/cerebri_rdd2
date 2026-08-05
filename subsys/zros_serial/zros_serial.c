@@ -192,7 +192,16 @@ static void uart_isr(const struct device *dev, void *user_data)
 {
 	ARG_UNUSED(user_data);
 
-	while (uart_irq_update(dev) && uart_irq_is_pending(dev)) {
+	/* uart_irq_update() returns void as of Zephyr main, so the status
+	 * refresh and the pending check are separate statements; it still has
+	 * to run once per iteration to re-cache the interrupt status. */
+	while (true) {
+		uart_irq_update(dev);
+
+		if (uart_irq_is_pending(dev) <= 0) {
+			break;
+		}
+
 		if (uart_irq_rx_ready(dev)) {
 			uint8_t buf[32];
 			int read = uart_fifo_read(dev, buf, sizeof(buf));
