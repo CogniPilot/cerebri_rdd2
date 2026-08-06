@@ -45,6 +45,11 @@ set(ZEPHYR_EXTRA_MODULES
   ${RDD2_CSYN_ROOT}
 )
 
+# Zephyr main resolves snippets only from SNIPPET_ROOT and no longer implies
+# the application directory, so this repo's own snippets/ has to be named for
+# `-S mocap-gnss` to resolve.
+list(APPEND SNIPPET_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(rdd2 LANGUAGES C)
 

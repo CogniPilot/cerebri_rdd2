@@ -1,0 +1,10 @@
+name: mocap-gnss
+
+# Scoped to the board that has a gnss0 node. Applied elsewhere the overlay
+# fails on an undefined node label, and the error names neither the snippet
+# nor the reason.
+boards:
+  mr_vmu_tropic/mimxrt1064:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: mocap-gnss.overlay
+      EXTRA_CONF_FILE: mocap-gnss.conf

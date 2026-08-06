@@ -1,0 +1,18 @@
+# Copyright (c) 2026 CogniPilot Foundation
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  u-blox receiver read as UBX binary rather than NMEA.
+
+  The module streams UBX-NAV-PVT unprompted, and that one message carries
+  everything the synapse GnssFix contract wants, including the accuracy
+  estimates NMEA cannot express. This is a receive-only decoder: it sends the
+  receiver nothing and configures nothing, so it works with whatever output
+  rate the module is already set to.
+
+  Declare it as a child of the UART the receiver is wired to, and set that
+  UART's current-speed to the receiver's actual rate.
+
+compatible: "cognipilot,ubx-gnss"
+
+include: uart-device.yaml

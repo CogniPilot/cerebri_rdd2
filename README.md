@@ -21,7 +21,72 @@ Current implementation scope:
 - Rumoca eFMI control code generated into the build tree
 - CRSF -> Rumoca-generated eFMI control and estimation -> quad-X mixer -> DSHOT
 - `ACRO` and `AUTO_LEVEL` manual flight modes
-- GNSS M10 path documented and devicetree-wired through Zephyr GNSS for later use
+- GNSS on the `gnss_fix` topic from either the onboard M10 read as UBX or a
+  fix injected over the telemetry radio
+
+## Choosing the GNSS source
+
+One `gnss_fix` topic on the internal ZROS bus, one 64-byte catalog contract,
+two possible producers. Whichever is selected is the topic's single registered
+publisher, so the two are mutually exclusive by construction and a fix can
+never have two origins:
+
+| Source | Publisher | Radio direction | How |
+|---|---|---|---|
+| Onboard M10 read as UBX | `subsys/gnss_source` | outbound telemetry | default |
+| Injected over the telemetry radio | the serial transport | inbound | `-S mocap-gnss` |
+
+Consumers read the fix through `rdd2_topic_gnss_copy()` and cannot tell which
+filled it. The default follows the devicetree: an enabled `gnss` node selects
+the onboard source, and disabling it falls back to injection, so the node
+status and the Kconfig choice cannot disagree. `zros topic echo gnss_fix`
+shows the live fix whichever way it arrived.
+
+`mocap-gnss` is the indoor configuration — position comes from motion capture
+over the radio, and the onboard driver is left out entirely so `lpuart2` stays
+free. `test_scripts/publish_gps_synapse.py` is the bridge that feeds it.
+
+The onboard reader lives in `subsys/gnss_source` and decodes UBX-NAV-PVT
+directly rather than going through Zephyr's generic NMEA driver: the M10 on
+this airframe streams UBX, so `gnss-nmea-generic` cannot read it. The reader is
+receive-only — it sends the module nothing and configures nothing — so it works
+at whatever output rate the receiver happens to be set to. `current-speed` on
+`lpuart2` in `boards/mr_vmu_tropic.overlay` must still match the receiver's
+actual serial rate; it is set to 115200, confirmed against the hardware by a
+port dump returning `b5 62 01 07`, a UBX NAV-PVT header.
+
+NAV-PVT alone carries every field the `GnssFix` contract wants, including the
+accuracy estimates NMEA has no way to express, so horizontal, vertical and
+velocity accuracy are published as the receiver's own figures rather than the
+65535 "unusable" sentinel, and vertical velocity arrives with its validity bit
+set. Course over ground is marked valid only above 150 mm/s of ground speed,
+below which the receiver's heading of motion is noise rather than a course, and
+the UTC timestamp only with both validDate and validTime and a fix, since a
+timestamp that silently stops advancing is worse for a consumer than none.
+Receiver yaw is absent with its validity bit clear — NAV-PVT does not carry it.
+
+See `test_scripts/README.md` for injecting a fix from a laptop or from motion
+capture, and `tools/synapse_serial/README.md` for the wire format.
+
+## Which bus carries what
+
+ZROS is the internal bus. Every producer on the vehicle publishes there, every
+consumer reads there, and it is the only bus a subsystem needs to know about.
+
+CSyn is the external face for Ethernet: it carries the same topics to Zenoh
+over the network stack, and `csyn_zros_bridge` in the CSyn module mirrors them
+between the two buses. Nothing on the vehicle publishes into CSyn directly.
+
+The SiK telemetry radio is served by `subsys/zros_serial`, which reads and
+publishes ZROS topics and does not link CSyn at all. What it does share with
+CSyn is the `synapse_fbs` catalog: the `topic_id` in each frame is a catalog
+TopicId, because the ground-side peer decodes by that id. That is schema, not
+transport, so both links can carry the same topics without either depending on
+the other.
+
+GNSS is the one topic that lives only on ZROS. The radio carries it in both
+directions, so nothing mirrors it onto CSyn and a fix does not appear on the
+Ethernet/Zenoh side.
 
 RDD2 uses the same pinned CSyn module as CUBS2. CSyn owns the `synapse_fbs`
 release, generated C headers, topic catalog, canonical Zenoh keys, payload

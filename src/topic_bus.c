@@ -4,7 +4,10 @@
 
 #include "topic_bus.h"
 
+/* Only this file bridges the two buses: it declares the CSyn side of the
+ * Ethernet path and defines the zros storage its bridge mirrors into. */
 #include <csyn/csyn.h>
+#include <csyn/csyn_zros.h>
 
 #include <string.h>
 
@@ -50,6 +53,10 @@ ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(attitude_command,
                                    synapse_topic_AttitudeCommandData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(control_loop_metrics,
                                    synapse_topic_ControlLoopMetricsData_t);
+/* GNSS is internal-bus only. The serial transport carries it to and from the
+ * ground directly off this topic; nothing mirrors it onto CSyn, so a fix does
+ * not appear on the Ethernet/Zenoh side. */
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(gnss_fix, synapse_topic_GnssFixData_t);
 
 #if defined(CONFIG_ZROS_SHELL)
 static char g_topic_shell_field[128];
@@ -66,6 +73,7 @@ static uint16_t topic_synapse_id(const struct zros_topic *topic) {
   if (topic == &topic_attitude_estimate) return synapse_topic_TopicId_AttitudeEstimate;
   if (topic == &topic_attitude_command) return synapse_topic_TopicId_AttitudeCommand;
   if (topic == &topic_control_loop_metrics) return synapse_topic_TopicId_ControlLoopMetrics;
+  if (topic == &topic_gnss_fix) return synapse_topic_TopicId_GnssFix;
   return synapse_topic_TopicId_Unknown;
 }
 
@@ -176,6 +184,7 @@ static struct zros_shell_topic_formatter g_topic_shell_formatters[] = {
     {.topic = &topic_attitude_estimate, .format = format_synapse_topic},
     {.topic = &topic_attitude_command, .format = format_synapse_topic},
     {.topic = &topic_control_loop_metrics, .format = format_synapse_topic},
+    {.topic = &topic_gnss_fix, .format = format_synapse_topic},
 };
 #endif
 
@@ -231,6 +240,23 @@ bool rdd2_topic_flight_state_copy_blob(uint8_t *buf, size_t buf_size,
     return false;
   }
   *len = sizeof(*state);
+  return true;
+}
+
+/* SPEC_0005 forbids GNSS in the rate loop, so every caller of this is off the
+ * hot path by construction. The generation is sampled after the read so it
+ * describes the sample the caller actually got: the single-publisher backend
+ * retries the copy under a concurrent publish, which would leave a
+ * before-the-read generation describing data that was already replaced. */
+bool rdd2_topic_gnss_copy(synapse_topic_GnssFixData_t *fix, uint32_t *generation) {
+  if (fix == NULL || !rdd2_topic_has_sample(&topic_gnss_fix) ||
+      zros_topic_read(&topic_gnss_fix, fix) != 0) {
+    return false;
+  }
+
+  if (generation != NULL) {
+    *generation = rdd2_topic_generation(&topic_gnss_fix);
+  }
   return true;
 }
 

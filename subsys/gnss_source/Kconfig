@@ -1,0 +1,82 @@
+choice RDD2_GNSS_SOURCE
+	prompt "Source for the gnss topic"
+	default RDD2_GNSS_SOURCE_ONBOARD if DT_HAS_COGNIPILOT_UBX_GNSS_ENABLED
+	default RDD2_GNSS_SOURCE_RADIO
+	help
+	  Which producer publishes the gnss_fix topic. The two are mutually
+	  exclusive by construction: the choice decides which one registers as
+	  the topic's single publisher, so a fix can only ever have one origin
+	  and an injected fix cannot silently race an onboard one.
+
+config RDD2_GNSS_SOURCE_RADIO
+	bool "Injected over the zros serial link"
+	help
+	  The serial transport carries the gnss_fix topic inbound and is its
+	  registered publisher. A ground station or a mocap bridge supplies the
+	  fix over the radio. This is the right choice for indoor flight, where
+	  the receiver may be plugged in but has no sky view and position comes
+	  from motion capture instead.
+
+	  Reached with the mocap-gnss snippet, which also disables the
+	  devicetree gnss node so the reader is not compiled in and its UART
+	  stays free.
+
+config RDD2_GNSS_SOURCE_ONBOARD
+	bool "Onboard u-blox receiver read as UBX"
+	depends on DT_HAS_COGNIPILOT_UBX_GNSS_ENABLED
+	select RING_BUFFER
+	select UART_INTERRUPT_DRIVEN
+	help
+	  This reader publishes the gnss_fix topic and the serial transport
+	  streams it out as telemetry. This is the default whenever the
+	  devicetree gnss node is enabled.
+
+	  Decodes UBX-NAV-PVT, which the receiver streams unprompted, so
+	  nothing is sent to the module and no configuration is required. That
+	  one message also carries the accuracy estimates NMEA cannot express,
+	  so the fix is published with real horizontal, vertical and velocity
+	  accuracy rather than the "unusable" sentinel.
+
+	  The receiver's serial rate must match current-speed on the parent
+	  UART.
+
+endchoice
+
+if RDD2_GNSS_SOURCE_ONBOARD
+
+config RDD2_GNSS_UBX_MAX_PAYLOAD
+	int "Largest UBX payload buffered"
+	default 128
+	range 92 1024
+	help
+	  NAV-PVT is 92 bytes. Larger frames from other message classes are
+	  counted and skipped rather than buffered.
+
+config RDD2_GNSS_UBX_RX_RING_SIZE
+	int "Receive ring buffer size in bytes"
+	default 512
+	range 128 4096
+	help
+	  Must hold one poll period of line rate: at 115200 baud a 5 ms period
+	  is about 58 bytes, so the default leaves generous headroom for burst
+	  arrival.
+
+config RDD2_GNSS_UBX_POLL_MS
+	int "Reader thread poll period in milliseconds"
+	default 5
+	range 1 100
+
+config RDD2_GNSS_UBX_THREAD_PRIORITY
+	int "Reader thread priority"
+	default 7
+	help
+	  Must stay preemptible and below the control loop. A cooperative
+	  (negative) priority here would let NMEA/UBX parsing block the
+	  1600 Hz loop, which SPEC_0002 and SPEC_0005 forbid.
+
+config RDD2_GNSS_UBX_THREAD_STACK_SIZE
+	int "Reader thread stack size"
+	default 1536
+	range 1024 8192
+
+endif

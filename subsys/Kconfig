@@ -1,5 +1,7 @@
 menu "Subsystems"
 
+rsource "zros_serial/Kconfig"
+rsource "gnss_source/Kconfig"
 rsource "lockstep/Kconfig"
 
 endmenu

@@ -8,16 +8,66 @@
 		imu0 = &icm45686;
 		motors = &dshot;
 		gnss = &gnss0;
+		zros-serial = &lpuart4;
+
+		/*
+		 * Candidates for `zros_serial scan`, which listens on all of
+		 * them at once to find which header the radio is on. Only
+		 * UARTs no driver owns may be listed: the scan reconfigures
+		 * the baud and polls for bytes, which would fight any driver
+		 * holding the port. lpuart6 is the console, lpuart8 is CRSF,
+		 * and lpuart2 belongs to the GNSS receiver in the default
+		 * build, so the mocap-gnss snippet adds lpuart2 instead.
+		 */
+		zros-scan0 = &lpuart3;
+		zros-scan1 = &lpuart4;
+		zros-scan2 = &lpuart5;
 	};
 };
 
+/*
+ * SiK telemetry radio carrying the compact synapse serial framing. All three
+ * candidate TELEM ports carry the radio's rate, not just the one the
+ * zros-serial alias currently names: `zros_serial scan` configures the baud
+ * itself and restores it afterwards, so a port that scans clean at 57600
+ * would otherwise still come up at the devicetree default and see nothing.
+ * 57600 is the SiK factory default; change all three together if the radios
+ * are reconfigured.
+ */
+&lpuart3 {
+	status = "okay";
+	current-speed = <57600>;
+};
+
+&lpuart4 {
+	status = "okay";
+	current-speed = <57600>;
+};
+
+&lpuart5 {
+	status = "okay";
+	current-speed = <57600>;
+};
+
+/*
+ * Onboard M10 on the 10-pin JST-GH GPS connector. Enabling this node is what
+ * pulls in the Zephyr GNSS driver and makes RDD2_GNSS_SOURCE_ONBOARD the
+ * default, so the gnss topic is produced here and streamed out as telemetry.
+ *
+ * current-speed is 115200, confirmed against the hardware: a port dump at that
+ * rate returns b5 62 01 07, a u-blox UBX NAV-PVT header. Note that the module
+ * therefore speaks UBX, not NMEA, so gnss-nmea-generic cannot decode it - see
+ * the GNSS section of README.md. The mocap-gnss snippet disables this node,
+ * which both frees the UART and switches the topic to accepting an injected
+ * fix.
+ */
 &lpuart2 {
 	status = "okay";
 	current-speed = <115200>;
 
 	gnss0: gnss {
-		status = "disabled";
-		compatible = "gnss-nmea-generic";
+		status = "okay";
+		compatible = "cognipilot,ubx-gnss";
 	};
 };
 
