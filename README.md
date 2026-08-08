@@ -11,18 +11,70 @@ V1 goals:
 - CRSF input only
 - DSHOT output only
 - ICM45686 IMU only
-- one application hot-path thread
+- one uninterrupted IMU → rate eFMU → DSHOT hot-path thread
 - no dependency on the legacy `cerebri` module
 
 Current implementation scope:
 
 - CEP-0002 platform layout under `rdd2/`
 - local FlexIO DSHOT driver vendored into this repo
-- Rumoca eFMI control code generated into the build tree
-- CRSF -> Rumoca-generated eFMI control and estimation -> quad-X mixer -> DSHOT
+- four Rumoca eFMUs generated into the build tree and deployed through four
+  explicit process adapters
+- planning -> guidance -> rate/allocation follows the periods and connections
+  in `Vehicles.Rdd2.AvionicsSystem`
+- the navigation estimator follows the 1 ms contract in
+  `Avionics.PartialNavigationEstimator`
 - `ACRO` and `AUTO_LEVEL` manual flight modes
 - GNSS on the `gnss_fix` topic from either the onboard M10 read as UBX or a
   fix injected over the telemetry radio
+
+## Repository layout
+
+| Path | Ownership |
+|---|---|
+| `src/` | eFMU processes, their interfaces, and the composition root |
+| `subsys/` | Zephyr lockstep, GNSS, and serial communication subsystems |
+| `drivers/`, `include/`, `dts/` | Local Zephyr drivers, public driver API, and devicetree bindings |
+| `boards/` | Board-specific Kconfig fragments and devicetree overlays |
+| `snippets/` | Optional standard Zephyr build profiles such as `-S mocap-gnss` |
+| `fastdyn/` | FastDyn firmware and rehosting configuration only |
+| `xtask/` | Reproducible Rust host commands, FastDyn mission host, and host tests |
+| `cmake/`, `nix/` | Build-tool and Nix/NixOS integration |
+| `spec/`, `docs/` | Design requirements and operator documentation |
+| `.github/`, `.cargo/`, `.vscode/` | CI, Cargo command aliases, and editor configuration |
+
+There are no generic top-level `tests/`, `test_scripts/`, `scripts/`, or
+`tools/` buckets; executable host workflows belong in `xtask/`.
+
+## The architecture at a glance
+
+The Modelica objects are the application. Zephyr schedules one process per
+eFMU and maps its driver and ZROS boundaries:
+
+```text
+driver IMU ── 1600 Hz rate thread ── control_imu ── 1000 Hz navigation eFMU
+                    ↑                                    │
+                    │                         navigation_odometry + attitude
+                    │                                    │
+                    │       50 Hz planning eFMU ── trajectory_reference
+                    │                                    │
+                    └──── RateCommandData ── 200 Hz guidance eFMU
+                    │
+                    └──── RateControlAllocator eFMU ── direct DSHOT driver
+```
+
+The rate process owns Zephyr's calling/main thread. It waits directly on the
+IMU data-ready source, advances `RateControlAllocator`, and writes DSHOT without
+a scheduler handoff. Navigation, planning, and guidance each own a worker
+thread. On coincident releases, priority order is rate, navigation, planning,
+then guidance, so guidance sees the newly published plan just as it does in the
+phase-zero ideal RTOS composition. Cross-thread values are bounded,
+latest-value ZROS topics; there are no control queues.
+
+See [`src/processes/README.md`](src/processes/README.md) for the complete
+process/interface table. Controller equations remain vector and matrix
+equations in Modelica; scalar lowering is a compiler concern, not handwritten
+C.
 
 ## Choosing the GNSS source
 
@@ -42,9 +94,9 @@ the onboard source, and disabling it falls back to injection, so the node
 status and the Kconfig choice cannot disagree. `zros topic echo gnss_fix`
 shows the live fix whichever way it arrived.
 
-`mocap-gnss` is the indoor configuration — position comes from motion capture
-over the radio, and the onboard driver is left out entirely so `lpuart2` stays
-free. `test_scripts/publish_gps_synapse.py` is the bridge that feeds it.
+`mocap-gnss` is the indoor configuration — position comes from an external
+Synapse-compatible bridge over the radio, and the onboard driver is left out
+entirely so `lpuart2` stays free.
 
 The onboard reader lives in `subsys/gnss_source` and decodes UBX-NAV-PVT
 directly rather than going through Zephyr's generic NMEA driver: the M10 on
@@ -65,8 +117,7 @@ the UTC timestamp only with both validDate and validTime and a fix, since a
 timestamp that silently stops advancing is worse for a consumer than none.
 Receiver yaw is absent with its validity bit clear — NAV-PVT does not carry it.
 
-See `test_scripts/README.md` for injecting a fix from a laptop or from motion
-capture, and `tools/synapse_serial/README.md` for the wire format.
+See `docs/ground_station_telemetry.md` for the serial wire contract.
 
 ## Which bus carries what
 
@@ -103,12 +154,14 @@ asynchronous side-channel without changing the direct lockstep coordinator.
 Performance builds may omit the unused network stack; communications builds
 retain ENET and enable CSyn/Zenoh independently of lockstep pacing.
 
-CMake installs the pinned Rumoca release into the build tree, verifies the
-installer and binary hashes, and generates eFMI Production Code from
-`Vehicles.Rdd2.Controller` and `Estimation.ComplementaryAttitude` in the
-`modelica_models` West project under
+CMake installs the Rumoca release pinned by `cmake/RumocaLock.cmake` into the
+build tree, verifies the installer, executable version, and platform binary
+hash, and generates eFMI Production Code from
+`Planning.Bezier.WaypointTrajectoryPlanner`,
+`Vehicles.Rdd2.NavigationEstimator`, `Vehicles.Rdd2.GuidanceController`, and
+`Vehicles.Rdd2.RateControlAllocator` in the `modelica_models` West project under
 `${CMAKE_BINARY_DIR}/generated/rumoca`. The reusable quadrotor plant, RDD2
-parameters, controller, and model-level qualification mission all remain in
+parameters, task composition, and model-level qualification mission all remain in
 that common project. Generated C and `.efmu` containers are build outputs, not
 committed source.
 
@@ -164,6 +217,49 @@ nix develop
 rdd2-west-update
 rdd2-build
 ```
+
+### Editor completion
+
+`nix develop` includes `clangd` and links the native Zephyr compilation
+database to `./compile_commands.json`. Run `rdd2-build-native-sim` once to
+create or refresh it, then start either editor from that shell:
+
+```sh
+nvim .
+# or
+code .
+```
+
+Neovim's clangd client discovers the root database automatically. The checked-in
+VS Code settings configure both clangd and the Microsoft C/C++ extension to use
+the same database; the workspace recommends the clangd extension. Set
+`RDD2_COMPILE_COMMANDS` to a specific database file before `nix develop` to
+select a non-default build, or set `RDD2_BUILD_DIR` to its build directory.
+The native database is the default because clangd understands its host-compiler
+flags while still receiving all Zephyr, generated devicetree, module, and eFMU
+include paths.
+Re-run the appropriate build after changing boards, snippets, or Kconfig so
+generated Zephyr and devicetree include paths stay current.
+
+Host-side development commands use the checked-in Cargo xtask workspace:
+
+```sh
+cargo xtask fmt --check
+cargo xtask fmt
+cargo test --workspace --locked
+rdd2-fastdyn-setup
+rdd2-fastdyn-ci
+rdd2-fastdyn-mission --help
+```
+
+The `rdd2-fastdyn-*` commands are provided by `nix develop` and configure the
+repository and West workspace paths. `rdd2-fastdyn-ci` is the top-level,
+incremental target: it updates a missing or stale managed West workspace,
+builds the dedicated firmware image, prepares a missing or stale FastDyn/QEMU
+runtime, exports and compiles the FMI plant, builds the release mission host,
+and flies the acceptance mission. `rdd2-fastdyn-setup` and
+`rdd2-fastdyn-mission` remain useful lower-level targets. See
+`docs/fastdyn.md` for the complete rehosted mission workflow.
 
 On NixOS, add the SEGGER udev rule to the configuration of each development
 host so logged-in users can access J-Link USB probes:

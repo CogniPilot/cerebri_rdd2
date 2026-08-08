@@ -514,7 +514,8 @@ enabled = false
 # the Rumoca-generated RDD2 FMI 3 plant; Python is not in the hot path.
 [Run.processes.cerebri_rdd2_mission]
 command = [
-    "${CEREBRI_RDD2_ROOT}/tools/fastdyn_mission/target/release/cerebri-rdd2-mission",
+    "${CEREBRI_RDD2_ROOT}/target/release/xtask",
+    "fastdyn-mission",
     "--duration",
     "${RDD2_FASTDYN_MISSION_DURATION_S:-20}",
     "--report",

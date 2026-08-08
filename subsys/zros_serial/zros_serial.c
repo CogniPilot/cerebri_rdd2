@@ -4,7 +4,7 @@
 
 #include "zros_serial.h"
 
-#include "topic_bus.h"
+#include "interfaces/zros_topics.h"
 
 #include <string.h>
 
@@ -21,7 +21,7 @@
 /*
  * The wire ids are synapse catalog TopicIds, taken straight from the generated
  * catalog. That is schema, not transport: the ground-side peer in
- * tools/synapse_serial hardcodes the same ids, so the link stays byte-identical
+ * the generated Synapse catalog owns the same ids, so the link stays byte-identical
  * whichever local store the firmware happens to keep behind them.
  */
 #include <synapse/topic_catalog.h>

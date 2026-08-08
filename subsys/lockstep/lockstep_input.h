@@ -3,7 +3,7 @@
 #ifndef RDD2_LOCKSTEP_INPUT_H_
 #define RDD2_LOCKSTEP_INPUT_H_
 
-#include "synapse_messages.h"
+#include "interfaces/data.h"
 
 #include <stddef.h>
 #include <stdint.h>

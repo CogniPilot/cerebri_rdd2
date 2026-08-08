@@ -5,7 +5,8 @@ ACCEPTED
 
 ## Summary
 `native_sim` runs the same 1600 Hz flight-control loop as flight firmware. Its
-simulator IO terminates in lockstep RC, IMU, and DSHOT devices using the same
+simulator IO terminates in lockstep RC, IMU, navigation/reference, and DSHOT
+interfaces using the same
 generated `synapse_fbs` messages and shared direct sequencing
 module as CUBS2. CSyn/Zenoh may run as a communications side-channel, but never
 paces lockstep.
@@ -18,8 +19,9 @@ paces lockstep.
 - Host simulator IO must stay out of the 1600 Hz controller thread.
 - `src/main.c` must remain free of `native_sim`-specific control-path branches.
 - The simulator boundary must terminate at board-selected `rc`, `imu0`, and `motors` devices, not at ad hoc app-level IO hooks.
-- Inbound simulator data uses generated `ManualControlData` and
-  `InertialSampleData` fixed-layout payloads.
+- Inbound simulator data uses generated `ManualControlData`,
+  `InertialSampleData`, `ExternalOdometryData`, and `LocalPositionCommandData`
+  fixed-layout payloads.
 - Outbound data uses generated `PwmSignalOutputsData`, `VehicleHealthData`,
   `AttitudeEstimateData`, `AttitudeCommandData`, and `ControlLoopMetricsData`
   fixed-layout payloads.
@@ -61,7 +63,7 @@ paces lockstep.
 - `../boards/native_sim.conf`
 - `../boards/native_sim.overlay`
 - `../src/main.c`
-- `../src/rc_input.c`
+- `../src/interfaces/rc.c`
 - `../subsys/lockstep/lockstep_input.c`
 - `../subsys/lockstep/lockstep_transport.h`
 - `../subsys/lockstep/lockstep_transport.c`

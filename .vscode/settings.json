@@ -1,0 +1,13 @@
+{
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/compile_commands.json",
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}",
+    "--background-index",
+    "--header-insertion=never"
+  ],
+  "cmake.configureOnOpen": false,
+  "files.watcherExclude": {
+    "**/.devenv/**": true,
+    "**/build*/**": true
+  }
+}

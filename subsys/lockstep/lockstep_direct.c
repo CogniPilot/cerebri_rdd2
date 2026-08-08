@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
+#include "interfaces/data.h"
 #include "lockstep_shared.h"
 #include "lockstep_transport.h"
-#include "synapse_messages.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -64,6 +64,8 @@ static void direct_thread(void *arg0, void *arg1, void *arg2) {
                                     sizeof(g_shared->manual_control),
                                     &manual.rc, &manual.valid) ||
         !rdd2_lockstep_handle_manual_control(&manual) ||
+        !rdd2_lockstep_handle_navigation(&g_shared->external_odometry,
+                                         &g_shared->local_position_command) ||
         !rdd2_lockstep_handle_input_blob(
             (const uint8_t *)&g_shared->inertial_sample,
             sizeof(g_shared->inertial_sample))) {
@@ -109,6 +111,12 @@ static int direct_init(void) {
     g_shared = NULL;
     LOG_ERR("direct lockstep transport has invalid magic");
     return -EIO;
+  }
+  rc = rdd2_lockstep_navigation_init();
+  if (rc != 0) {
+    rdd2_lockstep_host_unmap(g_shared, sizeof(*g_shared));
+    g_shared = NULL;
+    return rc;
   }
   rc = cerebri_lockstep_sequence_init(
       &g_lockstep, &g_shared->input_sequence, &g_shared->response_sequence,

@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20.0)
 
+# clangd, Neovim, and VS Code consume Zephyr's exact generated include paths
+# and compile definitions from this database.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 list(APPEND DTS_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 set(RDD2_WORKSPACE_ROOT "" CACHE PATH "West workspace root containing Zephyr and module checkouts")
@@ -15,11 +19,10 @@ endif()
 
 function(rdd2_cache_path variable fallback description)
   if(DEFINED ENV{${variable}})
-    set(default "$ENV{${variable}}")
+    set(${variable} "$ENV{${variable}}" CACHE PATH "${description}" FORCE)
   else()
-    set(default "${fallback}")
+    set(${variable} "${fallback}" CACHE PATH "${description}")
   endif()
-  set(${variable} "${default}" CACHE PATH "${description}")
 endfunction()
 
 rdd2_cache_path(RDD2_CEREBRI_MODULES_ROOT
@@ -59,25 +62,57 @@ endif()
 
 set(FETCHCONTENT_BASE_DIR ${CMAKE_CURRENT_BINARY_DIR}/_deps)
 
-set(RDD2_RUMOCA_VERSION "v0.9.20"
-  CACHE STRING "Pinned Rumoca version used for eFMI control code generation"
-)
-set(RDD2_RUMOCA_INSTALL_SCRIPT_SHA256
-  "ac15aa5ec90cb974387610fae7594d2704f2a3bd2e080cfe2517e896d30eb161"
-  CACHE STRING "SHA256 of the pinned Rumoca binary install script"
-)
-set(RDD2_RUMOCA_INSTALL_SCRIPT_URL
-  "https://raw.githubusercontent.com/CogniPilot/rumoca/${RDD2_RUMOCA_VERSION}/infra/install/install.sh"
-  CACHE STRING "Pinned Rumoca binary install script URL"
-)
-set(RDD2_RUMOCA_EXECUTABLE "" CACHE FILEPATH
-  "Existing Rumoca executable; skips the pinned binary download when set"
-)
+set(RDD2_RUMOCA_LOCK_FILE "${CMAKE_CURRENT_LIST_DIR}/cmake/RumocaLock.cmake")
+include(${RDD2_RUMOCA_LOCK_FILE})
+if(DEFINED ENV{RDD2_RUMOCA_EXECUTABLE} AND
+   NOT "$ENV{RDD2_RUMOCA_EXECUTABLE}" STREQUAL "")
+  set(RDD2_RUMOCA_EXECUTABLE "$ENV{RDD2_RUMOCA_EXECUTABLE}" CACHE FILEPATH
+    "Existing Rumoca executable; skips the pinned binary download when set" FORCE
+  )
+else()
+  set(RDD2_RUMOCA_EXECUTABLE "" CACHE FILEPATH
+    "Existing Rumoca executable; skips the pinned binary download when set"
+  )
+endif()
+if(DEFINED ENV{RDD2_RUMOCA_LIBRARY_PATH} AND
+   NOT "$ENV{RDD2_RUMOCA_LIBRARY_PATH}" STREQUAL "")
+  set(RDD2_RUMOCA_LIBRARY_PATH "$ENV{RDD2_RUMOCA_LIBRARY_PATH}" CACHE PATH
+    "Optional runtime library path for a locally built Rumoca executable" FORCE
+  )
+else()
+  set(RDD2_RUMOCA_LIBRARY_PATH "" CACHE PATH
+    "Optional runtime library path for a locally built Rumoca executable"
+  )
+endif()
 
 if(RDD2_RUMOCA_EXECUTABLE)
   if(NOT EXISTS "${RDD2_RUMOCA_EXECUTABLE}")
     message(FATAL_ERROR
       "RDD2_RUMOCA_EXECUTABLE does not exist: ${RDD2_RUMOCA_EXECUTABLE}"
+    )
+  endif()
+  set(_rdd2_rumoca_version_command ${RDD2_RUMOCA_EXECUTABLE} --version)
+  if(RDD2_RUMOCA_LIBRARY_PATH)
+    list(PREPEND _rdd2_rumoca_version_command
+      ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${RDD2_RUMOCA_LIBRARY_PATH}"
+    )
+  endif()
+  execute_process(
+    COMMAND ${_rdd2_rumoca_version_command}
+    OUTPUT_VARIABLE _rdd2_rumoca_version_output
+    ERROR_VARIABLE _rdd2_rumoca_version_error
+    RESULT_VARIABLE _rdd2_rumoca_version_result
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_STRIP_TRAILING_WHITESPACE
+  )
+  string(REGEX REPLACE "^v" "" _rdd2_rumoca_version_number "${RDD2_RUMOCA_VERSION}")
+  if(NOT _rdd2_rumoca_version_result EQUAL 0 OR
+     NOT _rdd2_rumoca_version_output STREQUAL "rumoca ${_rdd2_rumoca_version_number}")
+    message(FATAL_ERROR
+      "RDD2_RUMOCA_EXECUTABLE does not match ${RDD2_RUMOCA_LOCK_FILE}: "
+      "expected rumoca ${_rdd2_rumoca_version_number}, "
+      "got '${_rdd2_rumoca_version_output}' (${_rdd2_rumoca_version_error})"
     )
   endif()
 else()
@@ -89,10 +124,8 @@ else()
   add_custom_command(
     OUTPUT ${RDD2_RUMOCA_EXECUTABLE}
     COMMAND ${CMAKE_COMMAND}
-            -DRDD2_RUMOCA_VERSION=${RDD2_RUMOCA_VERSION}
+            -DRDD2_RUMOCA_LOCK_FILE=${RDD2_RUMOCA_LOCK_FILE}
             -DRDD2_RUMOCA_BIN_DIR=${RDD2_RUMOCA_BIN_DIR}
-            -DRDD2_RUMOCA_INSTALL_SCRIPT_URL=${RDD2_RUMOCA_INSTALL_SCRIPT_URL}
-            -DRDD2_RUMOCA_INSTALL_SCRIPT_SHA256=${RDD2_RUMOCA_INSTALL_SCRIPT_SHA256}
             -P ${CMAKE_CURRENT_LIST_DIR}/cmake/InstallRumoca.cmake
     COMMENT "Installing pinned Rumoca ${RDD2_RUMOCA_VERSION}"
     VERBATIM
@@ -119,6 +152,13 @@ function(rdd2_add_efmi_control_model model_file model_name generated_name)
   set(_stamp ${RDD2_RUMOCA_GENERATED_DIR}/${generated_name}.galec-production.stamp)
   set(_source ${_efmu_dir}/ProductionCode/${generated_name}.c)
   set(_header ${_efmu_dir}/ProductionCode/${generated_name}.h)
+  set(_rumoca_command ${RDD2_RUMOCA_EXECUTABLE})
+  if(RDD2_RUMOCA_LIBRARY_PATH)
+    list(PREPEND _rumoca_command
+      ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${RDD2_RUMOCA_LIBRARY_PATH}"
+    )
+  endif()
 
   add_custom_command(
     OUTPUT ${_stamp}
@@ -134,7 +174,7 @@ function(rdd2_add_efmi_control_model model_file model_name generated_name)
             ${_efmu_dir}
             ${_efmu_file}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${RDD2_RUMOCA_GENERATED_DIR}
-    COMMAND ${RDD2_RUMOCA_EXECUTABLE}
+    COMMAND ${_rumoca_command}
             --cache-dir ${CMAKE_CURRENT_BINARY_DIR}/.rumoca-cache
             compile ${_model_file}
             --model ${model_name}
@@ -158,15 +198,27 @@ function(rdd2_add_efmi_control_model model_file model_name generated_name)
 endfunction()
 
 rdd2_add_efmi_control_model(
-  Vehicles/Rdd2/Controller.mo
-  Vehicles.Rdd2.Controller
-  Vehicles_Rdd2_Controller
+  Planning/Bezier/WaypointTrajectoryPlanner.mo
+  Planning.Bezier.WaypointTrajectoryPlanner
+  Planning_Bezier_WaypointTrajectoryPlanner
 )
 
 rdd2_add_efmi_control_model(
-  Estimation/ComplementaryAttitude.mo
-  Estimation.ComplementaryAttitude
-  Estimation_ComplementaryAttitude
+  Vehicles/Rdd2/GuidanceController.mo
+  Vehicles.Rdd2.GuidanceController
+  Vehicles_Rdd2_GuidanceController
+)
+
+rdd2_add_efmi_control_model(
+  Vehicles/Rdd2/RateControlAllocator.mo
+  Vehicles.Rdd2.RateControlAllocator
+  Vehicles_Rdd2_RateControlAllocator
+)
+
+rdd2_add_efmi_control_model(
+  Vehicles/Rdd2/NavigationEstimator.mo
+  Vehicles.Rdd2.NavigationEstimator
+  Vehicles_Rdd2_NavigationEstimator
 )
 
 add_custom_target(rdd2_efmi_control_codegen

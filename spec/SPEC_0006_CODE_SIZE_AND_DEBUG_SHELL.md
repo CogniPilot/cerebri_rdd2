@@ -49,8 +49,7 @@ Source files stay under 2000 lines, and shell-based topic diagnostics are isolat
 ## References
 
 - `../src/main.c`
-- `../src/control_io.c`
-- `../src/fc_shell.c`
-- `../src/rate_control.c`
-- `../src/topic_shell.c`
+- `../src/processes/rate_control_allocator.c`
+- `../src/interfaces/zros_topics.c`
+- `../src/diagnostics/top_shell.c`
 - `SPEC_0002_LATENCY_DRIVEN_ARCHITECTURE.md`

@@ -4,9 +4,9 @@
 
 #include "lockstep_transport.h"
 #include "lockstep_input.h"
-#include "rc_input.h"
-#include "synapse_messages.h"
-#include "topic_bus.h"
+#include "interfaces/data.h"
+#include "interfaces/drivers.h"
+#include "interfaces/zros_topics.h"
 
 #include <string.h>
 
@@ -14,6 +14,11 @@
 #include <zephyr/input/input.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
+
+#include <zros/private/zros_node_struct.h>
+#include <zros/private/zros_pub_struct.h>
+#include <zros/zros_node.h>
+#include <zros/zros_pub.h>
 
 struct lockstep_input_store {
 	uint8_t slots[2][RDD2_LOCKSTEP_INPUT_MAX_SIZE];
@@ -23,6 +28,12 @@ struct lockstep_input_store {
 
 static struct lockstep_input_store g_lockstep_input_store;
 static K_SEM_DEFINE(g_lockstep_input_sem, 0, 1);
+static struct zros_node g_lockstep_navigation_node;
+static struct zros_pub g_lockstep_odometry_pub;
+static struct zros_pub g_lockstep_reference_pub;
+static synapse_topic_ExternalOdometryData_t g_lockstep_odometry;
+static synapse_topic_LocalPositionCommandData_t g_lockstep_reference;
+static bool g_lockstep_navigation_ready;
 
 static void lockstep_input_store_publish(const uint8_t *buf, size_t len)
 {
@@ -130,16 +141,51 @@ bool rdd2_lockstep_handle_manual_control(const struct csyn_manual_control *manua
 {
 	rdd2_rc_channels_t rc = {0};
 	int32_t *channels = rdd2_topic_rc_channels_data(&rc);
+	const int32_t *manual_channels;
 
 	if (manual == NULL) {
 		return false;
 	}
-	memcpy(channels, csyn_rc_channels_data(&manual->rc), sizeof(rc));
+	manual_channels = csyn_rc_channels_data(&manual->rc);
+	for (size_t channel = 0U; channel < RDD2_RC_CHANNEL_COUNT; ++channel) {
+		channels[channel] = manual_channels[channel];
+	}
 	/* RDD2's existing controller assigns arm/mode to channels 4/5. */
 	channels[4] = manual->rc.ch6;
 	channels[5] = manual->rc.ch4;
 	lockstep_report_rc_input(&rc, manual->valid ? 100U : 0U, manual->valid);
 	return true;
+}
+
+int rdd2_lockstep_navigation_init(void)
+{
+	int rc;
+
+	zros_node_init(&g_lockstep_navigation_node, "rdd2_lockstep_navigation");
+	rc = zros_pub_init(&g_lockstep_odometry_pub, &g_lockstep_navigation_node,
+			   &topic_external_odometry, &g_lockstep_odometry);
+	if (rc == 0) {
+		rc = zros_pub_init(&g_lockstep_reference_pub,
+				   &g_lockstep_navigation_node,
+				   &topic_local_position_command,
+				   &g_lockstep_reference);
+	}
+	g_lockstep_navigation_ready = rc == 0;
+	return rc;
+}
+
+bool rdd2_lockstep_handle_navigation(
+	const synapse_topic_ExternalOdometryData_t *odometry,
+	const synapse_topic_LocalPositionCommandData_t *command)
+{
+	if (!g_lockstep_navigation_ready || odometry == NULL || command == NULL) {
+		return false;
+	}
+
+	g_lockstep_odometry = *odometry;
+	g_lockstep_reference = *command;
+	return zros_pub_update(&g_lockstep_odometry_pub) == 0 &&
+	       zros_pub_update(&g_lockstep_reference_pub) == 0;
 }
 
 bool rdd2_lockstep_flight_state_blob_if_updated(uint32_t *last_generation, uint8_t *buf,

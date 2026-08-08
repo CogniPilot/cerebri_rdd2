@@ -16,12 +16,17 @@ lives under `rdd2/` with a platform-local manifest, specs, and build wiring.
 - The repository root does not carry a compatibility `west.yml`.
 - Platform-local generated output ignore rules live in `rdd2/.gitignore`, while
   repo-root tooling and workspace ignore rules stay in the root `.gitignore`.
-- `src/main.c` owns the v1 flight hot path.
+- `src/main.c` is only the composition root. Every generated eFMU owns one
+  adapter under `src/processes/`; the rate adapter owns the IMU-paced calling
+  thread and every other adapter owns one Zephyr worker thread.
 - Local app build wiring lives in `src/CMakeLists.txt`, not in one growing root source list.
 - Modelica sources for generated control artifacts live in the shared
-  `modelica_models` West project;
-  generated Rumoca/eFMI outputs live in the build tree, while handwritten
-  eFMI wrappers and hot-path orchestration stay in normal app modules.
+  `modelica_models` West project. Generated Rumoca/eFMI outputs live in the
+  build tree. Thin process adapters translate generated eFMU state to `synapse_fbs`
+  messages and devices without reimplementing control laws.
+- Reproducible host-side development and CI commands live in the root Cargo
+  workspace under `xtask/`. The FastDyn FMI/lockstep mission host is the
+  `fastdyn-mission` xtask command, orchestrated by `fastdyn-ci`.
 - Local subsystem build/config wiring lives under `subsys/` with local `CMakeLists.txt` and `Kconfig` files.
 - Local driver build/config wiring lives under `drivers/` with family-local `CMakeLists.txt` and `Kconfig` files where needed.
 - Debug and shell helpers live outside the hot-path module when they grow beyond trivial size.
@@ -33,9 +38,17 @@ lives under `rdd2/` with a platform-local manifest, specs, and build wiring.
 - Dependency on the legacy `cerebri` module.
 - Committing or editing generated control source directly when a handwritten
   wrapper or regenerated build artifact should be used instead.
-- Generic middleware buses or message brokers in the flight stack.
+- ZROS hops between functions that execute in the same RTOS thread.
+- Ad hoc private C payloads on established cross-thread or external
+  interfaces. A model connector absent from the pinned Synapse catalog may
+  have one fixed-capacity ingress type, isolated in its owning process until a
+  catalogued transport adapter exists.
 - Multi-board abstraction layers for v1.
-- Navigation, autonomy, or mission code in the manual-flight hot path.
+- A second firmware-local implementation of a control law owned by
+  `modelica_models`.
+- Unreferenced top-level `tests/`, `test_scripts/`, `scripts/`, or `tools/`
+  collections. A build configuration belongs to its Zephyr/FastDyn directory;
+  an executable host workflow belongs in `xtask/`.
 
 ## Motivation
 
@@ -49,6 +62,8 @@ lives under `rdd2/` with a platform-local manifest, specs, and build wiring.
 
 - `../west.yml`
 - `../src/CMakeLists.txt`
+- `../src/processes/README.md`
+- `../xtask/Cargo.toml`
 - `../subsys/CMakeLists.txt`
 - `../subsys/Kconfig`
 - `../drivers/CMakeLists.txt`

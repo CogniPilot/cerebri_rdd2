@@ -1,0 +1,10 @@
+CompileFlags:
+  # Zephyr's GCC build database is authoritative, but these GCC-only tuning
+  # flags are not accepted by clang's parser and do not affect indexing.
+  Remove:
+    - -mfp16-format=*
+    - -fno-reorder-functions
+    - --param=*
+    - -fno-defer-pop
+    - -fno-freestanding
+    - -specs=*

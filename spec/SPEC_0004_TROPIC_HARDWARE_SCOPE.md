@@ -26,10 +26,10 @@ ACCEPTED
 - The `ICM45686` data-ready interrupt advances one `1600 Hz` control iteration.
 - The onboard Ethernet path, when enabled, uses the `TJA1103` PHY with an external RMII reference clock.
 - The Tropic `TJA1103` reset line is wired to `GPIO_B0_14` / `GPIO2_IO14` and must be driven high before PHY initialization.
-- IMU data is remapped into `FRD` body axes before control use:
+- IMU data is remapped into CogniPilot `FLU` body axes before control use:
   - body roll / `x` = sensor gyro `y`
-  - body pitch / `y` = sensor gyro `x`
-  - body yaw / `z` = `-sensor gyro z`
+  - body pitch / `y` = `-sensor gyro x`
+  - body yaw / `z` = sensor gyro `z`
 - Accel uses the same axis remap as gyro.
 
 **PROHIBITED:**

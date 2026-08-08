@@ -10,5 +10,7 @@ __pycache__
 artifacts/
 result
 result-*
-/tools/fastdyn_mission/target/
+/target/
 .venv/
+.cache/
+compile_commands.json

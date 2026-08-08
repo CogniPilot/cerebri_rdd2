@@ -1,14 +1,18 @@
 cmake_minimum_required(VERSION 3.20)
 
 foreach(_var
-    RDD2_RUMOCA_VERSION
+    RDD2_RUMOCA_LOCK_FILE
     RDD2_RUMOCA_BIN_DIR
-    RDD2_RUMOCA_INSTALL_SCRIPT_URL
-    RDD2_RUMOCA_INSTALL_SCRIPT_SHA256)
+)
   if(NOT DEFINED ${_var} OR "${${_var}}" STREQUAL "")
     message(FATAL_ERROR "${_var} must be set")
   endif()
 endforeach()
+
+if(NOT EXISTS "${RDD2_RUMOCA_LOCK_FILE}")
+  message(FATAL_ERROR "Rumoca lock file does not exist: ${RDD2_RUMOCA_LOCK_FILE}")
+endif()
+include("${RDD2_RUMOCA_LOCK_FILE}")
 
 if(CMAKE_HOST_WIN32)
   message(FATAL_ERROR "Rumoca install.sh is not supported on Windows hosts")
@@ -34,15 +38,15 @@ endif()
 set(_rumoca_expected_sha256 "")
 if(_host_system_name STREQUAL "Linux")
   if(_host_system_processor MATCHES "^(x86_64|amd64|AMD64)$")
-    set(_rumoca_expected_sha256 "12727925c304c5188651e8b6b90f45071c8ad318e76b163c7adee160c649ba1a")
+    set(_rumoca_expected_sha256 "${RDD2_RUMOCA_LINUX_X86_64_SHA256}")
   elseif(_host_system_processor MATCHES "^(aarch64|arm64|ARM64)$")
-    set(_rumoca_expected_sha256 "5a4008d0320b264d2bf180d83dd1d9dc9616719935b94c4910d1b75334a459a8")
+    set(_rumoca_expected_sha256 "${RDD2_RUMOCA_LINUX_AARCH64_SHA256}")
   endif()
 elseif(_host_system_name STREQUAL "Darwin")
   if(_host_system_processor MATCHES "^(x86_64|amd64|AMD64)$")
-    set(_rumoca_expected_sha256 "274121445c4964de99fb12468e69c17aec4e7fb4006bd26b1043540997f3403f")
+    set(_rumoca_expected_sha256 "${RDD2_RUMOCA_DARWIN_X86_64_SHA256}")
   elseif(_host_system_processor MATCHES "^(aarch64|arm64|ARM64)$")
-    set(_rumoca_expected_sha256 "11431617a6d57f655fb5a300e8e863e1a4cf6f99f534bde726da910b17174429")
+    set(_rumoca_expected_sha256 "${RDD2_RUMOCA_DARWIN_AARCH64_SHA256}")
   endif()
 endif()
 

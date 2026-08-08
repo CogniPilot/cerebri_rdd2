@@ -1,0 +1,2 @@
+[alias]
+xtask = "run --package cerebri-rdd2-xtask --"

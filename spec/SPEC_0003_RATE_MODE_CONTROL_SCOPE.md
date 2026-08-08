@@ -1,50 +1,65 @@
-# SPEC_0003: Manual Flight Control Scope
+# SPEC_0003: Flight Control Scope
 
 ## Status
 ACCEPTED
 
 ## Summary
-The first flight-capable stack is manual multirotor flight with CRSF stick input, a handwritten fixed-step body-rate PID, quad-X mixing, a lightweight handwritten attitude predictor, and two pilot-selectable modes: `ACRO` and `AUTO_LEVEL`.
+RDD2 uses the same planning, navigation, guidance, rate-control, and allocation
+definitions in Modelica and firmware. Rumoca generates one Production Code
+eFMU per deployable block; the ideal RTOS model and embedded application
+therefore execute the same control laws at the same task boundaries.
 
 ## Specification
 
-- Manual flight only in v1.
-- `CH5` is the flight-mode switch.
-- `CH5 < 1500` selects `ACRO`.
-- `CH5 >= 1500` selects `AUTO_LEVEL`.
-- Inner body-rate PID is the active controller in both modes.
-- `ACRO` commands body-rate setpoints directly from RC sticks.
-- `AUTO_LEVEL` commands roll and pitch attitude through an outer attitude controller and keeps yaw as a rate command.
-- Attitude prediction runs in the hot path from gyro and accelerometer data using handwritten fixed-step local code.
-- Attitude correction is not required in the hot path for v1 auto-level.
-- Rate and attitude PID control in the flight stack use handwritten fixed-step discrete controllers, not generated multi-stage integrators.
-- Mixer shape is quad-X.
+**REQUIRED:**
+- `Planning.Bezier.WaypointTrajectoryPlanner`,
+  `Vehicles.Rdd2.NavigationEstimator`, `Vehicles.Rdd2.GuidanceController`, and
+  `Vehicles.Rdd2.RateControlAllocator` are the deployable eFMU boundaries.
+- `Vehicles.Rdd2.AvionicsSystem` is the executable ideal-RTOS routing contract
+  for planning, guidance, and rate control; it must not contain a second
+  implementation of those laws.
+- Rumoca-generated eFMI Production Code is the embedded controller
+  implementation. Handwritten C only binds fixed-layout messages, scheduling,
+  safety interlocks, and motor devices to the generated public interface.
+- One persistent generated state object advances in each eFMU process at that
+  block's modeled sample rate. Firmware must not reconstruct generated state
+  or mutate generated implementation details.
+- The explicit pilot-selectable modes are `ACRO`, `ATTITUDE`, and `POSITION`.
+- `CH5` uses three ranges: low selects `ACRO`, middle selects `ATTITUDE`, and
+  high selects `POSITION`.
+- `ACRO` commands body angular velocity directly from pilot sticks.
+- `ATTITUDE` commands roll and pitch attitude while retaining direct pilot yaw
+  rate and collective-thrust control.
+- `POSITION` consumes the latest ENU navigation estimate and trajectory
+  reference and runs the log-linear geometric outer loop.
+- All three modes use the same body-rate and multirotor allocation stages.
+- The mode is an explicit controller input, not hidden controller state.
+- Controller vectors remain arrays across the Modelica and C boundary.
 - Control-path state is fixed-size and explicit.
-- Control code consumes body rates in `FLU` body axes and world references in `ENU`.
-- Roll and pitch commands come from CRSF stick inputs.
-- Yaw uses its own rate PID path in both modes.
-- Motor order at the control layer is:
-  - `m0 = front-right`
-  - `m1 = rear-right`
-  - `m2 = rear-left`
-  - `m3 = front-left`
-- Quad-X roll/pitch mix signs follow `FLU` right-hand-rule torques:
-  - positive roll increases left motors and decreases right motors
-  - positive pitch increases rear motors and decreases front motors
-
+- Control code consumes body rates in `FLU` body axes and world references in
+  `ENU`.
+- Motor order at the control layer is front-right, rear-left, front-left,
+  rear-right, matching the shared plant and physical DSHOT channel contract.
 **PROHIBITED:**
 - `double` in the control path.
-- Position control in the hot path.
-- Velocity control in the hot path.
-- Generic control-allocation frameworks in v1.
-- GPS or navigation fusion in the rate-loop hot path.
+- Handwritten PID, attitude-control, position-control, or mixer equations in
+  the firmware wrapper.
+- A controller implementation that differs between ideal-RTOS tests,
+  native-sim/FastDyn, and flight firmware.
+- Scalarized roll, pitch, yaw, or motor fields at the generated controller
+  boundary.
+- Extra controller modes used only to manage integrators or transitions.
+- Navigation fusion in the rate-loop hot path.
 - Attitude correction or other estimator update steps that block the 1600 Hz body-rate loop.
 
 ## Motivation
 
-- First hover should happen with the smallest viable flight stack.
-- `AUTO_LEVEL` adds a safer bench and early-flight mode without bringing in full navigation.
-- Prediction-only attitude state keeps the hot path fast while leaving room for later off-path correction.
+- A single executable control definition prevents the simulator and embedded
+  vehicle from silently diverging.
+- Explicit arrays and a small causal interface keep the controller auditable
+  and suitable for later Lyapunov, contraction, and reachable-set analysis.
+- A single externally selected mode is the minimum unavoidable hybrid state;
+  additional internal modes would expand the verification state space.
 
 ## References
 

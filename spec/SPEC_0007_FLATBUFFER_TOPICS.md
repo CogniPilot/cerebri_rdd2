@@ -14,6 +14,9 @@ CSyn, while the control loop keeps private native working state.
   canonical keys, and payload sizing.
 - RDD2 and CUBS2 use the same CSyn and `synapse_fbs` revisions.
 - Shared topic storage uses generated fixed-layout payload structs.
+- CSyn mirrors fixed-layout payloads into and out of ZROS by identity copy;
+  vehicle applications do not publish CSyn directly or introduce decoded
+  transport-wrapper topics.
 - When a topic schema defines a fixed struct, firmware code must use the generated flatcc struct type instead of a handwritten mirror.
 - The control loop may keep private local state, but every published value must
   be mapped to a generated standard Synapse payload.

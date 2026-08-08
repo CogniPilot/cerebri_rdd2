@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
+#include "interfaces/data.h"
 #include "lockstep_shared.h"
 #include "lockstep_transport.h"
-#include "synapse_messages.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -57,6 +57,9 @@ static void fastdyn_thread(void *arg0, void *arg1, void *arg2) {
             sizeof(rdd2_fastdyn_lockstep_shared.manual_control), &manual.rc,
             &manual.valid) ||
         !rdd2_lockstep_handle_manual_control(&manual) ||
+        !rdd2_lockstep_handle_navigation(
+            &rdd2_fastdyn_lockstep_shared.external_odometry,
+            &rdd2_fastdyn_lockstep_shared.local_position_command) ||
         !rdd2_lockstep_handle_input_blob(
             (const uint8_t *)&rdd2_fastdyn_lockstep_shared.inertial_sample,
             sizeof(rdd2_fastdyn_lockstep_shared.inertial_sample))) {
@@ -91,6 +94,10 @@ static int fastdyn_init(void) {
   rdd2_fastdyn_lockstep_shared = (struct rdd2_lockstep_shared){
       .magic = RDD2_LOCKSTEP_MAGIC,
   };
+  rc = rdd2_lockstep_navigation_init();
+  if (rc != 0) {
+    return rc;
+  }
   rc = cerebri_lockstep_sequence_init(
       &g_lockstep, &rdd2_fastdyn_lockstep_shared.input_sequence,
       &rdd2_fastdyn_lockstep_shared.response_sequence,

@@ -18,7 +18,7 @@
 
 #include "gnss_onboard.h"
 
-#include "topic_bus.h"
+#include "interfaces/zros_topics.h"
 
 #include <string.h>
 

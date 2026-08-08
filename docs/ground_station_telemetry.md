@@ -3,11 +3,10 @@
 Interface contract for software on the other end of the RDD2 telemetry radio.
 Everything here is derived from the pinned `synapse_fbs` **0.7.0** catalog
 (schema set hash `2fd857effb6c7558d6869f4307a5354c`) and from what
-`src/synapse_messages.c` actually populates.
+`src/interfaces/data.c` actually populates.
 
-Vehicle side is `subsys/zros_serial/`. A working reference implementation of
-this document lives in `tools/synapse_serial/synapse_serial.py` — read it
-before writing a new decoder.
+Vehicle side is `subsys/zros_serial/`. The framing and payload contract below
+is the canonical description for external implementations.
 
 ## Link
 

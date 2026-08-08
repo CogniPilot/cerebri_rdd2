@@ -4,25 +4,25 @@ target_include_directories(app PRIVATE
 )
 
 target_sources(app PRIVATE
-  attitude_control.c
-  attitude_estimator.c
-  control_io.c
-  flight_mode.c
-  imu_stream.c
-  imu_latency_stats.c
+  interfaces/data.c
+  interfaces/imu.c
+  interfaces/motors.c
+  interfaces/rc.c
+  interfaces/zros_topics.c
   main.c
-  motor_output.c
-  rc_input.c
-  rate_control.c
-  topic_bus.c
-  synapse_messages.c
+  processes/guidance_controller.c
+  processes/navigation_estimator.c
+  processes/rate_control_allocator.c
+  processes/waypoint_trajectory_planner.c
 )
 
 target_sources_ifdef(CONFIG_TOP_SHELL app PRIVATE
-  top_shell.c
+  diagnostics/top_shell.c
 )
 
-target_sources_ifdef(CONFIG_RDD2_FASTDYN app PRIVATE fastdyn_board.c)
+target_sources_ifdef(CONFIG_RDD2_FASTDYN app PRIVATE
+  platform/fastdyn_board.c
+)
 
 if(CONFIG_RDD2_FASTDYN)
   # Both the external board module and the FastDyn image provide this hook.
@@ -34,23 +34,22 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
   zephyr_code_relocate(
     FILES
       main.c
-      control_io.c
-      imu_stream.c
-      rc_input.c
-      flight_mode.c
-      attitude_estimator.c
-      attitude_control.c
-      rate_control.c
-      motor_output.c
-      imu_latency_stats.c
-      synapse_messages.c
+      interfaces/data.c
+      interfaces/imu.c
+      interfaces/motors.c
+      interfaces/rc.c
+      interfaces/zros_topics.c
+      processes/guidance_controller.c
+      processes/navigation_estimator.c
+      processes/rate_control_allocator.c
+      processes/waypoint_trajectory_planner.c
     LOCATION ITCM_TEXT_RODATA
   )
 
   zephyr_code_relocate(
     FILES
-      imu_stream.c
-      rc_input.c
+      interfaces/imu.c
+      interfaces/rc.c
     LOCATION DTCM_DATA_BSS
   )
 endif()

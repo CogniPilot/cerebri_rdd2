@@ -22,13 +22,6 @@ jobs:
       - name: Configure runtime state
         run: echo "FASTDYN_STATE=$RUNNER_TEMP/fastdyn-state" >> "$GITHUB_ENV"
 
-      - name: Check out FastDyn runtime
-        uses: actions/checkout@v4
-        with:
-          repository: jgoppert/FastDyn
-          ref: 94c85f3e47be410e8d760b7f8207eb1580d7cd4c
-          path: FastDyn
-
       - name: Install toolchains
         run: |
           sudo apt-get update
@@ -36,7 +29,7 @@ jobs:
             build-essential cmake device-tree-compiler git jq \
             libexpat1-dev libfdt-dev libglib2.0-dev libprotobuf-dev \
             libpixman-1-dev libssl-dev libudev-dev meson ninja-build pkg-config \
-            protobuf-compiler python3-venv universal-ctags zlib1g-dev
+            protobuf-compiler python3-venv universal-ctags unzip zlib1g-dev
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: cachix/install-nix-action@v31
@@ -51,43 +44,57 @@ jobs:
             -DDTC_OVERLAY_FILE="$overlay"
 
       - name: Build generic FastDyn runtime
-        working-directory: FastDyn
-        run: |
-          python -m venv "$FASTDYN_STATE/venv"
-          PATH="$FASTDYN_STATE/venv/bin:$PATH" \
-            ./setup.sh --venv "$FASTDYN_STATE/venv" \
-              --build-qemu --qemu-root "$FASTDYN_STATE/qemu" \
-              --with-rumoca --skip-optifuzz
-          export PATH="$FASTDYN_STATE/venv/bin:$PATH"
-          export PKG_CONFIG_PATH="$PWD/out/deps/cjson/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-          export LD_LIBRARY_PATH="$PWD/out/deps/cjson/install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          make qemu_path="$FASTDYN_STATE/qemu" DEV=true PHY=true FLIGHT_CONTROLLERS=true FMU=true
-          cmake -S boardrunner/boardrunner_sdk -B boardrunner/boardrunner_sdk/build \
-            -DFASTDYN_INCLUDE_DIR="$PWD/include" \
-            -DQEMU_INCLUDE_DIR="$FASTDYN_STATE/qemu/include"
-          cmake --build boardrunner/boardrunner_sdk/build -j2
-          echo "$FASTDYN_STATE/venv/bin" >> "$GITHUB_PATH"
+        run: nix run .#fastdyn-setup
 
       - name: Test RDD2 mission adapter
         run: |
-          cargo test --locked --manifest-path tools/fastdyn_mission/Cargo.toml
-          cargo build --release --locked --manifest-path tools/fastdyn_mission/Cargo.toml
+          cargo test --workspace --locked
+          cargo build --release --locked --package cerebri-rdd2-xtask
 
       - name: Export RDD2 FMI plant
         run: |
           MODELICA_MODELS_ROOT="$RDD2_MODELICA_MODELS_ROOT" \
             nix run "$RDD2_MODELICA_MODELS_ROOT#rdd2-export-plant"
 
+          standard_zip="$RUNNER_TEMP/FMI-Standard-3.0.2.zip"
+          standard_root="$RUNNER_TEMP/FMI-Standard-3.0.2"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            https://github.com/modelica/fmi-standard/releases/download/v3.0.2/FMI-Standard-3.0.2.zip \
+            --output "$standard_zip"
+          printf '%s  %s\n' \
+            454a12f40069db7efc38faee1c8899fabe74086c0b052f88133b16f256c444bd \
+            "$standard_zip" | sha256sum --check
+          mkdir -p "$standard_root"
+          unzip -q "$standard_zip" -d "$standard_root"
+
+          plant_root="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant/Vehicles.Rdd2.PlantAdapter"
+          model_identifier="$(python3 - "$plant_root/modelDescription.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(sys.argv[1]).getroot()
+          interface = root.find("CoSimulation")
+          if interface is None or not interface.get("modelIdentifier"):
+              raise SystemExit("FMI model description has no CoSimulation modelIdentifier")
+          print(interface.get("modelIdentifier"))
+          PY
+          )"
+          binary_dir="$plant_root/binaries/x86_64-linux"
+          mkdir -p "$binary_dir"
+          cc -std=c99 -Wall -Wextra -Wpedantic -Werror -fPIC -shared \
+            -DFMI3_OVERRIDE_FUNCTION_PREFIX=1 \
+            -I"$standard_root/headers" \
+            "$plant_root/sources/model.c" -lm \
+            -o "$binary_dir/$model_identifier.so"
+          printf 'RDD2_RUMOCA_PLANT_DESCRIPTION=%s\n' \
+            "$plant_root/modelDescription.xml" >> "$GITHUB_ENV"
+          printf 'RDD2_RUMOCA_PLANT_LIBRARY=%s\n' \
+            "$binary_dir/$model_identifier.so" >> "$GITHUB_ENV"
+
       - name: Fly RDD2 mission
         env:
-          FASTDYN_ROOT: ${{ github.workspace }}/FastDyn
-          FASTDYN_QEMU_PATH: ${{ env.FASTDYN_STATE }}/qemu/build/qemu-system-arm
-          FASTDYN_MONITOR_ELF: ${{ env.FASTDYN_STATE }}/qemu/ws/monitor.elf
           RDD2_FASTDYN_BUILD_DIR: ${{ github.workspace }}/build-mr_vmu_tropic-fastdyn
-          RDD2_WORKSPACE_ROOT: ${{ env.RDD2_WEST_WORKSPACE }}
-          RDD2_RUMOCA_PLANT_DESCRIPTION: ${{ env.RDD2_MODELICA_MODELS_ROOT }}/artifacts/vehicles/rdd2/plant/modelDescription.xml
-          RDD2_RUMOCA_PLANT_LIBRARY: ${{ env.RDD2_MODELICA_MODELS_ROOT }}/artifacts/vehicles/rdd2/plant/binaries/x86_64-linux/Vehicles_Rdd2_AvionicsPlant.so
-        run: fastdyn/run_mission.sh
+        run: nix run .#fastdyn-ci
 
       - name: Upload mission artifacts
         if: always()

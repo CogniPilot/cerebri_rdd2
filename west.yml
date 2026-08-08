@@ -3,7 +3,6 @@
 manifest:
   self:
     path: cerebri_rdd2
-    west-commands: scripts/west-commands.yml
 
   remotes:
     - name: zephyrproject-rtos
@@ -63,6 +62,10 @@ manifest:
       remote: cognipilot
       revision: d319854bcbe5758f8beace3c99c6068796585d3f
       path: models/modelica_models
+    - name: fastdyn
+      url: https://github.com/jgoppert/FastDyn.git
+      revision: 94c85f3e47be410e8d760b7f8207eb1580d7cd4c
+      path: modules/sim/fastdyn
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git
       revision: cb9d8391c8e3c394fd288f2299c2b6758523b1c6 # cerebri2 4/27/26

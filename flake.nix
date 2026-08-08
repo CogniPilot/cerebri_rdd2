@@ -55,6 +55,7 @@
         pkgs: with pkgs; [
           cargo
           rustc
+          rustfmt
           universal-ctags
           meson
           jq
@@ -63,6 +64,7 @@
         ];
       mkFastDynCiLibraries =
         pkgs: with pkgs; [
+          cjson
           dtc
           expat
           glib
@@ -227,6 +229,12 @@
           ]
           ++ hostMultilibTools;
 
+          fmiStandard = pkgs.fetchzip {
+            url = "https://github.com/modelica/fmi-standard/releases/download/v3.0.2/FMI-Standard-3.0.2.zip";
+            hash = "sha256-AaFIArg4re9a5mPrUUfJPhI1e+RxHhL/DG+LWmqqdSM=";
+            stripRoot = false;
+          };
+
           workspaceScript = ''
             rdd2_find_app() {
               local dir
@@ -370,7 +378,7 @@
           commonScript = ''
             ${workspaceScript}
 
-            export LD_LIBRARY_PATH="${jlinkCli}/opt/SEGGER/JLink''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export LD_LIBRARY_PATH="${lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib pkgs.systemd ]}:${jlinkCli}/opt/SEGGER/JLink''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             rdd2_require_module_paths() {
               local workspace="$1"
@@ -425,9 +433,49 @@
               export ZEPHYR_SDK_INSTALL_DIR="''${ZEPHYR_SDK_INSTALL_DIR:-${zephyrSdk}}"
               export RDD2_WORKSPACE_ROOT="$workspace"
               export WEST_TOPDIR="$workspace"
+              export FASTDYN_ROOT="''${FASTDYN_ROOT:-$workspace/modules/sim/fastdyn}"
+              export FASTDYN_STATE="''${FASTDYN_STATE:-$app/.devenv/state/fastdyn}"
+              export FASTDYN_EXECUTABLE="''${FASTDYN_EXECUTABLE:-$FASTDYN_STATE/venv/bin/fastdyn}"
+              export FASTDYN_QEMU_PATH="''${FASTDYN_QEMU_PATH:-$FASTDYN_STATE/qemu/build/qemu-system-arm}"
+              export FASTDYN_MONITOR_ELF="''${FASTDYN_MONITOR_ELF:-$FASTDYN_STATE/qemu/ws/monitor.elf}"
+              export RDD2_RUMOCA_EXECUTABLE="''${RDD2_RUMOCA_EXECUTABLE:-}"
+              export RDD2_RUMOCA_LIBRARY_PATH="''${RDD2_RUMOCA_LIBRARY_PATH:-}"
 
               if [ -d "$workspace/zephyr" ]; then
                 export ZEPHYR_BASE="$workspace/zephyr"
+              fi
+            }
+
+            rdd2_export_local_model_development() {
+              local app="$1"
+              local source_workspace
+              local local_models
+              local local_rumoca
+
+              source_workspace="$(rdd2_source_workspace "$app")"
+              local_models="$source_workspace/modelica_models"
+              local_rumoca="$source_workspace/rumoca/target/debug/rumoca"
+
+              if [ -z "''${RDD2_MODELICA_MODELS_ROOT:-}" ] &&
+                 [ -f "$local_models/Vehicles/Rdd2/GuidanceController.mo" ] &&
+                 [ -f "$local_models/Vehicles/Rdd2/NavigationEstimator.mo" ]; then
+                export RDD2_MODELICA_MODELS_ROOT="$local_models"
+              fi
+
+              if [ -z "''${RDD2_RUMOCA_EXECUTABLE:-}" ] && [ -x "$local_rumoca" ]; then
+                export RDD2_RUMOCA_EXECUTABLE="$local_rumoca"
+                export RDD2_RUMOCA_LIBRARY_PATH="''${LD_LIBRARY_PATH:-}"
+              fi
+
+              if [ "$(realpath -m "''${RDD2_MODELICA_MODELS_ROOT:-}")" = "$(realpath "$local_models")" ]; then
+                if [ -z "''${RDD2_RUMOCA_EXECUTABLE:-}" ]; then
+                  printf 'error: local cerebri_rdd2 code generation requires %s\n' \
+                    "$local_rumoca" >&2
+                  return 1
+                fi
+                printf '[deps] local Modelica source: %s\n' "$local_models"
+                printf '[deps] local Rumoca code generator: %s\n' \
+                  "$RDD2_RUMOCA_EXECUTABLE"
               fi
             }
 
@@ -458,6 +506,243 @@
 
               rdd2_require_module_paths "$workspace"
             }
+
+            rdd2_require_fastdyn_runtime() {
+              local missing=0
+
+              if [ ! -f "$FASTDYN_ROOT/setup.sh" ]; then
+                printf 'error: missing pinned FastDyn checkout at %s\n' "$FASTDYN_ROOT" >&2
+                printf '       run: rdd2-west-update\n' >&2
+                return 1
+              fi
+
+              for path in \
+                "$FASTDYN_EXECUTABLE" \
+                "$FASTDYN_QEMU_PATH" \
+                "$FASTDYN_MONITOR_ELF" \
+                "$FASTDYN_ROOT/build/libfastdyn.so"
+              do
+                if [ ! -e "$path" ]; then
+                  printf 'error: missing FastDyn runtime artifact: %s\n' "$path" >&2
+                  missing=1
+                fi
+              done
+
+              if [ "$missing" -ne 0 ]; then
+                printf '       prepare the pinned runtime with: rdd2-fastdyn-setup\n' >&2
+                return 1
+              fi
+            }
+
+            rdd2_fastdyn_runtime_ready() {
+              local revision
+              local stamp="$FASTDYN_STATE/runtime.revision"
+
+              revision="$(git -C "$FASTDYN_ROOT" rev-parse HEAD 2>/dev/null || true)"
+              [ -x "$FASTDYN_EXECUTABLE" ] &&
+                [ -x "$FASTDYN_QEMU_PATH" ] &&
+                [ -f "$FASTDYN_MONITOR_ELF" ] &&
+                [ -f "$FASTDYN_ROOT/build/libfastdyn.so" ] &&
+                [ -n "$revision" ] &&
+                [ -f "$stamp" ] &&
+                [ "$(<"$stamp")" = "1:$revision" ]
+            }
+
+            rdd2_ensure_workspace() {
+              local app="$1"
+              local update_command="$2"
+              local workspace
+              local active_manifest
+              local needs_update=0
+
+              workspace="$(rdd2_workspace "$app")"
+              if [ ! -d "$workspace/.west" ]; then
+                needs_update=1
+              else
+                active_manifest="$(rdd2_active_manifest "$workspace")"
+                if [ -z "$active_manifest" ]; then
+                  needs_update=1
+                elif [ "$(realpath "$active_manifest")" != "$(realpath "$app/west.yml")" ] &&
+                     ! cmp -s "$app/west.yml" "$active_manifest"; then
+                  needs_update=1
+                fi
+              fi
+
+              for path in \
+                zephyr \
+                modules/sim/fastdyn \
+                models/modelica_models
+              do
+                if [ ! -d "$workspace/$path" ]; then
+                  needs_update=1
+                fi
+              done
+
+              if [ "$needs_update" -ne 0 ]; then
+                printf '[deps] updating the pinned West workspace\n'
+                "$update_command"
+              fi
+            }
+
+            rdd2_require_fastdyn_model_sources() {
+              local missing=0
+              local relative
+              local revision
+
+              revision="$(git -C "$RDD2_MODELICA_MODELS_ROOT" rev-parse HEAD 2>/dev/null || true)"
+
+              for relative in \
+                Planning/Bezier/WaypointTrajectoryPlanner.mo \
+                Vehicles/Rdd2/GuidanceController.mo \
+                Vehicles/Rdd2/NavigationEstimator.mo \
+                Vehicles/Rdd2/RateControlAllocator.mo \
+                Vehicles/Rdd2/Plant.mo
+              do
+                if [ ! -f "$RDD2_MODELICA_MODELS_ROOT/$relative" ]; then
+                  printf 'error: pinned Modelica dependency is missing %s\n' "$relative" >&2
+                  missing=1
+                fi
+              done
+
+              if [ "$missing" -ne 0 ]; then
+                printf '       modelica_models revision: %s\n' "''${revision:-unknown}" >&2
+                printf '       west.yml must pin a published commit containing these interfaces\n' >&2
+                return 1
+              fi
+            }
+
+            rdd2_require_pinned_modelica_checkout() {
+              local project="$RDD2_WORKSPACE_ROOT/models/modelica_models"
+              local manifest_revision
+              local expected_revision
+              local actual_revision
+
+              if [ "$(realpath "$RDD2_MODELICA_MODELS_ROOT")" != "$(realpath "$project")" ]; then
+                printf '[deps] using editable Modelica sources: %s\n' \
+                  "$RDD2_MODELICA_MODELS_ROOT"
+                return 0
+              fi
+
+              manifest_revision="$(
+                cd "$RDD2_WORKSPACE_ROOT"
+                west list modelica_models -f '{revision}'
+              )"
+              expected_revision="$(git -C "$project" rev-parse "$manifest_revision^{commit}")"
+              actual_revision="$(git -C "$project" rev-parse HEAD)"
+
+              if [ "$actual_revision" != "$expected_revision" ]; then
+                printf 'error: modelica_models checkout is not at the west.yml revision\n' >&2
+                printf '       expected: %s\n' "$expected_revision" >&2
+                printf '       actual:   %s\n' "$actual_revision" >&2
+                return 1
+              fi
+              if [ -n "$(git -C "$project" status --porcelain)" ]; then
+                printf 'error: modelica_models checkout has local modifications: %s\n' "$project" >&2
+                printf '       FastDyn CI requires the exact clean revision pinned by west.yml\n' >&2
+                return 1
+              fi
+
+              export RDD2_MODELICA_MODELS_ROOT="$project"
+            }
+
+            rdd2_build_fastdyn_firmware() {
+              local app="$1"
+              local board="''${RDD2_BOARD:-mr_vmu_tropic}"
+              local conf_file="$app/fastdyn/prj.conf"
+              local overlay="$app/fastdyn/mr_vmu_tropic.overlay"
+
+              export RDD2_FASTDYN_BUILD_DIR="''${RDD2_FASTDYN_BUILD_DIR:-$app/build-mr_vmu_tropic-fastdyn}"
+              export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
+              rdd2_require_fastdyn_model_sources
+
+              printf '[deps] building the FastDyn firmware image incrementally\n'
+              (
+                cd "$RDD2_WORKSPACE_ROOT"
+                west build -p auto -b "$board" -d "$RDD2_FASTDYN_BUILD_DIR" "$app" -- \
+                  -DCONF_FILE="$conf_file" \
+                  -DDTC_OVERLAY_FILE="$overlay" \
+                  -DRDD2_MODELICA_MODELS_ROOT="$RDD2_MODELICA_MODELS_ROOT" \
+                  -DRDD2_RUMOCA_EXECUTABLE="$RDD2_RUMOCA_EXECUTABLE" \
+                  -DRDD2_RUMOCA_LIBRARY_PATH="$RDD2_RUMOCA_LIBRARY_PATH"
+              )
+
+              if [ ! -f "$RDD2_FASTDYN_BUILD_DIR/zephyr/zephyr.elf" ]; then
+                printf 'error: firmware build did not produce %s/zephyr/zephyr.elf\n' \
+                  "$RDD2_FASTDYN_BUILD_DIR" >&2
+                return 1
+              fi
+            }
+
+            rdd2_prepare_fmi_plant() {
+              local description="''${RDD2_RUMOCA_PLANT_DESCRIPTION:-}"
+              local library="''${RDD2_RUMOCA_PLANT_LIBRARY:-}"
+              local plant_root
+              local model_identifier
+              local binary_dir
+              local source
+
+              if [ -n "$description" ] && [ -n "$library" ] &&
+                 [ -f "$description" ] && [ -f "$library" ]; then
+                export RDD2_RUMOCA_PLANT_DESCRIPTION="$description"
+                export RDD2_RUMOCA_PLANT_LIBRARY="$library"
+                return 0
+              fi
+
+              printf '[deps] exporting the RDD2 FMI 3 plant\n'
+              if [ -n "$RDD2_RUMOCA_EXECUTABLE" ]; then
+                "$RDD2_RUMOCA_EXECUTABLE" \
+                  --cache-dir "$RDD2_FASTDYN_BUILD_DIR/.rumoca-cache" \
+                  compile "$RDD2_MODELICA_MODELS_ROOT/Vehicles/Rdd2/Plant.mo" \
+                  --model Vehicles.Rdd2.Plant \
+                  --source-root "$RDD2_MODELICA_MODELS_ROOT" \
+                  --target fmi3 \
+                  --output "$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant"
+              else
+                MODELICA_MODELS_ROOT="$RDD2_MODELICA_MODELS_ROOT" \
+                  ${pkgs.nix}/bin/nix run "$RDD2_MODELICA_MODELS_ROOT#rdd2-export-plant"
+              fi
+
+              plant_root="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant"
+              description="''${RDD2_RUMOCA_PLANT_DESCRIPTION:-$plant_root/modelDescription.xml}"
+              if [ ! -f "$description" ]; then
+                printf 'error: plant export did not produce %s\n' "$description" >&2
+                return 1
+              fi
+
+              model_identifier="$(${pythonEnv}/bin/python - "$description" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+interface = root.find("CoSimulation")
+if interface is None or not interface.get("modelIdentifier"):
+    raise SystemExit("FMI model description has no CoSimulation modelIdentifier")
+print(interface.get("modelIdentifier"))
+PY
+              )"
+              source="$plant_root/sources/$model_identifier.c"
+              if [ ! -f "$source" ]; then
+                printf 'error: plant export did not produce %s\n' "$source" >&2
+                return 1
+              fi
+              binary_dir="$plant_root/binaries/${system}"
+              library="''${RDD2_RUMOCA_PLANT_LIBRARY:-$binary_dir/$model_identifier.so}"
+              mkdir -p "$binary_dir"
+
+              if [ ! -f "$library" ] ||
+                 [ "$source" -nt "$library" ] ||
+                 [ "$description" -nt "$library" ]; then
+                printf '[deps] compiling the RDD2 FMI 3 plant shared library\n'
+                cc -std=c99 -Wall -Wextra -Wpedantic -Werror -fPIC -shared \
+                  -DFMI3_OVERRIDE_FUNCTION_PREFIX=1 \
+                  -I"$plant_root/sources" \
+                  -I${fmiStandard}/headers \
+                  "$source" -lm -o "$library"
+              fi
+
+              export RDD2_RUMOCA_PLANT_DESCRIPTION="$description"
+              export RDD2_RUMOCA_PLANT_LIBRARY="$library"
+            }
           '';
 
           mkWestApp =
@@ -479,10 +764,18 @@
               ];
             };
 
+          mkCargoApp =
+            name: text:
+            pkgs.writeShellApplication {
+              inherit name text;
+              runtimeInputs = baseTools ++ mkFastDynCiTools pkgs;
+            };
+
           rdd2-build = mkWestApp "rdd2-build" ''
             ${commonScript}
 
             app="$(rdd2_find_app)"
+            rdd2_export_local_model_development "$app"
             rdd2_export_common "$app"
             rdd2_require_workspace "$app"
             workspace="$RDD2_WORKSPACE_ROOT"
@@ -501,6 +794,7 @@
             ${commonScript}
 
             app="$(rdd2_find_app)"
+            rdd2_export_local_model_development "$app"
             rdd2_export_common "$app"
             rdd2_require_workspace "$app"
             workspace="$RDD2_WORKSPACE_ROOT"
@@ -677,6 +971,102 @@
               --altitude-rmse-max-m "''${RDD2_TRAJECTORY_ALTITUDE_RMSE_MAX_M:-0.02}" \
               --attitude-p95-max-deg "''${RDD2_TRAJECTORY_ATTITUDE_P95_MAX_DEG:-5.0}" \
               "$@"
+          '';
+
+          rdd2-fastdyn-ci = mkCargoApp "rdd2-fastdyn-ci" ''
+            ${commonScript}
+
+            unset RDD2_MODELICA_MODELS_ROOT
+            unset RDD2_RUMOCA_EXECUTABLE
+            unset RDD2_RUMOCA_LIBRARY_PATH
+            app="$(rdd2_find_app)"
+            rdd2_ensure_workspace "$app" "${rdd2-west-update}/bin/rdd2-west-update"
+            rdd2_export_common "$app"
+            rdd2_require_workspace "$app"
+            rdd2_require_pinned_modelica_checkout
+            rdd2_build_fastdyn_firmware "$app"
+
+            if ! rdd2_fastdyn_runtime_ready; then
+              printf '[deps] preparing the pinned FastDyn runtime\n'
+              "${rdd2-fastdyn-setup}/bin/rdd2-fastdyn-setup"
+              rdd2_export_common "$app"
+              rdd2_require_fastdyn_runtime
+            fi
+
+            rdd2_prepare_fmi_plant
+
+            cd "$app"
+            cargo build --release --locked --package cerebri-rdd2-xtask
+            exec "$app/target/release/xtask" fastdyn-ci "$@"
+          '';
+
+          rdd2-fastdyn-setup = mkCargoApp "rdd2-fastdyn-setup" ''
+            ${commonScript}
+
+            if [ "$#" -ne 0 ]; then
+              printf 'usage: rdd2-fastdyn-setup\n' >&2
+              exit 2
+            fi
+
+            app="$(rdd2_find_app)"
+            rdd2_ensure_workspace "$app" "${rdd2-west-update}/bin/rdd2-west-update"
+            rdd2_export_common "$app"
+            rdd2_require_workspace "$app"
+
+            if [ ! -f "$FASTDYN_ROOT/setup.sh" ]; then
+              printf 'error: missing pinned FastDyn checkout at %s\n' "$FASTDYN_ROOT" >&2
+              printf '       run: rdd2-west-update\n' >&2
+              exit 1
+            fi
+
+            mkdir -p "$FASTDYN_STATE"
+            cjson_prefix="$FASTDYN_ROOT/out/deps/cjson/install"
+            export PKG_CONFIG_PATH="${lib.makeSearchPathOutput "dev" "lib/pkgconfig" (mkFastDynCiLibraries pkgs)}:$cjson_prefix/lib/pkgconfig:$cjson_prefix/lib64/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            nix_library_path="${lib.makeLibraryPath (mkFastDynCiLibraries pkgs)}"
+            export LIBRARY_PATH="$nix_library_path''${LIBRARY_PATH:+:$LIBRARY_PATH}"
+            export LD_LIBRARY_PATH="$nix_library_path:$cjson_prefix/lib:$cjson_prefix/lib64''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+            "$FASTDYN_ROOT/setup.sh" \
+              --venv "$FASTDYN_STATE/venv" \
+              --build-qemu \
+              --qemu-root "$FASTDYN_STATE/qemu" \
+              --with-rumoca \
+              --skip-optifuzz
+
+            export PATH="$FASTDYN_STATE/venv/bin:$PATH"
+
+            make -C "$FASTDYN_ROOT" \
+              qemu_path="$FASTDYN_STATE/qemu" \
+              DEV=true PHY=true FLIGHT_CONTROLLERS=true FMU=true
+            cmake \
+              -S "$FASTDYN_ROOT/boardrunner/boardrunner_sdk" \
+              -B "$FASTDYN_ROOT/boardrunner/boardrunner_sdk/build" \
+              -DFASTDYN_INCLUDE_DIR="$FASTDYN_ROOT/include" \
+              -DQEMU_INCLUDE_DIR="$FASTDYN_STATE/qemu/include"
+            cmake --build "$FASTDYN_ROOT/boardrunner/boardrunner_sdk/build" -j2
+
+            printf '1:%s\n' "$(git -C "$FASTDYN_ROOT" rev-parse HEAD)" \
+              >"$FASTDYN_STATE/runtime.revision"
+
+            printf 'FastDyn runtime is ready at %s\n' "$FASTDYN_ROOT"
+          '';
+
+          rdd2-fastdyn-mission = mkCargoApp "rdd2-fastdyn-mission" ''
+            ${commonScript}
+
+            app="$(rdd2_find_app)"
+            rdd2_export_local_model_development "$app"
+            rdd2_ensure_workspace "$app" "${rdd2-west-update}/bin/rdd2-west-update"
+            rdd2_export_common "$app"
+            rdd2_require_workspace "$app"
+            rdd2_require_pinned_modelica_checkout
+            rdd2_build_fastdyn_firmware "$app"
+            rdd2_prepare_fmi_plant
+            export RDD2_FASTDYN_FIRMWARE_ELF="''${RDD2_FASTDYN_FIRMWARE_ELF:-$RDD2_FASTDYN_BUILD_DIR/zephyr/zephyr.elf}"
+
+            cd "$app"
+            cargo build --release --locked --package cerebri-rdd2-xtask
+            exec "$app/target/release/xtask" fastdyn-mission "$@"
           '';
 
           rdd2-console = pkgs.writeShellApplication {
@@ -888,6 +1278,9 @@
               rdd2-systemview-capture
               rdd2-west-update
               rdd2-trajectory-compare
+              rdd2-fastdyn-ci
+              rdd2-fastdyn-setup
+              rdd2-fastdyn-mission
             ];
           };
         in
@@ -906,6 +1299,9 @@
             rdd2-systemview-capture
             rdd2-west-update
             rdd2-trajectory-compare
+            rdd2-fastdyn-ci
+            rdd2-fastdyn-setup
+            rdd2-fastdyn-mission
             ;
 
           default = host-tools;
@@ -977,6 +1373,24 @@
             program = "${packages.rdd2-trajectory-compare}/bin/rdd2-trajectory-compare";
             meta.description = "Compare RDD2 mission trajectory logs and render overlays";
           };
+
+          fastdyn-ci = {
+            type = "app";
+            program = "${packages.rdd2-fastdyn-ci}/bin/rdd2-fastdyn-ci";
+            meta.description = "Run and validate the complete RDD2 FastDyn mission";
+          };
+
+          fastdyn-setup = {
+            type = "app";
+            program = "${packages.rdd2-fastdyn-setup}/bin/rdd2-fastdyn-setup";
+            meta.description = "Prepare the pinned FastDyn and patched QEMU runtime";
+          };
+
+          fastdyn-mission = {
+            type = "app";
+            program = "${packages.rdd2-fastdyn-mission}/bin/rdd2-fastdyn-mission";
+            meta.description = "Run the RDD2 FMI plant and firmware lockstep mission";
+          };
         }
       );
 
@@ -991,7 +1405,10 @@
         in
         {
           default = pkgs.mkShell {
-            nativeBuildInputs = [ packages.host-tools ] ++ fastDynCiTools;
+            nativeBuildInputs = [
+              packages.host-tools
+              pkgs.clang-tools
+            ] ++ fastDynCiTools;
             buildInputs = fastDynCiLibraries;
 
             shellHook = ''
@@ -1041,16 +1458,48 @@
 
                 export RDD2_WORKSPACE_ROOT="$workspace"
                 export WEST_TOPDIR="$workspace"
+                export FASTDYN_ROOT="''${FASTDYN_ROOT:-$workspace/modules/sim/fastdyn}"
+                export FASTDYN_STATE="''${FASTDYN_STATE:-$app/.devenv/state/fastdyn}"
+                export FASTDYN_EXECUTABLE="''${FASTDYN_EXECUTABLE:-$FASTDYN_STATE/venv/bin/fastdyn}"
+                export FASTDYN_QEMU_PATH="''${FASTDYN_QEMU_PATH:-$FASTDYN_STATE/qemu/build/qemu-system-arm}"
+                export FASTDYN_MONITOR_ELF="''${FASTDYN_MONITOR_ELF:-$FASTDYN_STATE/qemu/ws/monitor.elf}"
+                local_models="$source_workspace/modelica_models"
+                local_rumoca="$source_workspace/rumoca/target/debug/rumoca"
+                if [ -f "$local_models/Vehicles/Rdd2/GuidanceController.mo" ] &&
+                   [ -f "$local_models/Vehicles/Rdd2/NavigationEstimator.mo" ]; then
+                  export RDD2_MODELICA_MODELS_ROOT="''${RDD2_MODELICA_MODELS_ROOT:-$local_models}"
+                  if [ -x "$local_rumoca" ]; then
+                    export RDD2_RUMOCA_EXECUTABLE="''${RDD2_RUMOCA_EXECUTABLE:-$local_rumoca}"
+                    export RDD2_RUMOCA_LIBRARY_PATH="''${RDD2_RUMOCA_LIBRARY_PATH:-$LD_LIBRARY_PATH}"
+                  fi
+                fi
                 if [ -d "$workspace/zephyr" ]; then
                   export ZEPHYR_BASE="$workspace/zephyr"
                 elif [ -z "''${ZEPHYR_BASE:-}" ]; then
                   printf 'cerebri_rdd2 Nix shell: run rdd2-west-update before raw west builds\n' >&2
                 fi
+
+                # Editors need one stable path, while West keeps compilation
+                # databases inside board-specific build directories. Prefer an
+                # explicit selection; otherwise use native_sim because clangd
+                # can parse its host flags directly. The database still has
+                # every generated Zephyr, module, and eFMU include directory.
+                compile_db="''${RDD2_COMPILE_COMMANDS:-}"
+                if [ -z "$compile_db" ] && [ -n "''${RDD2_BUILD_DIR:-}" ]; then
+                  compile_db="$RDD2_BUILD_DIR/compile_commands.json"
+                fi
+                if [ -z "$compile_db" ]; then
+                  compile_db="$app/build-native_sim/compile_commands.json"
+                fi
+                ln -sfn "$(realpath -m "$compile_db")" "$app/compile_commands.json"
+                export RDD2_COMPILE_COMMANDS="$app/compile_commands.json"
               elif [ -z "''${ZEPHYR_BASE:-}" ] && [ -d "$PWD/zephyr" ]; then
                 export ZEPHYR_BASE="$PWD/zephyr"
               fi
 
+              echo "cerebri_rdd2 Nix shell: clangd + Zephyr compile_commands configured"
               echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-flash, rdd2-debug, rdd2-console, rdd2-systemview, rdd2-systemview-capture"
+              echo "cerebri_rdd2 Nix shell: rdd2-fastdyn-setup, rdd2-fastdyn-ci, rdd2-fastdyn-mission"
             '';
           };
         }
