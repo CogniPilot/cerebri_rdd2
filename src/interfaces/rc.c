@@ -111,7 +111,7 @@ static void manual_message_from_rc(synapse_topic_ManualControlData_t *manual,
 		flags |= synapse_topic_ManualControlFlags_ArmSwitch;
 	}
 	*manual = (synapse_topic_ManualControlData_t){
-		.timestamp_us = (uint64_t)k_uptime_get() * 1000U,
+		.timestamp_ns = (uint64_t)k_uptime_get() * 1000000ULL,
 		.active_axes = synapse_topic_ManualControlAxes_Roll |
 			       synapse_topic_ManualControlAxes_Pitch |
 			       synapse_topic_ManualControlAxes_Throttle |

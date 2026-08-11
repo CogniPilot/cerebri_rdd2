@@ -197,7 +197,7 @@ static void publish_nav_pvt(const struct ubx_nav_pvt *pvt)
 	int32_t ground_speed_mm_s = pvt->nav.ground_speed;
 	uint32_t course_cdeg;
 
-	fix.timestamp_us = (uint64_t)k_uptime_get() * 1000ULL;
+	fix.timestamp_ns = (uint64_t)k_uptime_get() * 1000000ULL;
 	fix.latitude_deg_e7 = pvt->nav.latitude;
 	fix.longitude_deg_e7 = pvt->nav.longitude;
 	fix.altitude_msl_mm = pvt->nav.hmsl;
@@ -237,11 +237,11 @@ static void publish_nav_pvt(const struct ubx_nav_pvt *pvt)
 		int64_t days = days_from_civil(pvt->time.year, pvt->time.month, pvt->time.day);
 
 		if (days >= 0) {
-			fix.time_unix_us = ((uint64_t)days * 86400ULL +
+			fix.time_unix_ns = ((uint64_t)days * 86400ULL +
 					    (uint64_t)pvt->time.hour * 3600ULL +
 					    (uint64_t)pvt->time.minute * 60ULL +
 					    (uint64_t)pvt->time.second) *
-					   1000000ULL;
+					   1000000000ULL;
 			fix.flags |= synapse_topic_GnssFixFlags_TimeValid;
 		}
 	}

@@ -73,19 +73,19 @@ static bool loop_divider_expired(uint32_t *countdown, uint32_t divisor)
 	return true;
 }
 
-static uint64_t sample_timestamp_us(uint64_t interrupt_timestamp_ns)
+static uint64_t sample_timestamp_ns(uint64_t interrupt_timestamp_ns)
 {
 	if (interrupt_timestamp_ns != 0U) {
-		return interrupt_timestamp_ns / 1000U;
+		return interrupt_timestamp_ns;
 	}
-	return (uint64_t)k_uptime_get() * 1000U;
+	return (uint64_t)k_uptime_get() * 1000000ULL;
 }
 
 static void publish_imu(struct rate_control_allocator_process *process,
 			uint64_t interrupt_timestamp_ns)
 {
 	process->imu_message = (synapse_topic_InertialSampleData_t){
-		.timestamp_us = sample_timestamp_us(interrupt_timestamp_ns),
+		.timestamp_ns = sample_timestamp_ns(interrupt_timestamp_ns),
 		.accel_flu_m_s2 = process->accel,
 		.gyro_flu_rad_s = process->gyro,
 		.flags = process->status.imu_ok ? synapse_topic_InertialFieldFlags_Accel |

@@ -52,7 +52,7 @@ manifest:
       path: modules/lib/zros
     - name: csyn
       remote: cognipilot
-      revision: c1fdc903b5eb48e9a4362c716f50e658bed15961 # synapse_fbs 0.7.0, vehicle-owned topics
+      revision: 93dfb7a69463b89fd6bcf7f82ef5b2391c5ab98a # synapse_fbs 0.9.0, nanosecond time domain, magnetometer split
       path: modules/lib/csyn
     - name: cerebri_modules
       remote: cognipilot
