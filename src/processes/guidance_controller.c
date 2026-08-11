@@ -90,10 +90,10 @@ static void copy_reference_inputs_to_efmu(GuidanceControllerState *efmu,
 static void publish_efmu_outputs(struct guidance_controller_process *process)
 {
 	GuidanceControllerState *efmu = &process->efmu;
-	uint64_t timestamp_us = (uint64_t)k_uptime_get() * 1000U;
+	uint64_t timestamp_ns = (uint64_t)k_uptime_get() * 1000000ULL;
 
 	process->rate_command = (synapse_topic_RateCommandData_t){
-		.timestamp_us = timestamp_us,
+		.timestamp_ns = timestamp_ns,
 		.body_rate_flu_rad_s =
 			{
 				.roll = efmu->angularVelocityCommandFlu_rad_s[0],
@@ -103,7 +103,7 @@ static void publish_efmu_outputs(struct guidance_controller_process *process)
 		.thrust = efmu->thrust_N,
 	};
 	process->attitude_command = (synapse_topic_AttitudeCommandData_t){
-		.timestamp_us = timestamp_us,
+		.timestamp_ns = timestamp_ns,
 		.attitude = process->attitude.attitude,
 		.body_rate_flu_rad_s = process->rate_command.body_rate_flu_rad_s,
 		.thrust = process->rate_command.thrust,
