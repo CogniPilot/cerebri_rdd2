@@ -20,7 +20,7 @@
 
 LOG_MODULE_DECLARE(rdd2, LOG_LEVEL_INF);
 
-#define NAVIGATION_STACK_SIZE 16384
+#define NAVIGATION_STACK_SIZE 32768
 
 struct navigation_estimator_process {
 	NavigationEstimatorState efmu;
@@ -36,6 +36,7 @@ struct navigation_estimator_process {
 	struct zros_pub odometry_pub;
 	struct zros_pub attitude_pub;
 	bool initialized;
+	uint8_t reset_counter;
 };
 
 static struct navigation_estimator_process g_process;
@@ -90,6 +91,37 @@ copy_external_odometry_input_to_efmu(NavigationEstimatorState *efmu,
 	efmu->mocap_quaternionWorldBody[3] = odometry->attitude.z;
 }
 
+static int8_t estimate_quality_pct(const NavigationEstimatorState *efmu)
+{
+	int32_t rejection_count = efmu->status_consecutiveRejectedCorrections;
+	int32_t rejection_limit = efmu->rejectedCorrectionLimit;
+	int64_t rejection_penalty;
+
+	if (!efmu->estimate_valid || !efmu->status_initialized) {
+		return 0;
+	}
+	if (rejection_count < 0) {
+		rejection_count = 0;
+	}
+	if (efmu->status_innovationGateRejected && rejection_count == 0) {
+		rejection_count = 1;
+	}
+	if (rejection_limit <= 0 || rejection_count >= rejection_limit) {
+		return 0;
+	}
+
+	rejection_penalty = ((int64_t)rejection_count * 100 + rejection_limit - 1) /
+			    rejection_limit;
+	return (int8_t)(100 - rejection_penalty);
+}
+
+static void capture_estimator_health(struct navigation_estimator_process *process)
+{
+	if (process->efmu.status_covarianceReinitialized) {
+		process->reset_counter = (uint8_t)(process->reset_counter + 1U);
+	}
+}
+
 static void publish_efmu_estimate(struct navigation_estimator_process *process)
 {
 	NavigationEstimatorState *efmu = &process->efmu;
@@ -131,8 +163,9 @@ static void publish_efmu_estimate(struct navigation_estimator_process *process)
 				.z = efmu->estimate_velocityWorldEnu_m_s[2],
 			},
 		.angular_velocity_flu_rad_s = process->attitude.angular_velocity_flu_rad_s,
+		.reset_counter = process->reset_counter,
 		.estimator_type = 1U,
-		.quality_pct = efmu->estimate_valid ? 100 : 0,
+		.quality_pct = estimate_quality_pct(efmu),
 	};
 	(void)zros_pub_update(&process->odometry_pub);
 	(void)zros_pub_update(&process->attitude_pub);
@@ -168,6 +201,7 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3)
 		process->efmu.reset = !process->initialized;
 		NavigationEstimator_dostep(&process->efmu);
 		process->initialized = process->efmu.status_initialized;
+		capture_estimator_health(process);
 		publish_efmu_estimate(process);
 	}
 }
