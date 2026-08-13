@@ -1,5 +1,3 @@
-include(${CMAKE_CURRENT_LIST_DIR}/efmi.cmake)
-
 target_include_directories(app PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}
   ${WORKSPACE_ROOT}/modules/lib/zenoh-pico/src/system/zephyr
@@ -8,16 +6,27 @@ target_include_directories(app PRIVATE
 target_sources(app PRIVATE
   interfaces/data.c
   interfaces/imu.c
-  interfaces/motors.c
   interfaces/rc.c
   interfaces/zros_topics.c
   main.c
-  processes/guidance_controller.c
-  processes/navigation_estimator.c
-  processes/navigation_gps.c
-  processes/rate_control_allocator.c
-  processes/waypoint_trajectory_planner.c
 )
+
+if(CONFIG_RDD2_COMMS_STUB)
+  target_sources(app PRIVATE
+    interfaces/motors_stub.c
+    processes/comms_stub.c
+  )
+else()
+  include(${CMAKE_CURRENT_LIST_DIR}/efmi.cmake)
+  target_sources(app PRIVATE
+    interfaces/motors.c
+    processes/guidance_controller.c
+    processes/navigation_estimator.c
+    processes/navigation_gps.c
+    processes/rate_control_allocator.c
+    processes/waypoint_trajectory_planner.c
+  )
+endif()
 
 target_sources_ifdef(CONFIG_SHELL app PRIVATE
   interfaces/mission_shell.c
@@ -43,16 +52,30 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
       main.c
       interfaces/data.c
       interfaces/imu.c
-      interfaces/motors.c
       interfaces/rc.c
       interfaces/zros_topics.c
-      processes/guidance_controller.c
-      processes/navigation_estimator.c
-      processes/navigation_gps.c
-      processes/rate_control_allocator.c
-      processes/waypoint_trajectory_planner.c
     LOCATION ITCM_TEXT_RODATA
   )
+
+  if(CONFIG_RDD2_COMMS_STUB)
+    zephyr_code_relocate(
+      FILES
+        interfaces/motors_stub.c
+        processes/comms_stub.c
+      LOCATION ITCM_TEXT_RODATA
+    )
+  else()
+    zephyr_code_relocate(
+      FILES
+        interfaces/motors.c
+        processes/guidance_controller.c
+        processes/navigation_estimator.c
+        processes/navigation_gps.c
+        processes/rate_control_allocator.c
+        processes/waypoint_trajectory_planner.c
+      LOCATION ITCM_TEXT_RODATA
+    )
+  endif()
 
   zephyr_code_relocate(
     FILES

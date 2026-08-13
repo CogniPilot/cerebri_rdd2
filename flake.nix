@@ -810,6 +810,25 @@
             exec west build -p always -b "$board" -d "$build_dir" "$app" "$@"
           '';
 
+          rdd2-build-comms-stub = mkWestApp "rdd2-build-comms-stub" ''
+            ${commonScript}
+
+            app="$(rdd2_find_app)"
+            rdd2_export_common "$app"
+            rdd2_require_workspace "$app"
+            workspace="$RDD2_WORKSPACE_ROOT"
+
+            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
+
+            board="''${RDD2_BOARD:-mr_vmu_tropic}"
+            board_slug="''${board//\//_}"
+            build_dir="''${RDD2_COMMS_STUB_BUILD_DIR:-$app/build-$board_slug-comms-stub}"
+
+            cd "$workspace"
+            exec west build -p always -b "$board" -d "$build_dir" "$app" "$@" -- \
+              -DEXTRA_CONF_FILE="$app/comms_stub.conf"
+          '';
+
           rdd2-build-native-sim = mkWestApp "rdd2-build-native-sim" ''
             ${commonScript}
 
@@ -1296,6 +1315,7 @@
             name = "cerebri-rdd2-host-tools";
             paths = baseTools ++ [
               rdd2-build
+              rdd2-build-comms-stub
               rdd2-build-native-sim
               rdd2-flash
               rdd2-debug
@@ -1317,6 +1337,7 @@
           inherit
             host-tools
             rdd2-build
+            rdd2-build-comms-stub
             rdd2-build-native-sim
             rdd2-flash
             rdd2-debug
@@ -1345,6 +1366,12 @@
             type = "app";
             program = "${packages.rdd2-build}/bin/rdd2-build";
             meta.description = "Build RDD2 firmware for mr_vmu_tropic";
+          };
+
+          build-comms-stub = {
+            type = "app";
+            program = "${packages.rdd2-build-comms-stub}/bin/rdd2-build-comms-stub";
+            meta.description = "Build the non-flyable RDD2 communications bench firmware";
           };
 
           build-native-sim = {

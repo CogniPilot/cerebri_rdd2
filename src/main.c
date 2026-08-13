@@ -32,6 +32,10 @@ int main(void)
 		return rc;
 	}
 
+#if defined(CONFIG_RDD2_COMMS_STUB)
+	LOG_WRN("STUB-NAV COMMS BENCH IMAGE: NON-FLYABLE, ARM DENIED, MOTORS ZERO");
+#else
 	LOG_INF("RDD2 eFMU deployment starting");
+#endif
 	return rdd2_rate_control_allocator_process_run();
 }

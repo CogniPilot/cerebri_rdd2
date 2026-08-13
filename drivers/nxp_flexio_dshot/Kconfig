@@ -1,6 +1,6 @@
 config RDD2_DSHOT
 	bool "Enable RDD2 FlexIO DSHOT support"
-	depends on DT_HAS_NXP_FLEXIO_ENABLED
+	depends on DT_HAS_NXP_FLEXIO_ENABLED && !RDD2_COMMS_STUB
 	default y
 	select MCUX_FLEXIO
 	help

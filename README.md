@@ -297,6 +297,7 @@ Common commands are also exposed as flake apps:
 ```sh
 nix run .#west-update
 nix run .#build
+nix run .#build-comms-stub
 nix run .#build-native-sim
 nix run .#console
 nix run .#systemview
@@ -304,6 +305,58 @@ nix run .#systemview-capture
 nix run .#trajectory-compare
 nix run .#flash
 ```
+
+### Non-flyable communications bench image
+
+Build the dedicated M10/ZROS/CSyn communications image with one command:
+
+```sh
+nix run .#build-comms-stub
+```
+
+The command always performs a pristine Zephyr configure in
+`build-mr_vmu_tropic-comms-stub` using `comms_stub.conf`. This profile bypasses
+`src/efmi.cmake`; it does not invoke Rumoca or compile generated flight-control
+containers. It keeps the real GNSS, IMU, RC, ZROS, CSyn, serial telemetry, and
+shell paths, while publishing invalid navigation, permanently asserting
+failsafe/disarmed health, and replacing motor output with a hard-zero publisher.
+It is a bench image and must not be flown.
+
+To flash the exact completed build without rebuilding it:
+
+```sh
+RDD2_BUILD_DIR="$PWD/build-mr_vmu_tropic-comms-stub" \
+  nix run .#flash -- --skip-rebuild
+```
+
+After opening `nix run .#console`, use `stub`, `gnss status`, `zros_serial
+status`, and the `zros topic` inspection commands to capture live generations,
+timestamps, rates, and transport counters.
+
+The minimum bench capture is:
+
+```text
+stub
+gnss status
+zros_serial status
+csyn status
+zros topic list
+zros topic echo gnss_fix
+zros topic hz gnss_fix 10000
+zros topic hz control_imu 2000
+zros topic echo vehicle_health
+zros topic echo pwm_signal_outputs
+zros topic echo control_loop_metrics
+csyn topic list live
+csyn topic hz pwm 2000
+csyn topic hz health 2000
+csyn topic hz loop 2000
+top once
+kernel thread stacks
+```
+
+Only one asynchronous `zros topic hz` or `csyn topic hz` measurement runs at a
+time; use `zros topic stop` or `csyn topic stop` before starting the next one.
 
 `rdd2-console` opens a serial console at 115200 baud using stable
 `/dev/serial/by-id` names. When multiple adapters are connected, it asks which
