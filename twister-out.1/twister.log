@@ -1,8 +1,0 @@
-2026-08-12 20:01:15,271 - twister - INFO - Using Ninja..
-2026-08-12 20:01:15,275 - twister - INFO - Zephyr version: bf19ff6eb2cf
-2026-08-12 20:01:15,294 - twister - DEBUG - Running cmake script /home/jgoppert/git/cerebri_rdd2/.devenv/state/west/zephyr/cmake/verify-toolchain.cmake
-2026-08-12 20:01:15,294 - twister - DEBUG - Calling cmake: /nix/store/k46jkvlv6sfhnwmnbr76wsb83zdz2n28-cerebri-rdd2-host-tools/bin/cmake -DFORMAT=json -P /home/jgoppert/git/cerebri_rdd2/.devenv/state/west/zephyr/cmake/verify-toolchain.cmake
-2026-08-12 20:01:15,586 - twister - DEBUG - Finished running /home/jgoppert/git/cerebri_rdd2/.devenv/state/west/zephyr/cmake/verify-toolchain.cmake
-2026-08-12 20:01:15,586 - twister - INFO - Using 'zephyr/gnu' toolchain variant.
-2026-08-12 20:01:16,403 - twister - ERROR - Board(s): {'mr_navq95b'}, defined multiple times.
-Last defined in /home/jgoppert/git/cerebri_rdd2/.devenv/state/west/modules/lib/zephyr_boards/boards/nxp/mr_navq95b/board.yml

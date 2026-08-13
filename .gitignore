@@ -14,3 +14,4 @@ result-*
 .venv/
 .cache/
 compile_commands.json
+twister-out*/
