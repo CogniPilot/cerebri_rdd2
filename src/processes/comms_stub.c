@@ -44,6 +44,7 @@ struct comms_stub_process {
 	struct zros_pub metrics_pub;
 	bool imu_stream_ready;
 	bool rc_ready;
+	uint64_t last_sample_ns;
 	uint32_t nav_countdown;
 	uint32_t status_countdown;
 };
@@ -137,6 +138,7 @@ static void publish_invalid_navigation(struct comms_stub_process *process,
 static void publish_fail_closed_status(struct comms_stub_process *process,
 				       bool imu_valid, bool rc_valid,
 				       uint8_t link_quality,
+				       uint32_t period_us,
 				       uint32_t latency_us)
 {
 	const uint32_t present = synapse_topic_SensorComponentFlags_Gyro |
@@ -169,7 +171,7 @@ static void publish_fail_closed_status(struct comms_stub_process *process,
 	};
 	process->metrics = (synapse_topic_ControlLoopMetricsData_t){
 		.timestamp_ns = process->health.timestamp_ns,
-		.period_us = 625U,
+		.period_us = period_us,
 		.latency_us = latency_us,
 		.time_status = synapse_types_TimeStatus_LocalFreerun,
 	};
@@ -177,15 +179,15 @@ static void publish_fail_closed_status(struct comms_stub_process *process,
 	(void)zros_pub_update(&process->metrics_pub);
 }
 
-static uint32_t sample_latency_us(uint64_t sample_ns, uint64_t completed_ns)
+static uint32_t elapsed_us(uint64_t start_ns, uint64_t end_ns)
 {
-	uint64_t latency_ns;
+	uint64_t elapsed_ns;
 
-	if (sample_ns == 0U || completed_ns <= sample_ns) {
+	if (start_ns == 0U || end_ns <= start_ns) {
 		return 0U;
 	}
-	latency_ns = completed_ns - sample_ns;
-	return (uint32_t)MIN(latency_ns / UINT64_C(1000), UINT32_MAX);
+	elapsed_ns = end_ns - start_ns;
+	return (uint32_t)MIN(elapsed_ns / UINT64_C(1000), UINT32_MAX);
 }
 
 int rdd2_navigation_estimator_process_start(void)
@@ -226,6 +228,7 @@ int rdd2_rate_control_allocator_process_run(void)
 		uint64_t completed_ns;
 		int64_t rc_stamp_ms = 0;
 		uint8_t link_quality = 0U;
+		uint32_t period_us;
 		bool imu_valid;
 		bool rc_valid = false;
 		float dt = RDD2_CONTROL_DT_S;
@@ -242,6 +245,8 @@ int rdd2_rate_control_allocator_process_run(void)
 		if (sample_ns == 0U) {
 			sample_ns = now_ns();
 		}
+		period_us = elapsed_us(process->last_sample_ns, sample_ns);
+		process->last_sample_ns = sample_ns;
 		if (process->rc_ready) {
 			rdd2_rc_input_latest_get(&process->rc, &rc_stamp_ms,
 						 &rc_valid);
@@ -259,7 +264,7 @@ int rdd2_rate_control_allocator_process_run(void)
 				    STUB_STATUS_PUBLISH_DIV)) {
 			publish_fail_closed_status(
 				process, imu_valid, rc_valid, link_quality,
-				sample_latency_us(sample_ns, completed_ns));
+				period_us, elapsed_us(sample_ns, completed_ns));
 		}
 	}
 }
