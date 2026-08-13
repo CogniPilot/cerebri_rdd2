@@ -42,10 +42,37 @@ thread boundary actually exists.
 - No heap allocation occurs after boot.
 - Hot-path synchronization points stay explicit and few.
 - If attitude correction exists, it must stay out of the 1600 Hz body-rate hot path and must not gate motor output.
+- A Rate command is usable only after a new topic sample has been observed.
+  Its publisher timestamp must be in the shared IMU-derived control-time domain
+  and no more than `25 ms` old (five `200 Hz` Guidance release periods) when
+  consumed by Rate. A future-dated command is unusable. Wall-clock time may not
+  age a retained command while lockstep control ticks are paused.
+- An unusable Rate command, nonzero Rate `ErrorSignalStatus`, or nonfinite Rate
+  output must disarm and zero the normal flight-output path. If the arm switch
+  was high when the fault occurred, that fault remains latched until the switch
+  is observed low in a valid, fresh manual-control sample; recovery may not
+  reactivate motors without pilot
+  acknowledgement and the ordinary throttle-low arming check.
+- The Navigation, Guidance, and Rate firmware wrappers must sample their generated eFMU
+  `ErrorSignalStatus` immediately after `DoStep`. A nonzero status or a
+  nonfinite value at a publication or actuator boundary must fail closed:
+  Navigation publishes a finite estimate marked invalid, Guidance withholds
+  its command publication, and Rate disarms and commands zero motor output.
+- These checks run inline in the existing process threads and may not add a
+  queue, worker thread, blocking call, heap allocation, or extra control-cycle
+  delay.
+- Navigation publications carry the triggering IMU control timestamp, and
+  Guidance propagates the validated Navigation timestamp into the commands it
+  publishes. Generated floating-point time values are not converted back into
+  firmware topic timestamps.
 
 **ALLOWED:**
 - Existing Zephyr driver threads that already belong to subsystems such as CRSF.
 - One low-priority diagnostics thread outside the flight hot path when required by `SPEC_0006`.
+- An explicitly activated shell motor test may bypass the normal flight-control
+  fault latch for bench work. Normalized test values must be finite, raw DSHOT
+  test values remain driver-bounded, and neither test path clears a latched
+  flight-control fault.
 
 **PROHIBITED:**
 - A thread handoff between IMU acquisition, rate/allocation, and DSHOT.
@@ -67,3 +94,4 @@ thread boundary actually exists.
 
 - `SPEC_0003_RATE_MODE_CONTROL_SCOPE.md`
 - `SPEC_0006_CODE_SIZE_AND_DEBUG_SHELL.md`
+- `../tests/process_control_safety/`

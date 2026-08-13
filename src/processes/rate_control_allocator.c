@@ -2,6 +2,7 @@
 
 #include "processes.h"
 
+#include "control_safety.h"
 #include "hotpath_memory.h"
 #include "interfaces/drivers.h"
 #include "interfaces/zros_topics.h"
@@ -48,6 +49,8 @@ struct rate_control_allocator_process {
 	struct zros_pub imu_pub;
 	struct zros_pub health_pub;
 	struct zros_pub metrics_pub;
+	bool rate_command_observed;
+	bool control_fault_latched;
 	float dt;
 	uint32_t imu_to_motor_latency_us;
 };
@@ -112,28 +115,81 @@ static void update_arming_state(struct rate_control_allocator_process *process)
 	process->status.throttle_us = channels[THROTTLE_CHANNEL_INDEX];
 	process->status.rc_stale = stale;
 
-	if (!process->status.imu_ok || stale || !process->status.arm_switch) {
+	process->control_fault_latched = rdd2_control_fault_latch(
+		process->control_fault_latched, !stale, process->status.arm_switch, false);
+	if (!process->status.arm_switch) {
+		process->status.armed = false;
+	} else if (!process->status.imu_ok || stale || process->control_fault_latched) {
 		process->status.armed = false;
 	} else if (!process->status.armed && process->status.throttle_us <= THROTTLE_ARM_MAX_US) {
 		process->status.armed = true;
 	}
 }
 
-static void copy_topic_inputs_to_efmu(struct rate_control_allocator_process *process)
+static bool rate_command_values_are_finite(const synapse_topic_RateCommandData_t *command)
+{
+	const float values[] = {
+		command->body_rate_flu_rad_s.roll,
+		command->body_rate_flu_rad_s.pitch,
+		command->body_rate_flu_rad_s.yaw,
+		command->thrust,
+	};
+
+	return rdd2_control_values_are_finite(values, ARRAY_SIZE(values));
+}
+
+static bool navigation_rates_are_valid(
+	const synapse_topic_AttitudeEstimateData_t *navigation)
+{
+	const float rates[] = {
+		navigation->angular_velocity_flu_rad_s.roll,
+		navigation->angular_velocity_flu_rad_s.pitch,
+		navigation->angular_velocity_flu_rad_s.yaw,
+	};
+
+	return (navigation->flags & synapse_topic_AttitudeEstimateFlags_RatesValid) != 0U &&
+	       rdd2_control_values_are_finite(rates, ARRAY_SIZE(rates));
+}
+
+static bool control_inputs_are_usable(struct rate_control_allocator_process *process,
+				      uint64_t control_now_us)
+{
+	if (zros_sub_update(&process->rate_command_sub) == 0) {
+		process->rate_command_observed = true;
+	}
+	(void)zros_sub_update(&process->navigation_sub);
+
+	return rdd2_control_timestamp_is_fresh(process->rate_command_observed,
+						 process->rate_command.timestamp_us,
+						 control_now_us,
+						 RDD2_GUIDANCE_COMMAND_TIMEOUT_US) &&
+	       process->rate_command.type_mask == 0U &&
+	       rate_command_values_are_finite(&process->rate_command) &&
+	       navigation_rates_are_valid(&process->navigation);
+}
+
+static void copy_topic_inputs_to_efmu(struct rate_control_allocator_process *process,
+				      bool inputs_usable)
 {
 	RateControlAllocatorState *efmu = &process->efmu;
 
-	efmu->armed = process->status.armed;
-	efmu->thrust_N = process->rate_command.thrust;
-	efmu->angularVelocityCommandFlu_rad_s[0] = process->rate_command.body_rate_flu_rad_s.roll;
-	efmu->angularVelocityCommandFlu_rad_s[1] = process->rate_command.body_rate_flu_rad_s.pitch;
-	efmu->angularVelocityCommandFlu_rad_s[2] = process->rate_command.body_rate_flu_rad_s.yaw;
-	efmu->angularVelocityMeasuredFlu_rad_s[0] =
-		process->navigation.angular_velocity_flu_rad_s.roll;
-	efmu->angularVelocityMeasuredFlu_rad_s[1] =
-		process->navigation.angular_velocity_flu_rad_s.pitch;
-	efmu->angularVelocityMeasuredFlu_rad_s[2] =
-		process->navigation.angular_velocity_flu_rad_s.yaw;
+	efmu->armed = process->status.armed && inputs_usable;
+	efmu->thrust_N = inputs_usable ? process->rate_command.thrust : 0.0f;
+	efmu->angularVelocityCommandFlu_rad_s[0] =
+		inputs_usable ? process->rate_command.body_rate_flu_rad_s.roll : 0.0f;
+	efmu->angularVelocityCommandFlu_rad_s[1] =
+		inputs_usable ? process->rate_command.body_rate_flu_rad_s.pitch : 0.0f;
+	efmu->angularVelocityCommandFlu_rad_s[2] =
+		inputs_usable ? process->rate_command.body_rate_flu_rad_s.yaw : 0.0f;
+	efmu->angularVelocityMeasuredFlu_rad_s[0] = inputs_usable
+						       ? process->navigation.angular_velocity_flu_rad_s.roll
+						       : 0.0f;
+	efmu->angularVelocityMeasuredFlu_rad_s[1] = inputs_usable
+						       ? process->navigation.angular_velocity_flu_rad_s.pitch
+						       : 0.0f;
+	efmu->angularVelocityMeasuredFlu_rad_s[2] = inputs_usable
+						       ? process->navigation.angular_velocity_flu_rad_s.yaw
+						       : 0.0f;
 }
 
 static void copy_efmu_outputs_to_motor_buffer(struct rate_control_allocator_process *process)
@@ -143,13 +199,25 @@ static void copy_efmu_outputs_to_motor_buffer(struct rate_control_allocator_proc
 	}
 }
 
-static void step_efmu(struct rate_control_allocator_process *process)
+static void step_efmu(struct rate_control_allocator_process *process, uint64_t control_now_us)
 {
-	(void)zros_sub_update(&process->rate_command_sub);
-	(void)zros_sub_update(&process->navigation_sub);
-	copy_topic_inputs_to_efmu(process);
+	bool inputs_usable = control_inputs_are_usable(process, control_now_us);
+	bool outputs_finite;
+	bool step_ok;
 
+	copy_topic_inputs_to_efmu(process, inputs_usable);
 	RateControlAllocator_dostep(&process->efmu);
+	step_ok = rdd2_generated_step_ok(process->efmu.rumoca_galec_error_signal_status);
+	outputs_finite =
+		rdd2_control_values_are_finite(process->efmu.motor, EFMU_MOTOR_COUNT);
+	if (!inputs_usable || !step_ok || !outputs_finite) {
+		process->control_fault_latched = rdd2_control_fault_latch(
+			process->control_fault_latched, !process->status.rc_stale,
+			process->status.arm_switch, true);
+		process->status.armed = false;
+		process->motors = (rdd2_motor_values_t){0};
+		return;
+	}
 	copy_efmu_outputs_to_motor_buffer(process);
 }
 
@@ -267,10 +335,16 @@ int rdd2_rate_control_allocator_process_run(void)
 		publish_imu(process, imu_timestamp_ns);
 
 		process->motors = (rdd2_motor_values_t){0};
-		step_efmu(process);
+		step_efmu(process, process->imu_message.timestamp_us);
 		if (rdd2_motor_test_get(&process->motors)) {
+			bool test_values_valid = rdd2_control_values_are_finite(
+				process->motors.value, RDD2_MOTOR_COUNT);
+
+			if (!test_values_valid) {
+				process->motors = (rdd2_motor_values_t){0};
+			}
 			motor_timestamp_ns =
-				rdd2_motor_output_write_all(&process->motors, true, true);
+				rdd2_motor_output_write_all(&process->motors, test_values_valid, true);
 		} else if (rdd2_motor_raw_test_get(&process->raw_test)) {
 			motor_timestamp_ns =
 				rdd2_motor_output_write_all_raw(&process->raw_test, true);

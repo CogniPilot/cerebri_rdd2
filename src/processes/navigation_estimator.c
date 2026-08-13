@@ -2,6 +2,7 @@
 
 #include "processes.h"
 
+#include "control_safety.h"
 #include "interfaces/zros_topics.h"
 #include "scheduling.h"
 
@@ -122,28 +123,61 @@ static void capture_estimator_health(struct navigation_estimator_process *proces
 	}
 }
 
-static void publish_efmu_estimate(struct navigation_estimator_process *process)
+static bool efmu_estimate_is_finite(const NavigationEstimatorState *efmu)
+{
+	const float values[] = {
+		efmu->estimate_quaternionWorldBody[0],
+		efmu->estimate_quaternionWorldBody[1],
+		efmu->estimate_quaternionWorldBody[2],
+		efmu->estimate_quaternionWorldBody[3],
+		efmu->estimate_positionWorldEnu_m[0],
+		efmu->estimate_positionWorldEnu_m[1],
+		efmu->estimate_positionWorldEnu_m[2],
+		efmu->estimate_velocityWorldEnu_m_s[0],
+		efmu->estimate_velocityWorldEnu_m_s[1],
+		efmu->estimate_velocityWorldEnu_m_s[2],
+		efmu->estimate_angularVelocityBodyFlu_rad_s[0],
+		efmu->estimate_angularVelocityBodyFlu_rad_s[1],
+		efmu->estimate_angularVelocityBodyFlu_rad_s[2],
+		efmu->estimate_timestamp_s,
+	};
+	const float max_timestamp_s = (float)(UINT64_MAX / UINT64_C(1000000));
+
+	return efmu->estimate_timestamp_s >= 0.0f &&
+	       efmu->estimate_timestamp_s <= max_timestamp_s &&
+	       rdd2_control_values_are_finite(values, ARRAY_SIZE(values));
+}
+
+static void publish_efmu_estimate(struct navigation_estimator_process *process,
+				  bool estimate_valid)
 {
 	NavigationEstimatorState *efmu = &process->efmu;
-	uint8_t flags = efmu->estimate_valid
+	uint64_t timestamp_us = process->imu.timestamp_us;
+	uint8_t flags = estimate_valid
 				? synapse_topic_AttitudeEstimateFlags_AttitudeValid |
 					  synapse_topic_AttitudeEstimateFlags_RatesValid
 				: 0U;
 
 	process->attitude = (synapse_topic_AttitudeEstimateData_t){
-		.timestamp_us = (uint64_t)(efmu->estimate_timestamp_s * 1.0e6f),
+		.timestamp_us = timestamp_us,
 		.attitude =
 			{
-				.w = efmu->estimate_quaternionWorldBody[0],
-				.x = efmu->estimate_quaternionWorldBody[1],
-				.y = efmu->estimate_quaternionWorldBody[2],
-				.z = efmu->estimate_quaternionWorldBody[3],
+				.w = estimate_valid ? efmu->estimate_quaternionWorldBody[0] : 1.0f,
+				.x = estimate_valid ? efmu->estimate_quaternionWorldBody[1] : 0.0f,
+				.y = estimate_valid ? efmu->estimate_quaternionWorldBody[2] : 0.0f,
+				.z = estimate_valid ? efmu->estimate_quaternionWorldBody[3] : 0.0f,
 			},
 		.angular_velocity_flu_rad_s =
 			{
-				.roll = efmu->estimate_angularVelocityBodyFlu_rad_s[0],
-				.pitch = efmu->estimate_angularVelocityBodyFlu_rad_s[1],
-				.yaw = efmu->estimate_angularVelocityBodyFlu_rad_s[2],
+				.roll = estimate_valid
+						? efmu->estimate_angularVelocityBodyFlu_rad_s[0]
+						: 0.0f,
+				.pitch = estimate_valid
+						 ? efmu->estimate_angularVelocityBodyFlu_rad_s[1]
+						 : 0.0f,
+				.yaw = estimate_valid
+					       ? efmu->estimate_angularVelocityBodyFlu_rad_s[2]
+					       : 0.0f,
 			},
 		.flags = flags,
 	};
@@ -151,21 +185,21 @@ static void publish_efmu_estimate(struct navigation_estimator_process *process)
 		.timestamp_us = process->attitude.timestamp_us,
 		.position_enu_m =
 			{
-				.x = efmu->estimate_positionWorldEnu_m[0],
-				.y = efmu->estimate_positionWorldEnu_m[1],
-				.z = efmu->estimate_positionWorldEnu_m[2],
+				.x = estimate_valid ? efmu->estimate_positionWorldEnu_m[0] : 0.0f,
+				.y = estimate_valid ? efmu->estimate_positionWorldEnu_m[1] : 0.0f,
+				.z = estimate_valid ? efmu->estimate_positionWorldEnu_m[2] : 0.0f,
 			},
 		.attitude = process->attitude.attitude,
 		.velocity_enu_m_s =
 			{
-				.x = efmu->estimate_velocityWorldEnu_m_s[0],
-				.y = efmu->estimate_velocityWorldEnu_m_s[1],
-				.z = efmu->estimate_velocityWorldEnu_m_s[2],
+				.x = estimate_valid ? efmu->estimate_velocityWorldEnu_m_s[0] : 0.0f,
+				.y = estimate_valid ? efmu->estimate_velocityWorldEnu_m_s[1] : 0.0f,
+				.z = estimate_valid ? efmu->estimate_velocityWorldEnu_m_s[2] : 0.0f,
 			},
 		.angular_velocity_flu_rad_s = process->attitude.angular_velocity_flu_rad_s,
 		.reset_counter = process->reset_counter,
 		.estimator_type = 1U,
-		.quality_pct = estimate_quality_pct(efmu),
+		.quality_pct = estimate_valid ? estimate_quality_pct(efmu) : 0,
 	};
 	(void)zros_pub_update(&process->odometry_pub);
 	(void)zros_pub_update(&process->attitude_pub);
@@ -180,6 +214,9 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3)
 
 	while (true) {
 		bool external_fresh;
+		bool estimate_valid;
+		bool outputs_finite;
+		bool step_ok;
 
 		if (zros_sub_wait(&process->imu_sub, K_FOREVER) != 0 ||
 		    zros_sub_update(&process->imu_sub) != 0) {
@@ -200,9 +237,13 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3)
 		process->efmu.opticalFlow_fresh = false;
 		process->efmu.reset = !process->initialized;
 		NavigationEstimator_dostep(&process->efmu);
-		process->initialized = process->efmu.status_initialized;
+		step_ok = rdd2_generated_step_ok(process->efmu.rumoca_galec_error_signal_status);
+		outputs_finite = efmu_estimate_is_finite(&process->efmu);
+		estimate_valid = step_ok && outputs_finite && process->efmu.estimate_valid &&
+				 process->efmu.status_initialized;
+		process->initialized = estimate_valid;
 		capture_estimator_health(process);
-		publish_efmu_estimate(process);
+		publish_efmu_estimate(process, estimate_valid);
 	}
 }
 

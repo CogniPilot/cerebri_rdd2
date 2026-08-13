@@ -1,0 +1,7 @@
+tests:
+  rdd2.process_control_safety:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - rdd2
+      - safety

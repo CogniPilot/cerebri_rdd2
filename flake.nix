@@ -33,13 +33,21 @@
         pkgs.python3.withPackages (
           ps: with ps; [
             anytree
+            # Zephyr Twister imports these build/run-test modules eagerly.
+            colorama
             intelhex
             jinja2
             jsonschema
+            junitparser
             matplotlib
+            natsort
             packaging
+            ply
+            psutil
             pyelftools
             pykwalify
+            pytest
+            python-dotenv
             # Required by Zephyr's jlink runner: runners/jlink.py imports
             # pylink and refuses to run without it.
             pylink-square
@@ -47,6 +55,7 @@
             pyyaml
             requests
             semver
+            tabulate
             tqdm
             west
           ]
