@@ -111,7 +111,7 @@ static void publish_efmu_reference(struct waypoint_trajectory_planner_process *p
 	}
 
 	process->reference = (synapse_topic_LocalPositionCommandData_t){
-		.timestamp_us = (uint64_t)k_uptime_get() * 1000U,
+		.timestamp_ns = (uint64_t)k_uptime_get() * 1000000ULL,
 		.position_enu_m =
 			{
 				.x = efmu->position[0],

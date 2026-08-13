@@ -66,7 +66,7 @@ static void copy_imu_input_to_efmu(NavigationEstimatorState *efmu,
 {
 	efmu->imu_valid = imu_valid(imu);
 	efmu->imu_fresh = true;
-	efmu->imu_timestamp_s = (float)imu->timestamp_us * 1.0e-6f;
+	efmu->imu_timestamp_s = (float)imu->timestamp_ns * 1.0e-9f;
 	efmu->imu_angularVelocityBodyFlu_rad_s[0] = imu->gyro_flu_rad_s.x;
 	efmu->imu_angularVelocityBodyFlu_rad_s[1] = imu->gyro_flu_rad_s.y;
 	efmu->imu_angularVelocityBodyFlu_rad_s[2] = imu->gyro_flu_rad_s.z;
@@ -82,7 +82,7 @@ copy_external_odometry_input_to_efmu(NavigationEstimatorState *efmu,
 {
 	efmu->mocap_valid = external_odometry_valid(odometry);
 	efmu->mocap_fresh = fresh;
-	efmu->mocap_timestamp_s = (float)odometry->timestamp_us * 1.0e-6f;
+	efmu->mocap_timestamp_s = (float)odometry->timestamp_ns * 1.0e-9f;
 	efmu->mocap_positionWorldEnu_m[0] = odometry->position_enu_m.x;
 	efmu->mocap_positionWorldEnu_m[1] = odometry->position_enu_m.y;
 	efmu->mocap_positionWorldEnu_m[2] = odometry->position_enu_m.z;
@@ -152,14 +152,14 @@ static void publish_efmu_estimate(struct navigation_estimator_process *process,
 				  bool estimate_valid)
 {
 	NavigationEstimatorState *efmu = &process->efmu;
-	uint64_t timestamp_us = process->imu.timestamp_us;
+	uint64_t timestamp_ns = process->imu.timestamp_ns;
 	uint8_t flags = estimate_valid
 				? synapse_topic_AttitudeEstimateFlags_AttitudeValid |
 					  synapse_topic_AttitudeEstimateFlags_RatesValid
 				: 0U;
 
 	process->attitude = (synapse_topic_AttitudeEstimateData_t){
-		.timestamp_us = timestamp_us,
+		.timestamp_ns = timestamp_ns,
 		.attitude =
 			{
 				.w = estimate_valid ? efmu->estimate_quaternionWorldBody[0] : 1.0f,
@@ -182,7 +182,7 @@ static void publish_efmu_estimate(struct navigation_estimator_process *process,
 		.flags = flags,
 	};
 	process->odometry = (synapse_topic_OdometryEstimateData_t){
-		.timestamp_us = process->attitude.timestamp_us,
+		.timestamp_ns = process->attitude.timestamp_ns,
 		.position_enu_m =
 			{
 				.x = estimate_valid ? efmu->estimate_positionWorldEnu_m[0] : 0.0f,

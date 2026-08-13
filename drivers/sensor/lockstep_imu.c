@@ -66,7 +66,7 @@ static int lockstep_imu_channel_get(const struct device *dev, enum sensor_channe
 
 	switch (chan) {
 	case SENSOR_CHAN_GYRO_XYZ:
-		/* The v0.7 InertialSample wire frame is already FLU. Invert the
+		/* The InertialSample wire frame is already FLU. Invert the
 		 * board sensor transform applied by interfaces/imu.c so the controller
 		 * receives that same frame without a second conversion. */
 		sensor_axes[0] = -data->gyro.y;
