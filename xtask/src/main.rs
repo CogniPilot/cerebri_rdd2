@@ -14,12 +14,18 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use physics::{Plant, radians_to_degrees};
-use protocol::{FlightState, MotorCommand, NavigationSample, TrajectoryReference};
+use protocol::{MissionStatusWire, SyntheticGnss, WaypointPlanWire};
 use serde::Serialize;
+use shared_memory::LockstepOutputs;
 
 const DEFAULT_PLANT_DT: f64 = 0.005;
 /// RDD2's fixed 1600 Hz firmware control-loop period.
 const CONTROLLER_DT: f64 = 0.000_625;
+const TAKEOFF_ALTITUDE_M: f64 = 1.5;
+const MISSION_ARM_DELAY_S: f64 = 0.5;
+const MISSION_POSITION_START_S: f64 = 4.0;
+const MISSION_POSITION_END_S: f64 = 22.0;
+const MISSION_DISARM_S: f64 = 28.0;
 
 #[derive(Debug)]
 struct Options {
@@ -61,6 +67,21 @@ struct Report {
     firmware_acro_observed: bool,
     firmware_attitude_observed: bool,
     firmware_position_observed: bool,
+    gnss_source_ready_observed: bool,
+    navigation_origin_observed: bool,
+    mission_plan_accepted: bool,
+    mission_pending_observed: bool,
+    mission_running_observed: bool,
+    fresh_planner_reference_observed: bool,
+    position_mission_continuous: bool,
+    mission_status_current: bool,
+    planner_corners_reached: u8,
+    vehicle_corners_reached: u8,
+    navigation_estimate_finite: bool,
+    max_navigation_horizontal_error_m: f64,
+    maximum_gnss_generation: u32,
+    maximum_plan_generation: u32,
+    maximum_reference_generation: u32,
     failures: Vec<String>,
 }
 
@@ -69,7 +90,7 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
     let mut trajectory = env::var_os("RDD2_MISSION_TRAJECTORY")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("out/mission-trajectory.csv"));
-    let mut duration: f64 = 20.0;
+    let mut duration: f64 = 32.0;
     let mut timeout_ms = 2_000_u64;
     let mut controller_benchmark = env::var("RDD2_FASTDYN_CONTROLLER_BENCHMARK_S")
         .ok()
@@ -119,8 +140,8 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
             _ => bail!("unknown argument: {arg}"),
         }
     }
-    if !duration.is_finite() || duration < 18.0 {
-        bail!("--duration must be finite and at least 18 seconds");
+    if !duration.is_finite() || duration < 30.0 {
+        bail!("--duration must be finite and at least 30 seconds");
     }
     if !plant_dt.is_finite() || !(CONTROLLER_DT..=0.020).contains(&plant_dt) {
         bail!("--plant-dt must be finite and between 0.000625 and 0.020 seconds");
@@ -148,74 +169,48 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
 
 fn desired_altitude(time: f64) -> f64 {
     match time {
-        t if t < 2.0 => 0.0,
-        t if t < 5.0 => (t - 2.0) * (2.0 / 3.0),
-        t if t < 14.0 => 2.0,
-        t if t < 18.0 => 2.0 - (t - 14.0) * 0.5,
+        t if t < MISSION_ARM_DELAY_S => 0.0,
+        t if t < MISSION_POSITION_START_S => {
+            (t - MISSION_ARM_DELAY_S) * TAKEOFF_ALTITUDE_M
+                / (MISSION_POSITION_START_S - MISSION_ARM_DELAY_S)
+        }
+        t if t < MISSION_POSITION_END_S => TAKEOFF_ALTITUDE_M,
+        t if t < MISSION_DISARM_S => {
+            TAKEOFF_ALTITUDE_M * (MISSION_DISARM_S - t)
+                / (MISSION_DISARM_S - MISSION_POSITION_END_S)
+        }
         _ => 0.0,
     }
 }
 
-fn desired_vertical_speed(time: f64) -> f64 {
-    match time {
-        t if (2.0..5.0).contains(&t) => 2.0 / 3.0,
-        t if (14.0..18.0).contains(&t) => -0.5,
-        _ => 0.0,
-    }
-}
-
-fn quaternion_from_euler(euler: [f64; 3]) -> [f32; 4] {
-    let (roll, pitch, yaw) = (euler[0], euler[1], euler[2]);
-    let (sr, cr) = (0.5 * roll).sin_cos();
-    let (sp, cp) = (0.5 * pitch).sin_cos();
-    let (sy, cy) = (0.5 * yaw).sin_cos();
-    [
-        (cr * cp * cy + sr * sp * sy) as f32,
-        (sr * cp * cy - cr * sp * sy) as f32,
-        (cr * sp * cy + sr * cp * sy) as f32,
-        (cr * cp * sy - sr * sp * cy) as f32,
-    ]
-}
-
-fn navigation_sample(plant: &Plant) -> NavigationSample {
-    NavigationSample {
-        position_enu_m: plant.position().map(|value| value as f32),
-        velocity_enu_m_s: plant.velocity().map(|value| value as f32),
-        quaternion_world_body: quaternion_from_euler(plant.euler()),
-    }
-}
-
-fn trajectory_reference(time: f64) -> TrajectoryReference {
-    TrajectoryReference {
-        position_enu_m: [0.0, 0.0, desired_altitude(time) as f32],
-        velocity_enu_m_s: [0.0, 0.0, desired_vertical_speed(time) as f32],
-        acceleration_enu_m_s2: [0.0; 3],
-        yaw_rad: 0.0,
-    }
-}
-
-fn rc_channels(time: f64, plant: &Plant) -> [i32; 16] {
+fn rc_channels(mission_time: Option<f64>, plant: &Plant) -> [i32; 16] {
     let mut channels = [1500; 16];
-    let armed = (1.0..19.0).contains(&time);
+    let Some(time) = mission_time else {
+        channels[2] = 1000;
+        channels[4] = 1000;
+        channels[5] = 1000;
+        return channels;
+    };
+    let armed = (MISSION_ARM_DELAY_S..MISSION_DISARM_S).contains(&time);
     channels[4] = if armed { 2000 } else { 1000 };
-    channels[5] = if time < 4.0 {
-        1000
-    } else if time < 8.0 {
+    channels[5] = if (MISSION_POSITION_START_S..MISSION_POSITION_END_S).contains(&time) {
+        2000
+    } else if armed {
         1500
     } else {
-        2000
+        1000
     };
-    if !(1.25..19.0).contains(&time) {
+    if !armed {
         channels[2] = 1000;
     } else {
         let error = desired_altitude(time) - plant.altitude();
         let normalized = (0.688 + 0.10 * error - 0.075 * plant.vertical_speed()).clamp(0.38, 0.82);
         channels[2] = (1000.0 + normalized * 1000.0).round() as i32;
     }
-    if (5.0..6.0).contains(&time) {
+    if (2.0..2.75).contains(&time) {
         channels[0] = 1625;
     }
-    if (6.5..7.5).contains(&time) {
+    if (2.9..3.65).contains(&time) {
         channels[1] = 1375;
     }
     channels
@@ -253,6 +248,83 @@ fn evaluate(report: &mut Report) {
         report
             .failures
             .push("firmware did not enter POSITION".into());
+    }
+    if !report.gnss_source_ready_observed {
+        report
+            .failures
+            .push("lockstep GNSS source never became ready".into());
+    }
+    if !report.navigation_origin_observed {
+        report
+            .failures
+            .push("navigation never established a GNSS origin".into());
+    }
+    if !report.mission_plan_accepted || !report.mission_pending_observed {
+        report
+            .failures
+            .push("firmware never accepted the disarmed waypoint plan".into());
+    }
+    if !report.mission_running_observed {
+        report
+            .failures
+            .push("waypoint mission never transitioned to RUNNING".into());
+    }
+    if !report.fresh_planner_reference_observed {
+        report
+            .failures
+            .push("planner never published a current finite reference".into());
+    }
+    if !report.position_mission_continuous {
+        report
+            .failures
+            .push("GPS/origin/RUNNING capability dropped during POSITION".into());
+    }
+    if report.planner_corners_reached != 5 {
+        report.failures.push(format!(
+            "planner visited only {}/5 ordered square corners",
+            report.planner_corners_reached
+        ));
+    }
+    if report.vehicle_corners_reached != 5 {
+        report.failures.push(format!(
+            "vehicle visited only {}/5 ordered square corners",
+            report.vehicle_corners_reached
+        ));
+    }
+    if report.maximum_plan_generation != 1 {
+        report.failures.push(format!(
+            "waypoint plan generation must advance exactly once, observed {}",
+            report.maximum_plan_generation
+        ));
+    }
+    let expected_gnss_generations = (report.simulated_seconds * 10.0).floor() as u32 + 1;
+    if report.maximum_gnss_generation != expected_gnss_generations {
+        report.failures.push(format!(
+            "GNSS generation was {}, expected exactly {}",
+            report.maximum_gnss_generation, expected_gnss_generations
+        ));
+    }
+    if !report.mission_status_current {
+        report
+            .failures
+            .push("mission status did not match the current control release".into());
+    }
+    if report.max_navigation_horizontal_error_m > 1.0 {
+        report.failures.push(format!(
+            "GPS navigation horizontal error {:.3} m exceeded 1.000 m",
+            report.max_navigation_horizontal_error_m
+        ));
+    }
+    if !report.navigation_estimate_finite {
+        report
+            .failures
+            .push("GPS navigation estimate became non-finite".into());
+    }
+    if report.maximum_reference_generation <= 1 {
+        report.failures.push(format!(
+            "planner reference did not advance beyond pending hold: generation {}",
+            report.maximum_reference_generation
+        ));
     }
     if report.flight_state_messages < 20 {
         report
@@ -292,6 +364,23 @@ fn evaluate(report: &mut Report) {
     report.passed = report.failures.is_empty();
 }
 
+fn advance_square_corner(
+    progress: &mut u8,
+    origin: [f64; 2],
+    position: [f64; 2],
+    tolerance_m: f64,
+) {
+    const CORNERS: [[f64; 2]; 5] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]];
+    let Some(corner) = CORNERS.get(usize::from(*progress)) else {
+        return;
+    };
+    let error_x = position[0] - origin[0] - corner[0];
+    let error_y = position[1] - origin[1] - corner[1];
+    if error_x.hypot(error_y) <= tolerance_m {
+        *progress += 1;
+    }
+}
+
 fn write_report(path: &PathBuf, report: &Report) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -313,10 +402,7 @@ fn trajectory_writer(path: &Path) -> Result<BufWriter<File>> {
 
 fn run_controller_benchmark<F>(options: &Options, exchange: &mut F) -> Result<()>
 where
-    F: FnMut(
-        &protocol::LockstepInputs,
-        Duration,
-    ) -> Result<(MotorCommand, Option<FlightState>, u64)>,
+    F: FnMut(&protocol::LockstepInputs, Duration) -> Result<LockstepOutputs>,
 {
     let benchmark_seconds = options
         .controller_benchmark
@@ -326,21 +412,21 @@ where
     }
     let plant = Plant::open(&options.plant_library, &options.plant_description)?;
     let (gyro, accel) = plant.imu_flu();
-    let navigation = navigation_sample(&plant);
-    let reference = trajectory_reference(0.0);
+    let mut synthetic_gnss = SyntheticGnss::default();
     let mut channels = [1500; 16];
     channels[2] = 1000;
     channels[4] = 1000;
-    channels[5] = 2000;
+    channels[5] = 1000;
     let warmup_target_ns = 5_000_000_u64;
     let ready_deadline = Instant::now() + Duration::from_secs(60);
     loop {
+        let fix = synthetic_gnss.sample(plant.position(), plant.velocity(), warmup_target_ns);
         let inputs = protocol::lockstep_inputs(
             gyro,
             accel,
             channels,
-            navigation,
-            reference,
+            fix,
+            WaypointPlanWire::default(),
             warmup_target_ns,
         );
         if exchange(&inputs, options.response_timeout).is_ok() {
@@ -352,7 +438,15 @@ where
     }
 
     let target_ns = warmup_target_ns + (benchmark_seconds * 1.0e9).round() as u64;
-    let inputs = protocol::lockstep_inputs(gyro, accel, channels, navigation, reference, target_ns);
+    let fix = synthetic_gnss.sample(plant.position(), plant.velocity(), target_ns);
+    let inputs = protocol::lockstep_inputs(
+        gyro,
+        accel,
+        channels,
+        fix,
+        WaypointPlanWire::default(),
+        target_ns,
+    );
     let start = Instant::now();
     exchange(&inputs, Duration::from_secs(120))?;
     let wall_seconds = start.elapsed().as_secs_f64();
@@ -365,29 +459,51 @@ where
 
 fn run_mission<F>(options: &Options, exchange: &mut F) -> Result<()>
 where
-    F: FnMut(
-        &protocol::LockstepInputs,
-        Duration,
-    ) -> Result<(MotorCommand, Option<FlightState>, u64)>,
+    F: FnMut(&protocol::LockstepInputs, Duration) -> Result<LockstepOutputs>,
 {
     let mut plant = Plant::open(&options.plant_library, &options.plant_description)?;
-    let mut report = Report::default();
+    let mut report = Report {
+        position_mission_continuous: true,
+        mission_status_current: true,
+        navigation_estimate_finite: true,
+        ..Report::default()
+    };
     let mut simulated_time = 0.0_f64;
     let wall_start = Instant::now();
     let mut firmware_ready = false;
-    let mut firmware_armed = false;
+    let mut synthetic_gnss = SyntheticGnss::default();
+    let mission_plan = protocol::bounded_square_plan(1, 1.0, 0.3)?;
+    let mut plan_sent = false;
+    let mut mission_epoch = None;
+    let mut last_outputs: Option<LockstepOutputs> = None;
+    let mut planner_origin: Option<[f64; 2]> = None;
+    let mut vehicle_origin: Option<[f64; 2]> = None;
+    let mut navigation_truth_origin: Option<[f64; 2]> = None;
     let mut trajectory = trajectory_writer(&options.trajectory)?;
 
     let mission_steps = (options.duration / options.plant_dt).round() as u64;
     while report.plant_steps < mission_steps {
-        let channels = rc_channels(simulated_time, &plant);
+        if !plan_sent
+            && last_outputs.as_ref().is_some_and(|outputs| {
+                let required = MissionStatusWire::SOURCE_READY | MissionStatusWire::ORIGIN_VALID;
+                outputs.mission_status.flags & required == required
+                    && outputs.odometry_estimate.quality_pct() > 0
+            })
+        {
+            plan_sent = true;
+        }
+        let mission_time = mission_epoch.map(|epoch| simulated_time - epoch);
+        let channels = rc_channels(mission_time, &plant);
         let (gyro, accel) = plant.imu_flu();
-        let navigation = navigation_sample(&plant);
-        let reference = trajectory_reference(simulated_time);
         let target_time = ((simulated_time + options.plant_dt) * 1.0e9).round() as u64;
-        let inputs =
-            protocol::lockstep_inputs(gyro, accel, channels, navigation, reference, target_time);
-        let (motor, state, state_count) = match exchange(&inputs, options.response_timeout) {
+        let fix = synthetic_gnss.sample(plant.position(), plant.velocity(), target_time);
+        let plan = if plan_sent {
+            mission_plan
+        } else {
+            WaypointPlanWire::default()
+        };
+        let inputs = protocol::lockstep_inputs(gyro, accel, channels, fix, plan, target_time);
+        let outputs = match exchange(&inputs, options.response_timeout) {
             Ok(response) => response,
             Err(error) if !firmware_ready && wall_start.elapsed() < Duration::from_secs(60) => {
                 eprintln!("waiting for rehosted RDD2 firmware: {error}");
@@ -395,33 +511,104 @@ where
             }
             Err(error) => return Err(error),
         };
-        report.flight_state_messages += state_count;
         if !firmware_ready {
-            if state.is_none() && wall_start.elapsed() < Duration::from_secs(60) {
-                eprintln!("waiting for first post-input VehicleHealth response");
-                continue;
-            }
-            if state.is_none() {
-                bail!("firmware produced PWM but no post-input VehicleHealth response");
-            }
             firmware_ready = true;
         }
 
-        plant.step(motor.values, options.plant_dt)?;
+        plant.step(outputs.motor_command.values, options.plant_dt)?;
         simulated_time += options.plant_dt;
         report.plant_steps += 1;
         report.motor_messages += 1;
 
-        if let Some(state) = state {
-            firmware_armed = state.armed;
-            report.firmware_rc_and_imu_healthy |= state.rc_valid && state.imu_ok;
-            report.firmware_acro_observed |= state.flight_mode == 0;
-            report.firmware_attitude_observed |= state.flight_mode == 1;
-            report.firmware_position_observed |= state.flight_mode == 2;
-            report.firmware_armed_observed |= state.armed;
-            if simulated_time >= 19.25 && !state.armed {
-                report.firmware_disarmed_after_flight = true;
+        report.flight_state_messages += 1;
+        let state = outputs.flight_state;
+        report.firmware_rc_and_imu_healthy |= state.rc_valid && state.imu_ok;
+        report.firmware_acro_observed |= state.flight_mode == 0;
+        report.firmware_attitude_observed |= state.flight_mode == 1;
+        report.firmware_position_observed |= state.flight_mode == 2;
+        report.firmware_armed_observed |= state.armed;
+        let status = outputs.mission_status;
+        report.mission_status_current &= status.timestamp_ns == target_time;
+        report.gnss_source_ready_observed |= status.flags & MissionStatusWire::SOURCE_READY != 0;
+        report.navigation_origin_observed |= status.flags & MissionStatusWire::ORIGIN_VALID != 0;
+        report.mission_plan_accepted |= status.flags & MissionStatusWire::PLAN_ACCEPTED != 0;
+        report.mission_pending_observed |= status.mission_state == 1;
+        report.mission_running_observed |= status.mission_state == 2;
+        report.maximum_gnss_generation = report.maximum_gnss_generation.max(status.gnss_generation);
+        report.maximum_plan_generation = report.maximum_plan_generation.max(status.plan_generation);
+        report.maximum_reference_generation = report
+            .maximum_reference_generation
+            .max(status.reference_generation);
+        let reference = outputs.planner_reference;
+        let reference_position = reference.position_enu_m();
+        let reference_current = reference.timestamp_ns() != 0
+            && reference.timestamp_ns() <= target_time
+            && target_time - reference.timestamp_ns() <= 100_000_000
+            && reference.type_mask() == 0
+            && reference.coordinate_frame() == synapse_fbs::types::LocalFrame::LocalEnu
+            && [
+                reference_position.x(),
+                reference_position.y(),
+                reference_position.z(),
+                reference.yaw_rad(),
+                reference.yaw_rate_rad_s(),
+            ]
+            .into_iter()
+            .all(f32::is_finite);
+        report.fresh_planner_reference_observed |= reference_current;
+        if mission_time.is_some_and(|time| {
+            (MISSION_POSITION_START_S + 0.1..MISSION_POSITION_END_S).contains(&time)
+        }) {
+            let required = MissionStatusWire::SOURCE_READY
+                | MissionStatusWire::ORIGIN_VALID
+                | MissionStatusWire::PLAN_ACCEPTED;
+            report.position_mission_continuous &= status.flags & required == required
+                && status.mission_state == 2
+                && reference_current;
+        }
+        if status.mission_state == 2 && state.flight_mode == 2 && reference_current {
+            let planner_position = [
+                f64::from(reference_position.x()),
+                f64::from(reference_position.y()),
+            ];
+            let truth_position = plant.position();
+            let planner_origin_value = *planner_origin.get_or_insert(planner_position);
+            let vehicle_origin_value =
+                *vehicle_origin.get_or_insert([truth_position[0], truth_position[1]]);
+            advance_square_corner(
+                &mut report.planner_corners_reached,
+                planner_origin_value,
+                planner_position,
+                0.12,
+            );
+            advance_square_corner(
+                &mut report.vehicle_corners_reached,
+                vehicle_origin_value,
+                [truth_position[0], truth_position[1]],
+                0.50,
+            );
+        }
+        if status.flags & MissionStatusWire::ORIGIN_VALID != 0
+            && outputs.odometry_estimate.quality_pct() > 0
+        {
+            let truth = plant.position();
+            let origin = *navigation_truth_origin.get_or_insert([truth[0], truth[1]]);
+            let estimate = outputs.odometry_estimate.position_enu_m();
+            let error_e = f64::from(estimate.x()) - (truth[0] - origin[0]);
+            let error_n = f64::from(estimate.y()) - (truth[1] - origin[1]);
+            if error_e.is_finite() && error_n.is_finite() {
+                report.max_navigation_horizontal_error_m = report
+                    .max_navigation_horizontal_error_m
+                    .max(error_e.hypot(error_n));
+            } else {
+                report.navigation_estimate_finite = false;
             }
+        }
+        if mission_epoch.is_none() && status.mission_state == 1 {
+            mission_epoch = Some(simulated_time);
+        }
+        if mission_time.is_some_and(|time| time >= MISSION_DISARM_S + 0.25) && !state.armed {
+            report.firmware_disarmed_after_flight = true;
         }
 
         let euler = plant.euler();
@@ -435,22 +622,26 @@ where
         let pitch = radians_to_degrees(euler[1]).abs();
         report.max_altitude_m = report.max_altitude_m.max(plant.altitude());
         report.max_tilt_deg = report.max_tilt_deg.max(roll.max(pitch));
-        if (5.0..6.5).contains(&simulated_time) {
+        if mission_time.is_some_and(|time| (2.0..2.9).contains(&time)) {
             report.max_roll_response_deg = report.max_roll_response_deg.max(roll);
         }
-        if (6.5..8.0).contains(&simulated_time) {
+        if mission_time.is_some_and(|time| (2.9..3.8).contains(&time)) {
             report.max_pitch_response_deg = report.max_pitch_response_deg.max(pitch);
         }
         let progress_steps = (1.0 / options.plant_dt).round() as u64;
         if report.plant_steps.is_multiple_of(progress_steps) {
             println!(
-                "[rdd2-mission] t={simulated_time:.1}s alt={:.2}m vz={:.2}m/s tilt={:.1}deg armed={}",
+                "[rdd2-mission] t={simulated_time:.1}s alt={:.2}m vz={:.2}m/s tilt={:.1}deg armed={} gps_ready={} origin={} mission_state={}",
                 plant.altitude(),
                 plant.vertical_speed(),
                 roll.max(pitch),
-                firmware_armed,
+                state.armed,
+                status.flags & MissionStatusWire::SOURCE_READY != 0,
+                status.flags & MissionStatusWire::ORIGIN_VALID != 0,
+                status.mission_state,
             );
         }
+        last_outputs = Some(outputs);
     }
 
     report.simulated_seconds = report.plant_steps as f64 * options.plant_dt;
@@ -491,10 +682,8 @@ fn run_shared_memory(options: &Options, memory_path: &PathBuf) -> Result<()> {
     );
     let mut transport =
         shared_memory::Transport::open(memory_path, firmware_elf, Duration::from_secs(60))?;
-    let mut exchange = |inputs: &protocol::LockstepInputs, timeout: Duration| {
-        let (motor, state) = transport.exchange(inputs, timeout)?;
-        Ok((motor, Some(state), 1))
-    };
+    let mut exchange =
+        |inputs: &protocol::LockstepInputs, timeout: Duration| transport.exchange(inputs, timeout);
     if options.controller_benchmark.is_some() {
         run_controller_benchmark(options, &mut exchange)
     } else {
@@ -530,10 +719,8 @@ fn run_native_sim(options: &Options, memory_path: &Path, executable: &Path) -> R
         "RDD2 mission runner connected to native simulator {}",
         executable.display()
     );
-    let mut exchange = |inputs: &protocol::LockstepInputs, timeout: Duration| {
-        let (motor, state) = transport.exchange(inputs, timeout)?;
-        Ok((motor, Some(state), 1))
-    };
+    let mut exchange =
+        |inputs: &protocol::LockstepInputs, timeout: Duration| transport.exchange(inputs, timeout);
     let result = if options.controller_benchmark.is_some() {
         run_controller_benchmark(options, &mut exchange)
     } else {
@@ -593,6 +780,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
 
     fn nominal_report() -> Report {
         Report {
@@ -604,6 +792,22 @@ mod tests {
             firmware_acro_observed: true,
             firmware_attitude_observed: true,
             firmware_position_observed: true,
+            gnss_source_ready_observed: true,
+            navigation_origin_observed: true,
+            mission_plan_accepted: true,
+            mission_pending_observed: true,
+            mission_running_observed: true,
+            fresh_planner_reference_observed: true,
+            position_mission_continuous: true,
+            mission_status_current: true,
+            planner_corners_reached: 5,
+            vehicle_corners_reached: 5,
+            navigation_estimate_finite: true,
+            max_navigation_horizontal_error_m: 0.1,
+            simulated_seconds: 32.0,
+            maximum_gnss_generation: 321,
+            maximum_reference_generation: 100,
+            maximum_plan_generation: 1,
             flight_state_messages: 100,
             max_altitude_m: 2.0,
             max_roll_response_deg: 5.0,
@@ -633,5 +837,172 @@ mod tests {
         evaluate(&mut report);
         assert!(!report.passed);
         assert_eq!(report.failures.len(), 4, "failures: {:?}", report.failures);
+    }
+
+    #[test]
+    fn evaluate_rejects_position_capability_dropout() {
+        let mut report = nominal_report();
+        report.position_mission_continuous = false;
+        evaluate(&mut report);
+        assert_eq!(report.failures.len(), 1, "failures: {:?}", report.failures);
+        assert!(report.failures[0].contains("dropped during POSITION"));
+    }
+
+    #[test]
+    fn evaluate_rejects_frozen_gnss_and_pending_only_reference() {
+        let mut report = nominal_report();
+        report.maximum_gnss_generation = 319;
+        report.maximum_reference_generation = 1;
+        evaluate(&mut report);
+        assert_eq!(report.failures.len(), 2, "failures: {:?}", report.failures);
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.contains("expected exactly"))
+        );
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.contains("pending hold"))
+        );
+    }
+
+    #[test]
+    fn evaluate_rejects_running_without_square_motion() {
+        let mut report = nominal_report();
+        report.planner_corners_reached = 1;
+        report.vehicle_corners_reached = 1;
+        evaluate(&mut report);
+        assert_eq!(report.failures.len(), 2, "failures: {:?}", report.failures);
+        assert!(
+            report
+                .failures
+                .iter()
+                .all(|failure| failure.contains("square corners"))
+        );
+    }
+
+    #[test]
+    fn evaluate_rejects_replayed_or_republished_plan() {
+        let mut report = nominal_report();
+        report.maximum_plan_generation = 2;
+        evaluate(&mut report);
+        assert_eq!(report.failures.len(), 1, "failures: {:?}", report.failures);
+        assert!(report.failures[0].contains("exactly once"));
+    }
+
+    #[test]
+    fn evaluate_rejects_stale_status_and_navigation_divergence() {
+        let mut report = nominal_report();
+        report.mission_status_current = false;
+        report.max_navigation_horizontal_error_m = 1.01;
+        evaluate(&mut report);
+        assert_eq!(report.failures.len(), 2, "failures: {:?}", report.failures);
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.contains("control release"))
+        );
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.contains("horizontal error"))
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a built direct-lockstep native firmware executable"]
+    fn native_firmware_exposes_odometry_before_the_one_shot_plan() -> Result<()> {
+        let executable = env::var_os("RDD2_NATIVE_SIM_EXECUTABLE")
+            .context("RDD2_NATIVE_SIM_EXECUTABLE is required for this integration test")?;
+        let memory_path = env::temp_dir().join(format!(
+            "rdd2-gps-ingress-test-{}-{}.bin",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        let mut transport = shared_memory::Transport::create_direct(&memory_path)?;
+        let mut child = Command::new(&executable)
+            .env("RDD2_LOCKSTEP_SHM", &memory_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| format!("cannot launch {}", PathBuf::from(executable).display()))?;
+        let mut gnss = SyntheticGnss::default();
+        let mut channels = [1500; 16];
+        channels[2] = 1000;
+        channels[4] = 1000;
+        channels[5] = 1000;
+        let mut target_ns = 0_u64;
+        let mut empty_odometry_observed = false;
+
+        let result = (|| -> Result<()> {
+            for _ in 0..4_000 {
+                target_ns += 625_000;
+                let fix = gnss.sample([0.0; 3], [0.0; 3], target_ns);
+                let inputs = protocol::lockstep_inputs(
+                    [0.0; 3],
+                    [0.0, 0.0, 9.806_65],
+                    channels,
+                    fix,
+                    WaypointPlanWire::default(),
+                    target_ns,
+                );
+                let outputs = transport.exchange(&inputs, Duration::from_secs(2))?;
+                let required = MissionStatusWire::SOURCE_READY | MissionStatusWire::ORIGIN_VALID;
+                if outputs.mission_status.flags & required == required
+                    && outputs.odometry_estimate.quality_pct() > 0
+                {
+                    assert_eq!(outputs.mission_status.mission_state, 0);
+                    assert_eq!(outputs.mission_status.plan_generation, 0);
+                    assert_eq!(outputs.mission_status.reference_generation, 0);
+                    assert_eq!(outputs.planner_reference.timestamp_ns(), 0);
+                    empty_odometry_observed = true;
+                    break;
+                }
+            }
+            assert!(
+                empty_odometry_observed,
+                "EMPTY mission state never exposed initialized GPS odometry"
+            );
+
+            let plan = protocol::bounded_square_plan(1, 1.0, 0.3)?;
+            let mut pending_observed = false;
+            let mut last_status = MissionStatusWire::default();
+            let mut last_quality = 0_i8;
+            for _ in 0..320 {
+                target_ns += 625_000;
+                let fix = gnss.sample([0.0; 3], [0.0; 3], target_ns);
+                let inputs = protocol::lockstep_inputs(
+                    [0.0; 3],
+                    [0.0, 0.0, 9.806_65],
+                    channels,
+                    fix,
+                    plan,
+                    target_ns,
+                );
+                let outputs = transport.exchange(&inputs, Duration::from_secs(2))?;
+                last_status = outputs.mission_status;
+                last_quality = outputs.odometry_estimate.quality_pct();
+                if outputs.mission_status.mission_state == 1 {
+                    assert_eq!(outputs.mission_status.plan_generation, 1);
+                    assert!(outputs.mission_status.reference_generation > 0);
+                    pending_observed = true;
+                    break;
+                }
+            }
+            assert!(
+                pending_observed,
+                "one-shot plan never reached PENDING: status={last_status:?} quality={last_quality}"
+            );
+            Ok(())
+        })();
+        drop(transport);
+        let stop_result = stop_native_sim(&mut child);
+        let _ = fs::remove_file(memory_path);
+        result.and(stop_result)
     }
 }

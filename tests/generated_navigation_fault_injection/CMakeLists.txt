@@ -14,7 +14,7 @@ endif()
 
 get_filename_component(RDD2_TEST_EFMI_ROOT "${RDD2_TEST_EFMI_ROOT}" REALPATH)
 set(_navigation_production_dir
-  "${RDD2_TEST_EFMI_ROOT}/NavigationEstimator/Vehicles_Rdd2_NavigationEstimator/ProductionCode"
+  "${RDD2_TEST_EFMI_ROOT}/Vehicles_Rdd2_NavigationEstimator/ProductionCode"
 )
 set(_navigation_source
   "${_navigation_production_dir}/Vehicles_Rdd2_NavigationEstimator.c"
@@ -28,25 +28,21 @@ foreach(_generated_file IN ITEMS "${_navigation_source}" "${_navigation_header}"
   endif()
 endforeach()
 
-get_filename_component(_workspace_root "${CMAKE_CURRENT_LIST_DIR}/../.." REALPATH)
-set(ZEPHYR_EXTRA_MODULES
-  "${_workspace_root}/.devenv/state/west/modules/lib/zros"
-  "${_workspace_root}/.devenv/state/west/modules/lib/csyn"
-)
+include("${CMAKE_CURRENT_LIST_DIR}/../rdd2_test_environment.cmake")
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(generated_navigation_fault_injection)
 
 target_include_directories(app PRIVATE
-  "${_workspace_root}/src"
-  "${_workspace_root}/src/processes"
-  "${_workspace_root}/.devenv/state/west/modules/lib/zros/include"
+  "${RDD2_TEST_APP_ROOT}/src"
+  "${RDD2_TEST_APP_ROOT}/src/processes"
+  "${RDD2_ZROS_ROOT}/include"
   "${_navigation_production_dir}"
 )
 target_sources(app PRIVATE
   src/log_module.c
   src/main.c
-  "${_workspace_root}/src/processes/navigation_gps.c"
+  "${RDD2_TEST_APP_ROOT}/src/processes/navigation_gps.c"
   "${_navigation_source}"
 )
 target_compile_definitions(app PRIVATE CONFIG_RDD2_LOCKSTEP=1)

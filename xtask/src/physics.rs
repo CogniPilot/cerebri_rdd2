@@ -89,8 +89,7 @@ impl Plant {
             bail!("FMI CoSimulation modelIdentifier must not be empty");
         }
         let variables = float64_variables(&document)?;
-        let motor_command =
-            required_variable(&variables, "commands.motor", "input", 4)?.reference;
+        let motor_command = required_variable(&variables, "commands.motor", "input", 4)?.reference;
         let outputs = required_references(
             &variables,
             &[

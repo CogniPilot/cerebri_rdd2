@@ -6,9 +6,7 @@
 #include "interfaces/zros_topics.h"
 #include "scheduling.h"
 
-#if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
-#include "gnss_onboard.h"
-#endif
+#include "gnss_source.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -64,6 +62,7 @@ struct waypoint_trajectory_planner_process {
   struct zros_sub health_sub;
   struct zros_sub odometry_sub;
   struct zros_pub reference_pub;
+  struct rdd2_release_scheduler release_scheduler;
   enum waypoint_mission_state mission_state;
   int32_t last_plan_sequence;
   bool plan_sequence_observed;
@@ -75,8 +74,20 @@ struct waypoint_trajectory_planner_process {
 };
 
 static struct waypoint_trajectory_planner_process g_process;
+static atomic_t g_mission_state;
 static struct k_thread g_thread;
 K_THREAD_STACK_DEFINE(g_planner_stack, PLANNER_STACK_SIZE);
+
+static void
+mission_state_set(struct waypoint_trajectory_planner_process *process,
+                  enum waypoint_mission_state state) {
+  process->mission_state = state;
+  atomic_set(&g_mission_state, (atomic_val_t)state);
+}
+
+uint8_t rdd2_waypoint_mission_state_get(void) {
+  return (uint8_t)atomic_get(&g_mission_state);
+}
 
 enum {
   RDD2_WAYPOINT_AXIS_COUNT =
@@ -190,14 +201,6 @@ static bool waypoint_plan_is_admissible(const rdd2_waypoint_plan_t *plan) {
          plan->nominal_speed <= MISSION_SPEED_MAX_M_S &&
          value_is_near(plan->min_segment_duration,
                        MISSION_MIN_SEGMENT_DURATION_S);
-}
-
-static bool onboard_position_source_ready(void) {
-#if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
-  return rdd2_gnss_onboard_ready_get();
-#else
-  return true;
-#endif
 }
 
 static bool
@@ -314,7 +317,7 @@ static void abort_mission(struct waypoint_trajectory_planner_process *process) {
   (void)zros_pub_update(&process->reference_pub);
   reset_planner_efmu(process);
   process->mission_plan = (rdd2_waypoint_plan_t){0};
-  process->mission_state = WAYPOINT_MISSION_ABORTED;
+  mission_state_set(process, WAYPOINT_MISSION_ABORTED);
 }
 
 static void
@@ -430,7 +433,7 @@ handle_plan_update(struct waypoint_trajectory_planner_process *process,
 
   reset_planner_efmu(process);
   process->mission_plan = process->ingress_plan;
-  process->mission_state = WAYPOINT_MISSION_PENDING;
+  mission_state_set(process, WAYPOINT_MISSION_PENDING);
 }
 
 static void
@@ -438,7 +441,7 @@ waypoint_mission_cycle(struct waypoint_trajectory_planner_process *process,
                        bool plan_updated) {
   uint64_t control_now_ns = process->release_clock.timestamp_ns;
   bool navigation_current = odometry_is_current(process, control_now_ns);
-  bool source_ready = onboard_position_source_ready();
+  bool source_ready = rdd2_position_source_ready_get();
 
   if (plan_updated) {
     handle_plan_update(process, control_now_ns, source_ready);
@@ -452,7 +455,7 @@ waypoint_mission_cycle(struct waypoint_trajectory_planner_process *process,
     if (mission_run_is_allowed(process, control_now_ns, source_ready)) {
       rebase_mission_plan(process);
       copy_waypoint_plan_input_to_efmu(&process->efmu, &process->mission_plan);
-      process->mission_state = WAYPOINT_MISSION_RUNNING;
+      mission_state_set(process, WAYPOINT_MISSION_RUNNING);
     } else {
       if (navigation_current && source_ready &&
           !publish_pending_hold(process)) {
@@ -492,6 +495,11 @@ static void waypoint_trajectory_planner_thread(void *arg1, void *arg2,
         zros_sub_update(&process->release_sub) != 0) {
       continue;
     }
+    if (!rdd2_release_due(&process->release_scheduler,
+                          RDD2_NAVIGATION_ESTIMATOR_RATE_HZ,
+                          RDD2_PLANNING_RATE_HZ)) {
+      continue;
+    }
 
     plan_updated = zros_sub_update(&process->plan_sub) == 0;
     if (zros_sub_update(&process->manual_sub) == 0) {
@@ -520,6 +528,7 @@ int rdd2_waypoint_trajectory_planner_process_start(void) {
   int rc;
 
   *process = (struct waypoint_trajectory_planner_process){0};
+  mission_state_set(process, WAYPOINT_MISSION_EMPTY);
   reset_planner_efmu(process);
   zros_node_init(&process->node, "efmu_planner");
 
@@ -527,8 +536,7 @@ int rdd2_waypoint_trajectory_planner_process_start(void) {
                      &process->ingress_plan, 0.0);
   if (rc == 0) {
     rc = zros_sub_init(&process->release_sub, &process->node,
-                       &topic_attitude_estimate, &process->release_clock,
-                       RDD2_PLANNING_RATE_HZ);
+                       &topic_attitude_estimate, &process->release_clock, 0.0);
   }
   if (rc == 0) {
     rc = zros_sub_init(&process->manual_sub, &process->node,

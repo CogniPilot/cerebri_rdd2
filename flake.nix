@@ -458,44 +458,11 @@
                           export FASTDYN_EXECUTABLE="''${FASTDYN_EXECUTABLE:-$FASTDYN_STATE/venv/bin/fastdyn}"
                           export FASTDYN_QEMU_PATH="''${FASTDYN_QEMU_PATH:-$FASTDYN_STATE/qemu/build/qemu-system-arm}"
                           export FASTDYN_MONITOR_ELF="''${FASTDYN_MONITOR_ELF:-$FASTDYN_STATE/qemu/ws/monitor.elf}"
-                          export RDD2_RUMOCA_EXECUTABLE="''${RDD2_RUMOCA_EXECUTABLE:-}"
+                          export RDD2_RUMOCA_EXECUTABLE="''${RDD2_RUMOCA_EXECUTABLE:-${flightRumoca}/bin/rumoca}"
                           export RDD2_RUMOCA_LIBRARY_PATH="''${RDD2_RUMOCA_LIBRARY_PATH:-}"
 
                           if [ -d "$workspace/zephyr" ]; then
                             export ZEPHYR_BASE="$workspace/zephyr"
-                          fi
-                        }
-
-                        rdd2_export_local_model_development() {
-                          local app="$1"
-                          local source_workspace
-                          local local_models
-                          local local_rumoca
-
-                          source_workspace="$(rdd2_source_workspace "$app")"
-                          local_models="$source_workspace/modelica_models"
-                          local_rumoca="$source_workspace/rumoca/target/debug/rumoca"
-
-                          if [ -z "''${RDD2_MODELICA_MODELS_ROOT:-}" ] &&
-                             [ -f "$local_models/Vehicles/Rdd2/GuidanceController.mo" ] &&
-                             [ -f "$local_models/Vehicles/Rdd2/NavigationEstimator.mo" ]; then
-                            export RDD2_MODELICA_MODELS_ROOT="$local_models"
-                          fi
-
-                          if [ -z "''${RDD2_RUMOCA_EXECUTABLE:-}" ] && [ -x "$local_rumoca" ]; then
-                            export RDD2_RUMOCA_EXECUTABLE="$local_rumoca"
-                            export RDD2_RUMOCA_LIBRARY_PATH="''${LD_LIBRARY_PATH:-}"
-                          fi
-
-                          if [ "$(realpath -m "''${RDD2_MODELICA_MODELS_ROOT:-}")" = "$(realpath "$local_models")" ]; then
-                            if [ -z "''${RDD2_RUMOCA_EXECUTABLE:-}" ]; then
-                              printf 'error: local cerebri_rdd2 code generation requires %s\n' \
-                                "$local_rumoca" >&2
-                              return 1
-                            fi
-                            printf '[deps] local Modelica source: %s\n' "$local_models"
-                            printf '[deps] local Rumoca code generator: %s\n' \
-                              "$RDD2_RUMOCA_EXECUTABLE"
                           fi
                         }
 
@@ -795,7 +762,6 @@
             ${commonScript}
 
             app="$(rdd2_find_app)"
-            rdd2_export_local_model_development "$app"
             rdd2_export_common "$app"
             rdd2_require_workspace "$app"
             workspace="$RDD2_WORKSPACE_ROOT"
@@ -833,7 +799,6 @@
             ${commonScript}
 
             app="$(rdd2_find_app)"
-            rdd2_export_local_model_development "$app"
             rdd2_export_common "$app"
             rdd2_require_workspace "$app"
             workspace="$RDD2_WORKSPACE_ROOT"
@@ -845,6 +810,36 @@
 
             cd "$workspace"
             exec west build -p always -b "$board" -d "$build_dir" "$app" "$@"
+          '';
+
+          rdd2-test-gps-lockstep = mkCargoApp "rdd2-test-gps-lockstep" ''
+            ${commonScript}
+
+            app="$(rdd2_find_app)"
+            rdd2_ensure_workspace "$app" "${rdd2-west-update}/bin/rdd2-west-update"
+            rdd2_export_common "$app"
+            rdd2_require_workspace "$app"
+
+            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-host}"
+            export NIX_HARDENING_ENABLE=""
+
+            board="''${RDD2_NATIVE_SIM_BOARD:-native_sim/native/64}"
+            build_dir="''${RDD2_GPS_LOCKSTEP_TEST_BUILD_DIR:-$app/build-native_sim-gps-lockstep}"
+
+            cd "$RDD2_WORKSPACE_ROOT"
+            west build -p always -b "$board" -d "$build_dir" "$app"
+
+            executable="$build_dir/zephyr/zephyr.exe"
+            if [ ! -x "$executable" ]; then
+              printf 'error: native GPS lockstep build did not produce %s\n' "$executable" >&2
+              exit 1
+            fi
+
+            cd "$app"
+            RDD2_NATIVE_SIM_EXECUTABLE="$executable" \
+              cargo test --workspace --locked \
+                native_firmware_exposes_odometry_before_the_one_shot_plan -- \
+                --ignored --nocapture
           '';
 
           rdd2-flash = mkWestApp "rdd2-flash" ''
@@ -1098,7 +1093,6 @@
             ${commonScript}
 
             app="$(rdd2_find_app)"
-            rdd2_export_local_model_development "$app"
             rdd2_ensure_workspace "$app" "${rdd2-west-update}/bin/rdd2-west-update"
             rdd2_export_common "$app"
             rdd2_require_workspace "$app"
@@ -1317,6 +1311,7 @@
               rdd2-build
               rdd2-build-comms-stub
               rdd2-build-native-sim
+              rdd2-test-gps-lockstep
               rdd2-flash
               rdd2-debug
               rdd2-menuconfig
@@ -1339,6 +1334,7 @@
             rdd2-build
             rdd2-build-comms-stub
             rdd2-build-native-sim
+            rdd2-test-gps-lockstep
             rdd2-flash
             rdd2-debug
             rdd2-menuconfig
@@ -1378,6 +1374,12 @@
             type = "app";
             program = "${packages.rdd2-build-native-sim}/bin/rdd2-build-native-sim";
             meta.description = "Build RDD2 lockstep firmware for native_sim/native/64";
+          };
+
+          test-gps-lockstep = {
+            type = "app";
+            program = "${packages.rdd2-test-gps-lockstep}/bin/rdd2-test-gps-lockstep";
+            meta.description = "Build native RDD2 GPS firmware and run its mandatory ingress lifecycle test";
           };
 
           flash = {
@@ -1459,6 +1461,10 @@
         in
         {
           default = pkgs.mkShell {
+            hardeningDisable = [
+              "fortify"
+              "fortify3"
+            ];
             nativeBuildInputs = [
               packages.host-tools
               pkgs.clang-tools
@@ -1512,22 +1518,17 @@
                 fi
 
                 export RDD2_WORKSPACE_ROOT="$workspace"
+                export RDD2_CEREBRI_MODULES_ROOT="''${RDD2_CEREBRI_MODULES_ROOT:-$workspace/modules/lib/cerebri_lockstep}"
+                export RDD2_ZROS_ROOT="''${RDD2_ZROS_ROOT:-$workspace/modules/lib/zros}"
+                export RDD2_CSYN_ROOT="''${RDD2_CSYN_ROOT:-$workspace/modules/lib/csyn}"
+                export RDD2_MODELICA_MODELS_ROOT="''${RDD2_MODELICA_MODELS_ROOT:-$workspace/models/modelica_models}"
                 export WEST_TOPDIR="$workspace"
                 export FASTDYN_ROOT="''${FASTDYN_ROOT:-$workspace/modules/sim/fastdyn}"
                 export FASTDYN_STATE="''${FASTDYN_STATE:-$app/.devenv/state/fastdyn}"
                 export FASTDYN_EXECUTABLE="''${FASTDYN_EXECUTABLE:-$FASTDYN_STATE/venv/bin/fastdyn}"
                 export FASTDYN_QEMU_PATH="''${FASTDYN_QEMU_PATH:-$FASTDYN_STATE/qemu/build/qemu-system-arm}"
                 export FASTDYN_MONITOR_ELF="''${FASTDYN_MONITOR_ELF:-$FASTDYN_STATE/qemu/ws/monitor.elf}"
-                local_models="$source_workspace/modelica_models"
-                local_rumoca="$source_workspace/rumoca/target/debug/rumoca"
-                if [ -f "$local_models/Vehicles/Rdd2/GuidanceController.mo" ] &&
-                   [ -f "$local_models/Vehicles/Rdd2/NavigationEstimator.mo" ]; then
-                  export RDD2_MODELICA_MODELS_ROOT="''${RDD2_MODELICA_MODELS_ROOT:-$local_models}"
-                  if [ -x "$local_rumoca" ]; then
-                    export RDD2_RUMOCA_EXECUTABLE="''${RDD2_RUMOCA_EXECUTABLE:-$local_rumoca}"
-                    export RDD2_RUMOCA_LIBRARY_PATH="''${RDD2_RUMOCA_LIBRARY_PATH:-$LD_LIBRARY_PATH}"
-                  fi
-                fi
+                export RDD2_RUMOCA_EXECUTABLE="''${RDD2_RUMOCA_EXECUTABLE:-${rumoca.packages.${system}.default}/bin/rumoca}"
                 if [ -d "$workspace/zephyr" ]; then
                   export ZEPHYR_BASE="$workspace/zephyr"
                 elif [ -z "''${ZEPHYR_BASE:-}" ]; then
@@ -1553,7 +1554,7 @@
               fi
 
               echo "cerebri_rdd2 Nix shell: clangd + Zephyr compile_commands configured"
-              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-flash, rdd2-debug, rdd2-console, rdd2-systemview, rdd2-systemview-capture"
+              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-test-gps-lockstep, rdd2-flash, rdd2-debug, rdd2-console, rdd2-systemview, rdd2-systemview-capture"
               echo "cerebri_rdd2 Nix shell: rdd2-fastdyn-setup, rdd2-fastdyn-ci, rdd2-fastdyn-mission"
             '';
           };

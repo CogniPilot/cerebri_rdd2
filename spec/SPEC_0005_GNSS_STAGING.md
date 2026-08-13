@@ -1,7 +1,7 @@
 # SPEC_0005: GNSS Staging
 
 ## Status
-DRAFT
+ACCEPTED
 
 ## Summary
 M10 GNSS support is staged after manual flight bring-up and must stay out of the rate-loop hot path.
@@ -76,6 +76,12 @@ M10 GNSS support is staged after manual flight bring-up and must stay out of the
 - A build using the onboard GNSS source disables external-odometry/mocap input
   to Navigation so a retained external ENU frame cannot reframe the outdoor GPS
   ENU estimate. The `mocap-gnss` radio-source build retains mocap input.
+- A lockstep GNSS source has the same immutable-origin and external-odometry
+  suppression semantics as the onboard source. It is distinct from radio
+  injection, publishes only host-provided `GnssFixData`, and derives readiness
+  from fix usability and simulated-time age rather than receiver ACK state.
+  Fix loss or an age greater than `300 ms` closes readiness before the next
+  Guidance or Planning release may use it.
 - Geodetic fixes use the `modelica_models/Geodesy.geodeticToLocalEnu`
   convention: spherical Earth radius `6378137 m`, great-circle distance from
   the captured origin, and local East-North-Up output. Integer `deg_e7`

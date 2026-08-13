@@ -20,7 +20,10 @@ if RDD2_LOCKSTEP
 
 config RDD2_LOCKSTEP_THREAD_PRIORITY
 	int "Lockstep coordinator thread priority"
-	default 5
+	default 7
+	help
+	  Run after Rate, Navigation, Planning, and Guidance so one exchange cannot
+	  preempt the control-domain consumers whose outputs it reports.
 
 config RDD2_LOCKSTEP_THREAD_STACK_SIZE
 	int "Lockstep coordinator stack size"

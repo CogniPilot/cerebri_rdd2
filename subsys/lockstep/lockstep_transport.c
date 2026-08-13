@@ -3,10 +3,13 @@
  */
 
 #include "lockstep_transport.h"
+#include "gnss_lockstep.h"
+#include "gnss_source.h"
 #include "interfaces/data.h"
 #include "interfaces/drivers.h"
 #include "interfaces/zros_topics.h"
 #include "lockstep_input.h"
+#include "processes/processes.h"
 
 #include <string.h>
 
@@ -28,12 +31,13 @@ struct lockstep_input_store {
 
 static struct lockstep_input_store g_lockstep_input_store;
 static K_SEM_DEFINE(g_lockstep_input_sem, 0, 1);
-static struct zros_node g_lockstep_navigation_node;
-static struct zros_pub g_lockstep_odometry_pub;
-static struct zros_pub g_lockstep_reference_pub;
-static synapse_topic_ExternalOdometryData_t g_lockstep_odometry;
-static synapse_topic_LocalPositionCommandData_t g_lockstep_reference;
-static bool g_lockstep_navigation_ready;
+static struct zros_node g_lockstep_mission_node;
+static struct zros_pub g_lockstep_plan_pub;
+static rdd2_waypoint_plan_t g_lockstep_plan;
+static uint64_t g_control_now_ns;
+static int32_t g_last_plan_sequence;
+static bool g_plan_sequence_observed;
+static bool g_lockstep_mission_ready;
 
 static void lockstep_input_store_publish(const uint8_t *buf, size_t len) {
   uint32_t next_generation =
@@ -181,31 +185,81 @@ bool rdd2_lockstep_handle_manual_control(
   return true;
 }
 
-int rdd2_lockstep_navigation_init(void) {
+int rdd2_lockstep_gps_mission_init(void) {
   int rc;
 
-  zros_node_init(&g_lockstep_navigation_node, "rdd2_lockstep_navigation");
-  rc = zros_pub_init(&g_lockstep_odometry_pub, &g_lockstep_navigation_node,
-                     &topic_external_odometry, &g_lockstep_odometry);
+  g_lockstep_plan = (rdd2_waypoint_plan_t){0};
+  g_control_now_ns = 0U;
+  g_last_plan_sequence = 0;
+  g_plan_sequence_observed = false;
+  rc = rdd2_gnss_lockstep_init();
   if (rc == 0) {
-    rc = zros_pub_init(&g_lockstep_reference_pub, &g_lockstep_navigation_node,
-                       &topic_local_position_command, &g_lockstep_reference);
+    zros_node_init(&g_lockstep_mission_node, "rdd2_lockstep_mission");
+    rc = zros_pub_init(&g_lockstep_plan_pub, &g_lockstep_mission_node,
+                       &topic_waypoint_plan, &g_lockstep_plan);
   }
-  g_lockstep_navigation_ready = rc == 0;
+  g_lockstep_mission_ready = rc == 0;
   return rc;
 }
 
-bool rdd2_lockstep_handle_navigation(
-    const synapse_topic_ExternalOdometryData_t *odometry,
-    const synapse_topic_LocalPositionCommandData_t *command) {
-  if (!g_lockstep_navigation_ready || odometry == NULL || command == NULL) {
+bool rdd2_lockstep_handle_gps_mission(const synapse_topic_GnssFixData_t *fix,
+                                      const rdd2_waypoint_plan_t *plan,
+                                      uint64_t control_now_ns) {
+  bool accepted;
+
+  if (!g_lockstep_mission_ready || fix == NULL || plan == NULL) {
     return false;
   }
+  accepted = rdd2_gnss_lockstep_submit(fix, control_now_ns);
+  if (!accepted) {
+    return false;
+  }
+  g_control_now_ns = control_now_ns;
+  if (plan->sequence < 0 ||
+      (g_plan_sequence_observed && plan->sequence < g_last_plan_sequence)) {
+    return false;
+  }
+  if (g_plan_sequence_observed && plan->sequence == g_last_plan_sequence) {
+    return memcmp(plan, &g_lockstep_plan, sizeof(*plan)) == 0;
+  }
+  if (plan->sequence != 0) {
+    g_lockstep_plan = *plan;
+    accepted = zros_pub_update(&g_lockstep_plan_pub) == 0 && accepted;
+    if (accepted) {
+      g_last_plan_sequence = plan->sequence;
+      g_plan_sequence_observed = true;
+    }
+  }
+  return accepted;
+}
 
-  g_lockstep_odometry = *odometry;
-  g_lockstep_reference = *command;
-  return zros_pub_update(&g_lockstep_odometry_pub) == 0 &&
-         zros_pub_update(&g_lockstep_reference_pub) == 0;
+void rdd2_lockstep_gps_mission_status_get(
+    struct rdd2_lockstep_gps_mission_status *status) {
+  uint8_t state;
+
+  if (status == NULL) {
+    return;
+  }
+  state = rdd2_waypoint_mission_state_get();
+  *status = (struct rdd2_lockstep_gps_mission_status){
+      .timestamp_ns = g_control_now_ns,
+      .plan_sequence = g_plan_sequence_observed ? g_last_plan_sequence : 0,
+      .gnss_generation = rdd2_topic_generation(&topic_gnss_fix),
+      .plan_generation = rdd2_topic_generation(&topic_waypoint_plan),
+      .reference_generation =
+          rdd2_topic_generation(&topic_trajectory_reference),
+      .mission_state = state,
+  };
+  if (rdd2_position_source_ready_get()) {
+    status->flags |= RDD2_LOCKSTEP_SOURCE_READY;
+  }
+  if (rdd2_navigation_origin_valid_get()) {
+    status->flags |= RDD2_LOCKSTEP_ORIGIN_VALID;
+  }
+  if (state == RDD2_WAYPOINT_MISSION_PENDING ||
+      state == RDD2_WAYPOINT_MISSION_RUNNING) {
+    status->flags |= RDD2_LOCKSTEP_PLAN_ACCEPTED;
+  }
 }
 
 bool rdd2_lockstep_flight_state_blob_if_updated(uint32_t *last_generation,

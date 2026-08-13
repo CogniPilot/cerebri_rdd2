@@ -28,9 +28,17 @@ thread boundary actually exists.
   interrupt and motor trigger.
 - The planning eFMU runs at 50 Hz and publishes the trajectory reference
   consumed by guidance.
+- Navigation, Guidance, and Planning derive their modeled release phases by
+  integer phase accumulation from the preceding control-domain publication
+  rate (`1600 -> 1000 -> 200/50 Hz`). ZROS subscription wall-clock rate limits
+  may not define flight-process cadence, so accelerated lockstep and paused
+  lockstep preserve the same releases as hardware.
 - RTOS precedence is rate, navigation, planning, then guidance. Planning must
   execute before guidance on their coincident phase-zero releases so guidance
   observes the same reference update as the ideal RTOS composition.
+- A lockstep coordinator runs below all four flight processes. It may wake the
+  rate process with new input, but it must not sample/respond before ready
+  Navigation, Planning, and Guidance releases have had scheduler precedence.
 - Planning, navigation, guidance, and rate control communicate across their
   actual task boundaries with bounded latest-value ZROS payloads.
 - Once IMU pacing is active on `mr_vmu_tropic`, the hot path does not add a second fixed-period sleep on top of that pacing source.

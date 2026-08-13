@@ -17,6 +17,8 @@ The repository-owned pieces are:
   orchestration, automatic prerequisite builds, and artifact checks;
 - `rdd2-fastdyn-mission`: Nix-shell convenience command for invoking the FMI
   plant and firmware lockstep host directly.
+- `rdd2-test-gps-lockstep`: mandatory native-firmware proof that GPS origin and
+  odometry become observable before the one-shot mission reaches `PENDING`.
 
 The convenience commands locate the application and its West workspace.
 FastDyn CI requires a clean `modelica_models` checkout at the exact commit
@@ -29,16 +31,17 @@ acceptance checks. Their low-level raw equivalents remain
 assume their external artifacts already exist.
 
 The mission host is designed to load the tensor-native
-`Vehicles.Rdd2.PlantAdapter` FMI 3 Co-Simulation interface. It contains no
+`Vehicles.Rdd2.Plant` FMI 3 Co-Simulation interface. It contains no
 handwritten quadrotor equations. The same host and FMI plant are used for
 host-native firmware and the rehosted ARM binary.
 
 This path currently stops at a deliberate compiler capability boundary: the
-plant contains eventful landing contact, while Rumoca's source-FMU profile
-rejects event/action partitions. The export therefore fails closed today.
-Do not substitute an event-free plant or suppress touchdown relations to make
-this test appear to pass; the workflow becomes runnable only after Rumoca's FMI
-kernel preserves those events and its conformance suite covers them.
+plant retains checked parameter assertions, while Rumoca's source-FMU profile
+currently rejects the resulting action partition. The landing-contact branches
+are explicitly `noEvent` and do not create zero crossings. The export therefore
+fails closed today. Do not suppress the assertions to make this test appear to
+pass; the workflow becomes runnable only after Rumoca's FMI kernel preserves
+them and its conformance suite covers them.
 
 ## Standalone repository setup
 
@@ -75,6 +78,14 @@ cargo test --workspace --locked
 cargo build --release --locked --package cerebri-rdd2-xtask
 ```
 
+Run the native GPS ingress lifecycle proof. This command builds the real
+native firmware and runs the otherwise-ignored process integration test with
+the executable supplied explicitly; it cannot pass by skipping the process:
+
+```sh
+nix run .#test-gps-lockstep
+```
+
 Export the named RDD2 FMI plant from the West-managed Modelica checkout, then
 run the mission:
 
@@ -85,7 +96,7 @@ MODELICA_MODELS_ROOT="$RDD2_MODELICA_MODELS_ROOT" \
   nix run "$RDD2_MODELICA_MODELS_ROOT#rdd2-export-plant"
 
 export RDD2_FASTDYN_BUILD_DIR="$PWD/build-mr_vmu_tropic-fastdyn"
-export RDD2_RUMOCA_PLANT_DESCRIPTION="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant/Vehicles.Rdd2.PlantAdapter/modelDescription.xml"
+export RDD2_RUMOCA_PLANT_DESCRIPTION="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant/modelDescription.xml"
 export RDD2_RUMOCA_PLANT_LIBRARY=/path/to/the/compiled/source-FMU/binary
 rdd2-fastdyn-ci
 ```
@@ -104,5 +115,9 @@ commands.
 
 The mission writes its report and log below `artifacts/bil/`, plus the
 canonical `work/mission-trajectory.csv` consumed by
-`nix run .#trajectory-compare`. It verifies arming, takeoff, roll and pitch
-response, eventful landing contact, final disarm, and execution speed.
+`nix run .#trajectory-compare`. It verifies continuous GNSS readiness, GPS
+origin ownership, mission admission and `RUNNING` state, advancing planner
+references, ordered traversal of every square corner by both the reference and
+plant truth, exact 10 Hz GNSS and current-status generations, bounded GPS
+navigation error, final disarm and landing, and execution speed. Plant ground
+contact is intentionally expressed with `noEvent` branches.

@@ -12,7 +12,7 @@ use synapse_fbs::topic;
 
 use crate::protocol::{self, FlightState, LockstepInputs, MotorCommand};
 
-const RDD2_LOCKSTEP_MAGIC: u32 = 0x5244_4432;
+const RDD2_LOCKSTEP_MAGIC: u32 = 0x5244_4733;
 const SHARED_SYMBOL: &str = "rdd2_fastdyn_lockstep_shared";
 const RAM_START_SYMBOL: &str = "_image_ram_start";
 
@@ -24,13 +24,24 @@ struct SharedLayout {
     terminate: AtomicU32,
     inertial_sample: topic::InertialSampleData,
     manual_control: topic::ManualControlData,
-    external_odometry: topic::ExternalOdometryData,
-    local_position_command: topic::LocalPositionCommandData,
+    gnss_fix: topic::GnssFixData,
+    waypoint_plan: protocol::WaypointPlanWire,
     pwm_signal_outputs: topic::PwmSignalOutputsData,
     vehicle_health: topic::VehicleHealthData,
     attitude_estimate: topic::AttitudeEstimateData,
     attitude_command: topic::AttitudeCommandData,
     control_loop_metrics: topic::ControlLoopMetricsData,
+    odometry_estimate: topic::OdometryEstimateData,
+    planner_reference: topic::LocalPositionCommandData,
+    mission_status: protocol::MissionStatusWire,
+}
+
+pub struct LockstepOutputs {
+    pub motor_command: MotorCommand,
+    pub flight_state: FlightState,
+    pub odometry_estimate: topic::OdometryEstimateData,
+    pub planner_reference: topic::LocalPositionCommandData,
+    pub mission_status: protocol::MissionStatusWire,
 }
 
 pub struct Transport {
@@ -137,7 +148,7 @@ impl Transport {
 
     fn shared(&self) -> &SharedLayout {
         // SAFETY: offset was resolved from the ELF and bounds-checked against
-        // the mapped RAM file. The C and Rust layouts are asserted to 440 B.
+        // the mapped RAM file. The C and Rust layouts are asserted to 1176 B.
         unsafe {
             &*(self
                 .mapping
@@ -162,7 +173,7 @@ impl Transport {
         &mut self,
         inputs: &LockstepInputs,
         timeout: Duration,
-    ) -> Result<(MotorCommand, FlightState)> {
+    ) -> Result<LockstepOutputs> {
         let shared = self.shared_mut_ptr();
         // SAFETY: generated payload structs have the same fixed v0.9 wire
         // layout on both sides. The release store publishes all completed
@@ -178,14 +189,10 @@ impl Transport {
                 ptr::addr_of_mut!((*shared).manual_control),
                 1,
             );
+            ptr::copy_nonoverlapping(&inputs.gnss_fix, ptr::addr_of_mut!((*shared).gnss_fix), 1);
             ptr::copy_nonoverlapping(
-                &inputs.external_odometry,
-                ptr::addr_of_mut!((*shared).external_odometry),
-                1,
-            );
-            ptr::copy_nonoverlapping(
-                &inputs.local_position_command,
-                ptr::addr_of_mut!((*shared).local_position_command),
+                &inputs.waypoint_plan,
+                ptr::addr_of_mut!((*shared).waypoint_plan),
                 1,
             );
         }
@@ -222,16 +229,33 @@ impl Transport {
 
         let mut pwm = topic::PwmSignalOutputsData::default();
         let mut health = topic::VehicleHealthData::default();
+        let mut odometry = topic::OdometryEstimateData::default();
+        let mut reference = topic::LocalPositionCommandData::default();
+        let mut mission_status = protocol::MissionStatusWire::default();
         // SAFETY: the acquire load above makes the firmware's completed output
         // payload writes visible before these generated-struct copies.
         unsafe {
             ptr::copy_nonoverlapping(ptr::addr_of!((*shared).pwm_signal_outputs), &mut pwm, 1);
             ptr::copy_nonoverlapping(ptr::addr_of!((*shared).vehicle_health), &mut health, 1);
+            ptr::copy_nonoverlapping(ptr::addr_of!((*shared).odometry_estimate), &mut odometry, 1);
+            ptr::copy_nonoverlapping(
+                ptr::addr_of!((*shared).planner_reference),
+                &mut reference,
+                1,
+            );
+            ptr::copy_nonoverlapping(
+                ptr::addr_of!((*shared).mission_status),
+                &mut mission_status,
+                1,
+            );
         }
-        Ok((
-            protocol::motor_output(&pwm.0)?,
-            protocol::flight_state(&health.0)?,
-        ))
+        Ok(LockstepOutputs {
+            motor_command: protocol::motor_output(&pwm.0)?,
+            flight_state: protocol::flight_state(&health.0)?,
+            odometry_estimate: odometry,
+            planner_reference: reference,
+            mission_status,
+        })
     }
 }
 
@@ -241,7 +265,7 @@ impl Drop for Transport {
     }
 }
 
-const _: () = assert!(size_of::<SharedLayout>() == 440);
+const _: () = assert!(size_of::<SharedLayout>() == 1176);
 
 #[cfg(test)]
 mod tests {
@@ -250,17 +274,20 @@ mod tests {
 
     #[test]
     fn layout_matches_firmware_abi() {
-        assert_eq!(size_of::<SharedLayout>(), 440);
-        assert_eq!(align_of::<SharedLayout>(), 4);
+        assert_eq!(size_of::<SharedLayout>(), 1176);
+        assert_eq!(align_of::<SharedLayout>(), 8);
         assert_eq!(offset_of!(SharedLayout, inertial_sample), 16);
         assert_eq!(offset_of!(SharedLayout, manual_control), 56);
-        assert_eq!(offset_of!(SharedLayout, external_odometry), 96);
-        assert_eq!(offset_of!(SharedLayout, local_position_command), 168);
-        assert_eq!(offset_of!(SharedLayout, pwm_signal_outputs), 224);
-        assert_eq!(offset_of!(SharedLayout, vehicle_health), 272);
-        assert_eq!(offset_of!(SharedLayout, attitude_estimate), 328);
-        assert_eq!(offset_of!(SharedLayout, attitude_command), 368);
-        assert_eq!(offset_of!(SharedLayout, control_loop_metrics), 416);
+        assert_eq!(offset_of!(SharedLayout, gnss_fix), 96);
+        assert_eq!(offset_of!(SharedLayout, waypoint_plan), 160);
+        assert_eq!(offset_of!(SharedLayout, pwm_signal_outputs), 640);
+        assert_eq!(offset_of!(SharedLayout, vehicle_health), 688);
+        assert_eq!(offset_of!(SharedLayout, attitude_estimate), 744);
+        assert_eq!(offset_of!(SharedLayout, attitude_command), 784);
+        assert_eq!(offset_of!(SharedLayout, control_loop_metrics), 832);
+        assert_eq!(offset_of!(SharedLayout, odometry_estimate), 856);
+        assert_eq!(offset_of!(SharedLayout, planner_reference), 1088);
+        assert_eq!(offset_of!(SharedLayout, mission_status), 1144);
     }
 
     #[test]
@@ -297,8 +324,12 @@ mod tests {
                 }
                 thread::yield_now();
             };
-            let received_timestamp_ns =
+            let received_inertial_timestamp_ns =
                 unsafe { ptr::addr_of!((*shared).inertial_sample).read() }.timestamp_ns();
+            let received_gnss_timestamp_ns =
+                unsafe { ptr::addr_of!((*shared).gnss_fix).read() }.timestamp_ns();
+            let received_plan_sequence =
+                unsafe { ptr::addr_of!((*shared).waypoint_plan).read() }.sequence;
             let mut pwm = topic::PwmSignalOutputsData::default();
             pwm.set_output0_us(1750);
             let mut health = topic::VehicleHealthData::default();
@@ -309,12 +340,47 @@ mod tests {
                     | topic::SensorComponentFlags::RadioControl)
                     .bits(),
             );
+            let mut odometry = topic::OdometryEstimateData::default();
+            odometry.set_timestamp_ns(received_inertial_timestamp_ns);
+            let mut reference = topic::LocalPositionCommandData::default();
+            reference.set_timestamp_ns(received_inertial_timestamp_ns);
+            let mission_status = protocol::MissionStatusWire {
+                timestamp_ns: received_inertial_timestamp_ns,
+                plan_sequence: received_plan_sequence,
+                gnss_generation: 1,
+                plan_generation: 1,
+                reference_generation: 1,
+                mission_state: 2,
+                flags: protocol::MissionStatusWire::SOURCE_READY
+                    | protocol::MissionStatusWire::ORIGIN_VALID
+                    | protocol::MissionStatusWire::PLAN_ACCEPTED,
+                reserved: [0; 6],
+            };
             unsafe {
                 ptr::copy_nonoverlapping(&pwm, ptr::addr_of_mut!((*shared).pwm_signal_outputs), 1);
                 ptr::copy_nonoverlapping(&health, ptr::addr_of_mut!((*shared).vehicle_health), 1);
+                ptr::copy_nonoverlapping(
+                    &odometry,
+                    ptr::addr_of_mut!((*shared).odometry_estimate),
+                    1,
+                );
+                ptr::copy_nonoverlapping(
+                    &reference,
+                    ptr::addr_of_mut!((*shared).planner_reference),
+                    1,
+                );
+                ptr::copy_nonoverlapping(
+                    &mission_status,
+                    ptr::addr_of_mut!((*shared).mission_status),
+                    1,
+                );
                 (*ptr::addr_of!((*shared).response_sequence)).store(sequence, Ordering::Release);
             }
-            received_timestamp_ns
+            (
+                received_inertial_timestamp_ns,
+                received_gnss_timestamp_ns,
+                received_plan_sequence,
+            )
         });
 
         let mut transport = Transport {
@@ -326,20 +392,31 @@ mod tests {
             .shared()
             .magic
             .store(RDD2_LOCKSTEP_MAGIC, Ordering::Release);
+        let mut synthetic_gnss = protocol::SyntheticGnss::default();
+        let gnss_fix = synthetic_gnss.sample([0.0; 3], [0.0; 3], 100_000_000);
+        let waypoint_plan = protocol::bounded_square_plan(1, 2.0, 0.3).unwrap();
         let inputs = protocol::lockstep_inputs(
             [0.1, 0.2, 0.3],
             [0.0, 0.0, 9.8],
             [1500; 16],
-            protocol::NavigationSample::default(),
-            protocol::TrajectoryReference::default(),
+            gnss_fix,
+            waypoint_plan,
             5_000_000,
         );
-        let (motor, state) = transport
+        let outputs = transport
             .exchange(&inputs, Duration::from_secs(10))
             .unwrap();
-        assert_eq!(motor.values[0], 0.75);
-        assert!(state.armed && state.rc_valid && state.imu_ok);
-        assert_eq!(firmware.join().unwrap(), 5_000_000);
+        assert_eq!(outputs.motor_command.values[0], 0.75);
+        assert!(
+            outputs.flight_state.armed
+                && outputs.flight_state.rc_valid
+                && outputs.flight_state.imu_ok
+        );
+        assert_eq!(outputs.odometry_estimate.timestamp_ns(), 5_000_000);
+        assert_eq!(outputs.planner_reference.timestamp_ns(), 5_000_000);
+        assert_eq!(outputs.mission_status.plan_sequence, 1);
+        assert_eq!(outputs.mission_status.mission_state, 2);
+        assert_eq!(firmware.join().unwrap(), (5_000_000, 100_000_000, 1));
         assert_eq!(transport.shared().terminate.load(Ordering::Acquire), 0);
         drop(transport);
 

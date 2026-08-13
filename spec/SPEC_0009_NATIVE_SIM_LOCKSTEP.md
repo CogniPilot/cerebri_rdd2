@@ -5,7 +5,7 @@ ACCEPTED
 
 ## Summary
 `native_sim` runs the same 1600 Hz flight-control loop as flight firmware. Its
-simulator IO terminates in lockstep RC, IMU, navigation/reference, and DSHOT
+simulator IO terminates in lockstep RC, IMU, GNSS/mission, and DSHOT
 interfaces using the same
 generated `synapse_fbs` messages and shared direct sequencing
 module as CUBS2. CSyn/Zenoh may run as a communications side-channel, but never
@@ -20,13 +20,21 @@ paces lockstep.
 - `src/main.c` must remain free of `native_sim`-specific control-path branches.
 - The simulator boundary must terminate at board-selected `rc`, `imu0`, and `motors` devices, not at ad hoc app-level IO hooks.
 - Inbound simulator data uses generated `ManualControlData`,
-  `InertialSampleData`, `ExternalOdometryData`, and `LocalPositionCommandData`
-  fixed-layout payloads.
-- In lockstep builds, the inbound `LocalPositionCommandData` is the Guidance
-  trajectory-reference source. It must pass the same frame, mask, finiteness,
-  and control-time freshness gates as a Planning publication. The host's
-  three-position mode channel must decode to all three firmware modes; a
-  `POSITION` request must not be collapsed into `ATTITUDE`.
+  `InertialSampleData`, and `GnssFixData` fixed-layout payloads plus the
+  fixed-capacity native `rdd2_waypoint_plan_t` mission boundary.
+- Lockstep has a distinct GNSS source selection. It publishes at exactly
+  `10 Hz`, uses the shared simulated boot-time domain, suppresses external
+  odometry, and retains GPS-origin ownership like the onboard source. Its
+  readiness requires a currently usable fix and self-ages from the latest
+  published fix timestamp; a missing, invalid, future, or stale fix closes
+  readiness.
+- The host publishes one bounded current-altitude square mission request while
+  disarmed. It does not continuously publish a trajectory reference. Planning
+  owns admission, rebase, lifecycle, and `trajectory_reference`; Guidance
+  always consumes that Planning publication. The direct-reference simulation
+  profile is removed, not retained as a compatibility mode.
+- The host's three-position mode channel must decode to all three firmware
+  modes; a `POSITION` request must not be collapsed into `ATTITUDE`.
 - Outbound data uses generated `PwmSignalOutputsData`, `VehicleHealthData`,
   `AttitudeEstimateData`, `AttitudeCommandData`, and `ControlLoopMetricsData`
   fixed-layout payloads.
@@ -50,6 +58,7 @@ paces lockstep.
 - Blocking socket IO in the 1600 Hz control loop.
 - A simulation-only control loop separate from `src/main.c`.
 - Incompatible simulation messages that bypass CSyn's pinned `synapse_fbs`.
+- External-odometry or direct local-position-command lockstep ingress.
 - Per-packet heap allocation in the hot path.
 - Custom topic keys, payload-size tables, or FlatBuffer decoders in RDD2.
 

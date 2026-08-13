@@ -299,6 +299,7 @@ nix run .#west-update
 nix run .#build
 nix run .#build-comms-stub
 nix run .#build-native-sim
+nix run .#test-gps-lockstep
 nix run .#console
 nix run .#systemview
 nix run .#systemview-capture

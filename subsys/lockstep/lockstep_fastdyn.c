@@ -52,9 +52,10 @@ static void fastdyn_thread(void *arg0, void *arg1, void *arg2) {
     sequence = cerebri_lockstep_sequence_current(&g_lockstep);
     if (!rdd2_lockstep_handle_manual_control(
             &rdd2_fastdyn_lockstep_shared.manual_control) ||
-        !rdd2_lockstep_handle_navigation(
-            &rdd2_fastdyn_lockstep_shared.external_odometry,
-            &rdd2_fastdyn_lockstep_shared.local_position_command) ||
+        !rdd2_lockstep_handle_gps_mission(
+            &rdd2_fastdyn_lockstep_shared.gnss_fix,
+            &rdd2_fastdyn_lockstep_shared.waypoint_plan,
+            rdd2_fastdyn_lockstep_shared.inertial_sample.timestamp_ns) ||
         !rdd2_lockstep_handle_input_blob(
             (const uint8_t *)&rdd2_fastdyn_lockstep_shared.inertial_sample,
             sizeof(rdd2_fastdyn_lockstep_shared.inertial_sample))) {
@@ -78,7 +79,11 @@ static void fastdyn_thread(void *arg0, void *arg1, void *arg2) {
       rdd2_fastdyn_lockstep_shared.attitude_command = flight.attitude_command;
       rdd2_fastdyn_lockstep_shared.control_loop_metrics =
           flight.control_loop_metrics;
+      rdd2_fastdyn_lockstep_shared.odometry_estimate = flight.odometry_estimate;
+      rdd2_fastdyn_lockstep_shared.planner_reference = flight.planner_reference;
     }
+    rdd2_lockstep_gps_mission_status_get(
+        &rdd2_fastdyn_lockstep_shared.mission_status);
     cerebri_lockstep_sequence_respond(&g_lockstep);
   }
 }
@@ -88,7 +93,7 @@ static int fastdyn_init(void) {
 
   memset(&rdd2_fastdyn_lockstep_shared, 0,
          sizeof(rdd2_fastdyn_lockstep_shared));
-  rc = rdd2_lockstep_navigation_init();
+  rc = rdd2_lockstep_gps_mission_init();
   if (rc != 0) {
     return rc;
   }

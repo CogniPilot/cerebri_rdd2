@@ -6,9 +6,7 @@
 #include "interfaces/zros_topics.h"
 #include "scheduling.h"
 
-#if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
-#include "gnss_onboard.h"
-#endif
+#include "gnss_source.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -27,11 +25,7 @@ LOG_MODULE_DECLARE(rdd2, LOG_LEVEL_INF);
 #define GUIDANCE_STACK_SIZE 4096
 #define GUIDANCE_REFERENCE_TIMEOUT_NS UINT64_C(100000000)
 
-#if defined(CONFIG_RDD2_LOCKSTEP)
-#define GUIDANCE_REFERENCE_TOPIC topic_local_position_command
-#else
 #define GUIDANCE_REFERENCE_TOPIC topic_trajectory_reference
-#endif
 
 struct guidance_controller_process {
   GuidanceControllerState efmu;
@@ -50,6 +44,7 @@ struct guidance_controller_process {
   struct zros_sub reference_sub;
   struct zros_pub rate_command_pub;
   struct zros_pub attitude_command_pub;
+  struct rdd2_release_scheduler release_scheduler;
   bool have_reference;
   bool control_fault_latched;
   bool position_fallback_latched;
@@ -207,14 +202,6 @@ static bool efmu_outputs_are_finite(const GuidanceControllerState *efmu) {
   return rdd2_control_values_are_finite(values, ARRAY_SIZE(values));
 }
 
-static bool onboard_position_source_ready(void) {
-#if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
-  return rdd2_gnss_onboard_ready_get();
-#else
-  return true;
-#endif
-}
-
 static void guidance_controller_thread(void *arg1, void *arg2, void *arg3) {
   struct guidance_controller_process *process = arg1;
 
@@ -237,13 +224,18 @@ static void guidance_controller_thread(void *arg1, void *arg2, void *arg3) {
     bool reference_valid;
     bool step_ok;
 
-    if (zros_sub_wait(&process->attitude_sub, K_FOREVER) != 0) {
+    if (zros_sub_wait(&process->attitude_sub, K_FOREVER) != 0 ||
+        zros_sub_update(&process->attitude_sub) != 0) {
+      continue;
+    }
+    if (!rdd2_release_due(&process->release_scheduler,
+                          RDD2_NAVIGATION_ESTIMATOR_RATE_HZ,
+                          RDD2_GUIDANCE_RATE_HZ)) {
       continue;
     }
 
     manual_update_ok = zros_sub_update(&process->manual_sub) == 0;
     health_update_ok = zros_sub_update(&process->health_sub) == 0;
-    (void)zros_sub_update(&process->attitude_sub);
     (void)zros_sub_update(&process->odometry_sub);
     if (zros_sub_update(&process->reference_sub) == 0) {
       process->have_reference = true;
@@ -288,7 +280,7 @@ static void guidance_controller_thread(void *arg1, void *arg2, void *arg3) {
     reference_valid =
         reference_inputs_are_valid(&process->reference, process->have_reference,
                                    process->attitude.timestamp_ns);
-    position_capable = onboard_position_source_ready() && reference_valid;
+    position_capable = rdd2_position_source_ready_get() && reference_valid;
     position_arm_blocked =
         position_requested && !position_capable && !health_armed && arm_switch;
     if (manual_update_ok && manual_valid && process->manual.flight_mode <= 1U) {
@@ -344,8 +336,7 @@ int rdd2_guidance_controller_process_start(void) {
     return rc;
   }
   rc = zros_sub_init(&process->attitude_sub, &process->node,
-                     &topic_attitude_estimate, &process->attitude,
-                     RDD2_GUIDANCE_RATE_HZ);
+                     &topic_attitude_estimate, &process->attitude, 0.0);
   if (rc != 0) {
     return rc;
   }

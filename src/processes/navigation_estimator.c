@@ -41,6 +41,7 @@ struct navigation_estimator_process {
   struct zros_sub health_sub;
   struct zros_pub odometry_pub;
   struct zros_pub attitude_pub;
+  struct rdd2_release_scheduler release_scheduler;
   bool initialized;
   bool gps_origin_initialization_pending;
   uint64_t gps_origin_initialization_started_ns;
@@ -48,6 +49,7 @@ struct navigation_estimator_process {
 };
 
 static struct navigation_estimator_process g_process;
+static atomic_t g_origin_valid;
 static struct k_thread g_thread;
 K_THREAD_STACK_DEFINE(g_navigation_stack, NAVIGATION_STACK_SIZE);
 
@@ -72,14 +74,14 @@ external_odometry_valid(const synapse_topic_ExternalOdometryData_t *odometry) {
          (odometry->flags & synapse_topic_ExternalOdometryFlags_Lost) == 0U;
 }
 
-static bool external_odometry_source_allowed(bool onboard_gnss_source) {
-  return !onboard_gnss_source;
+static bool external_odometry_source_allowed(bool gps_origin_source) {
+  return !gps_origin_source;
 }
 
-static bool gps_origin_initialization_timed_out(bool onboard_gnss_source,
+static bool gps_origin_initialization_timed_out(bool gps_origin_source,
                                                 uint64_t started_ns,
                                                 uint64_t now_ns) {
-  return !onboard_gnss_source && now_ns >= started_ns &&
+  return !gps_origin_source && now_ns >= started_ns &&
          now_ns - started_ns > GPS_ORIGIN_INITIALIZATION_TIMEOUT_NS;
 }
 
@@ -289,6 +291,10 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
         zros_sub_update(&process->imu_sub) != 0) {
       continue;
     }
+    if (!rdd2_release_due(&process->release_scheduler, RDD2_CONTROL_RATE_HZ,
+                          RDD2_NAVIGATION_ESTIMATOR_RATE_HZ)) {
+      continue;
+    }
 
     external_fresh = zros_sub_update(&process->external_odometry_sub) == 0;
     gnss_fresh = zros_sub_update(&process->gnss_sub) == 0;
@@ -296,7 +302,8 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     health_use_control_time(&process->health, &process->imu, health_fresh);
     copy_imu_input_to_efmu(&process->efmu, &process->imu);
     if (external_odometry_source_allowed(
-            IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_ONBOARD))) {
+            IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_ONBOARD) ||
+            IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_LOCKSTEP))) {
       copy_external_odometry_input_to_efmu(
           &process->efmu, &process->external_odometry, external_fresh);
     } else {
@@ -306,6 +313,7 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     origin_captured = rdd2_navigation_gps_step(
         &process->gps_adapter, &gps_measurement, &process->gnss, gnss_fresh,
         &process->health, health_fresh, process->imu.timestamp_ns);
+    atomic_set(&g_origin_valid, process->gps_adapter.origin_valid ? 1 : 0);
     copy_gps_input_to_efmu(&process->efmu, &gps_measurement);
     if (origin_captured) {
       process->gps_origin_initialization_pending = true;
@@ -313,7 +321,8 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     }
     if (process->gps_origin_initialization_pending &&
         gps_origin_initialization_timed_out(
-            IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_ONBOARD),
+            IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_ONBOARD) ||
+                IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_LOCKSTEP),
             process->gps_origin_initialization_started_ns,
             process->imu.timestamp_ns)) {
       process->gps_origin_initialization_pending = false;
@@ -342,6 +351,10 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
   }
 }
 
+bool rdd2_navigation_origin_valid_get(void) {
+  return atomic_get(&g_origin_valid) != 0;
+}
+
 static void set_default_mocap_covariance(NavigationEstimatorState *efmu) {
   for (size_t i = 0U; i < 3U; ++i) {
     efmu->mocap_positionCovarianceWorld_m2[i][i] = 0.01f;
@@ -361,7 +374,7 @@ int rdd2_navigation_estimator_process_start(void) {
   zros_node_init(&process->node, "efmu_navigation");
 
   rc = zros_sub_init(&process->imu_sub, &process->node, &topic_control_imu,
-                     &process->imu, RDD2_NAVIGATION_ESTIMATOR_RATE_HZ);
+                     &process->imu, 0.0);
   if (rc == 0) {
     rc = zros_sub_init(&process->external_odometry_sub, &process->node,
                        &topic_external_odometry, &process->external_odometry,

@@ -13,6 +13,24 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/ztest.h>
 
+#include <zros/private/zros_topic_struct.h>
+#include <zros/zros_topic.h>
+
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(gnss_fix, synapse_topic_GnssFixData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(waypoint_plan, rdd2_waypoint_plan_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(trajectory_reference,
+                                   synapse_topic_LocalPositionCommandData_t);
+
+uint32_t rdd2_topic_generation(const struct zros_topic *topic) {
+  return (uint32_t)atomic_get((atomic_t *)&topic->_lockless_generation);
+}
+
+bool rdd2_navigation_origin_valid_get(void) { return false; }
+
+uint8_t rdd2_waypoint_mission_state_get(void) {
+  return RDD2_WAYPOINT_MISSION_PENDING;
+}
+
 struct rc_capture {
   int32_t channels[RDD2_RC_CHANNEL_COUNT];
   bool channel_seen[RDD2_RC_CHANNEL_COUNT];
@@ -130,6 +148,49 @@ ZTEST(lockstep_transport, test_kill_switch_forces_invalid_and_arm_low) {
   zassert_equal(capture.channels[RDD2_FLIGHT_MODE_CHANNEL_INDEX], 2000);
   zassert_equal(capture.link_quality, 0);
   zassert_equal(capture.valid, 0);
+}
+
+static synapse_topic_GnssFixData_t usable_fix(uint64_t timestamp_ns) {
+  return (synapse_topic_GnssFixData_t){
+      .timestamp_ns = timestamp_ns,
+      .horizontal_accuracy_mm = 400U,
+      .vertical_accuracy_mm = 700U,
+      .velocity_accuracy_mm_s = 150U,
+      .fix_type = synapse_types_GnssFixType_Fix3d,
+      .time_status = synapse_types_TimeStatus_LocalFreerun,
+  };
+}
+
+ZTEST(lockstep_transport, test_plan_publishes_once_and_replay_is_exact) {
+  synapse_topic_GnssFixData_t fix = usable_fix(UINT64_C(100000000));
+  rdd2_waypoint_plan_t plan = {
+      .sequence = 1,
+      .waypoint_count = 5,
+      .nominal_speed = 0.3f,
+      .min_segment_duration = 2.0f,
+      .valid = true,
+  };
+  uint32_t generation;
+
+  zassert_ok(rdd2_lockstep_gps_mission_init());
+  zassert_true(rdd2_lockstep_handle_gps_mission(&fix, &plan, fix.timestamp_ns));
+  generation = rdd2_topic_generation(&topic_waypoint_plan);
+  zassert_equal(generation, 1U);
+
+  zassert_true(rdd2_lockstep_handle_gps_mission(
+      &fix, &plan, fix.timestamp_ns + UINT64_C(5000000)));
+  zassert_equal(rdd2_topic_generation(&topic_waypoint_plan), generation,
+                "retained lockstep input must not republish the plan");
+
+  plan.nominal_speed = 0.4f;
+  zassert_false(rdd2_lockstep_handle_gps_mission(
+                    &fix, &plan, fix.timestamp_ns + UINT64_C(10000000)),
+                "same sequence with mutated payload must fail closed");
+  plan.sequence = -1;
+  zassert_false(rdd2_lockstep_handle_gps_mission(
+                    &fix, &plan, fix.timestamp_ns + UINT64_C(15000000)),
+                "sequence rollback must fail closed");
+  zassert_equal(rdd2_topic_generation(&topic_waypoint_plan), generation);
 }
 
 ZTEST_SUITE(lockstep_transport, NULL, NULL, NULL, NULL, NULL);

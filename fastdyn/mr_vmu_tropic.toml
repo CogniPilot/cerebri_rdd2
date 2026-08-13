@@ -517,7 +517,7 @@ command = [
     "${CEREBRI_RDD2_ROOT}/target/release/xtask",
     "fastdyn-mission",
     "--duration",
-    "${RDD2_FASTDYN_MISSION_DURATION_S:-20}",
+    "${RDD2_FASTDYN_MISSION_DURATION_S:-32}",
     "--report",
     "${RDD2_FASTDYN_REPORT:-out/cerebri_rdd2_mission.json}",
     "--trajectory",

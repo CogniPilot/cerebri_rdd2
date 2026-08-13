@@ -6,6 +6,7 @@
 #include <zephyr/ztest.h>
 
 #define TEST_NS_FROM_US(value) ((uint64_t)(value) * UINT64_C(1000))
+#define RDD2_TEST_EVERY_SAMPLE_IS_RELEASE 1
 
 #define CONFIG_RDD2_GNSS_SOURCE_ONBOARD 1
 #define zros_node_init guidance_fake_zros_node_init

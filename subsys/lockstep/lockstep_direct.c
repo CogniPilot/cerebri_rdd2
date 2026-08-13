@@ -58,8 +58,9 @@ static void direct_thread(void *arg0, void *arg1, void *arg2) {
     }
     sequence = cerebri_lockstep_sequence_current(&g_lockstep);
     if (!rdd2_lockstep_handle_manual_control(&g_shared->manual_control) ||
-        !rdd2_lockstep_handle_navigation(&g_shared->external_odometry,
-                                         &g_shared->local_position_command) ||
+        !rdd2_lockstep_handle_gps_mission(
+            &g_shared->gnss_fix, &g_shared->waypoint_plan,
+            g_shared->inertial_sample.timestamp_ns) ||
         !rdd2_lockstep_handle_input_blob(
             (const uint8_t *)&g_shared->inertial_sample,
             sizeof(g_shared->inertial_sample))) {
@@ -82,7 +83,10 @@ static void direct_thread(void *arg0, void *arg1, void *arg2) {
       g_shared->attitude_estimate = flight.attitude_estimate;
       g_shared->attitude_command = flight.attitude_command;
       g_shared->control_loop_metrics = flight.control_loop_metrics;
+      g_shared->odometry_estimate = flight.odometry_estimate;
+      g_shared->planner_reference = flight.planner_reference;
     }
+    rdd2_lockstep_gps_mission_status_get(&g_shared->mission_status);
     cerebri_lockstep_sequence_respond(&g_lockstep);
   }
 }
@@ -107,7 +111,7 @@ static int direct_init(void) {
     LOG_ERR("direct lockstep transport has invalid magic");
     return -EIO;
   }
-  rc = rdd2_lockstep_navigation_init();
+  rc = rdd2_lockstep_gps_mission_init();
   if (rc != 0) {
     rdd2_lockstep_host_unmap(g_shared, sizeof(*g_shared));
     g_shared = NULL;

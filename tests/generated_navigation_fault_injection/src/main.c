@@ -6,6 +6,7 @@
 #include <zephyr/ztest.h>
 
 #define TEST_NS_FROM_US(value) ((uint64_t)(value) * UINT64_C(1000))
+#define RDD2_TEST_EVERY_SAMPLE_IS_RELEASE 1
 
 #define zros_node_init navigation_fake_zros_node_init
 #define zros_pub_init navigation_fake_zros_pub_init

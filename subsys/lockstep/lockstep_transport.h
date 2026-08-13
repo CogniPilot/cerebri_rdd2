@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "interfaces/data.h"
+
 #include <zephyr/kernel.h>
 
 #include <synapse/control_reader.h>
@@ -20,10 +22,12 @@ bool rdd2_lockstep_input_wait_next(uint32_t *last_generation,
 bool rdd2_lockstep_handle_input_blob(const uint8_t *buf, size_t len);
 bool rdd2_lockstep_handle_manual_control(
     const synapse_topic_ManualControlData_t *manual);
-int rdd2_lockstep_navigation_init(void);
-bool rdd2_lockstep_handle_navigation(
-    const synapse_topic_ExternalOdometryData_t *odometry,
-    const synapse_topic_LocalPositionCommandData_t *command);
+int rdd2_lockstep_gps_mission_init(void);
+bool rdd2_lockstep_handle_gps_mission(const synapse_topic_GnssFixData_t *fix,
+                                      const rdd2_waypoint_plan_t *plan,
+                                      uint64_t control_now_ns);
+void rdd2_lockstep_gps_mission_status_get(
+    struct rdd2_lockstep_gps_mission_status *status);
 bool rdd2_lockstep_flight_state_blob_if_updated(uint32_t *last_generation,
                                                 uint8_t *buf, size_t buf_size,
                                                 size_t *len);

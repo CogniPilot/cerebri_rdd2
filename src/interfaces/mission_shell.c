@@ -2,9 +2,7 @@
 
 #include "zros_topics.h"
 
-#if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
-#include "gnss_onboard.h"
-#endif
+#include "gnss_source.h"
 
 #include <errno.h>
 #include <math.h>
@@ -102,14 +100,6 @@ navigation_is_valid(const synapse_topic_OdometryEstimateData_t *navigation,
   return true;
 }
 
-static bool onboard_position_source_ready(void) {
-#if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
-  return rdd2_gnss_onboard_ready_get();
-#else
-  return true;
-#endif
-}
-
 static int read_admission_inputs(struct mission_shell_inputs *inputs) {
   const uint8_t manual_required = synapse_topic_ManualControlFlags_Valid |
                                   synapse_topic_ManualControlFlags_Active;
@@ -144,7 +134,7 @@ static int read_admission_inputs(struct mission_shell_inputs *inputs) {
     return -EBUSY;
   }
   if (!navigation_is_valid(&inputs->navigation, &inputs->attitude) ||
-      !onboard_position_source_ready()) {
+      !rdd2_position_source_ready_get()) {
     return -EAGAIN;
   }
   return 0;

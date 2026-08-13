@@ -248,13 +248,26 @@ bool rdd2_topic_flight_state_copy_blob(uint8_t *buf, size_t buf_size,
                                        size_t *len) {
   rdd2_topic_flight_state_blob_t *state = (rdd2_topic_flight_state_blob_t *)buf;
 
-  if (buf == NULL || len == NULL || buf_size < sizeof(*state) ||
-      zros_topic_read(&topic_vehicle_health, &state->vehicle_health) != 0 ||
+  if (buf == NULL || len == NULL || buf_size < sizeof(*state)) {
+    return false;
+  }
+  memset(state, 0, sizeof(*state));
+  if (zros_topic_read(&topic_vehicle_health, &state->vehicle_health) != 0 ||
       zros_topic_read(&topic_attitude_estimate, &state->attitude_estimate) !=
           0 ||
       zros_topic_read(&topic_attitude_command, &state->attitude_command) != 0 ||
       zros_topic_read(&topic_control_loop_metrics,
                       &state->control_loop_metrics) != 0) {
+    return false;
+  }
+  if (rdd2_topic_has_sample(&topic_navigation_odometry) &&
+      zros_topic_read(&topic_navigation_odometry, &state->odometry_estimate) !=
+          0) {
+    return false;
+  }
+  if (rdd2_topic_has_sample(&topic_trajectory_reference) &&
+      zros_topic_read(&topic_trajectory_reference, &state->planner_reference) !=
+          0) {
     return false;
   }
   *len = sizeof(*state);

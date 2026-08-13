@@ -32,18 +32,21 @@ therefore execute the same control laws at the same task boundaries.
   rate and collective-thrust control.
 - `POSITION` consumes the latest ENU navigation estimate and trajectory
   reference and runs the log-linear geometric outer loop.
-- When the onboard GNSS source is configured, a `POSITION` request while
-  onboard GNSS readiness and `VehicleHealth.Armed` are both false must not arm
+- When the onboard or lockstep GNSS source is configured, a `POSITION` request
+  while configured-source readiness and `VehicleHealth.Armed` are both false
+  must not arm
   in `POSITION`. A valid, active high arm switch in that state disarms the
   generated Guidance input, withholds both Guidance command publications, and
   latches a control fault. Only a successful current manual-input update
   carrying valid, active, low arm-switch state may acknowledge that latch.
-- If `VehicleHealth.Armed` is true while `POSITION` is requested and onboard
-  GNSS readiness is false, Guidance must run and publish the `ATTITUDE` mode
+- If `VehicleHealth.Armed` is true while `POSITION` is requested and the
+  configured GNSS readiness is false, Guidance must run and publish the
+  `ATTITUDE` mode
   command instead without latching a GNSS-readiness fault. This applies both to
   an in-flight `POSITION` request and to readiness loss in `POSITION`. GNSS
   readiness must not gate `ACRO` or `ATTITUDE`, and it must not affect builds
-  using radio, motion-capture, or FastDyn navigation sources.
+  using the radio/motion-capture source. The FastDyn profile is a GNSS source
+  and is subject to these gates.
 - A usable fresh local-ENU trajectory reference is part of the `POSITION`
   capability. A disarmed high arm switch with no usable reference follows the
   same block, withholding, and valid-current-low acknowledgement contract as

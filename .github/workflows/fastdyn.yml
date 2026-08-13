@@ -51,6 +51,9 @@ jobs:
           cargo test --workspace --locked
           cargo build --release --locked --package cerebri-rdd2-xtask
 
+      - name: Test native GPS mission ingress lifecycle
+        run: nix run .#test-gps-lockstep
+
       - name: Export RDD2 FMI plant
         run: |
           MODELICA_MODELS_ROOT="$RDD2_MODELICA_MODELS_ROOT" \
@@ -67,7 +70,7 @@ jobs:
           mkdir -p "$standard_root"
           unzip -q "$standard_zip" -d "$standard_root"
 
-          plant_root="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant/Vehicles.Rdd2.PlantAdapter"
+          plant_root="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant"
           model_identifier="$(python3 - "$plant_root/modelDescription.xml" <<'PY'
           import sys
           import xml.etree.ElementTree as ET

@@ -1,9 +1,10 @@
 choice RDD2_GNSS_SOURCE
 	prompt "Source for the gnss topic"
 	default RDD2_GNSS_SOURCE_ONBOARD if DT_HAS_COGNIPILOT_UBX_GNSS_ENABLED
+	default RDD2_GNSS_SOURCE_LOCKSTEP if RDD2_LOCKSTEP
 	default RDD2_GNSS_SOURCE_RADIO
 	help
-	  Which producer publishes the gnss_fix topic. The two are mutually
+	  Which producer publishes the gnss_fix topic. The sources are mutually
 	  exclusive by construction: the choice decides which one registers as
 	  the topic's single publisher, so a fix can only ever have one origin
 	  and an injected fix cannot silently race an onboard one.
@@ -44,6 +45,15 @@ config RDD2_GNSS_SOURCE_ONBOARD
 
 	  The receiver's serial rate must match current-speed on the parent
 	  UART.
+
+config RDD2_GNSS_SOURCE_LOCKSTEP
+	bool "Injected by deterministic lockstep"
+	depends on RDD2_LOCKSTEP
+	help
+	  The lockstep coordinator publishes a synthetic 10 Hz GNSS fix in the
+	  simulated boot-time domain. This source owns an immutable GPS origin and
+	  disables external odometry like the onboard receiver; it is not a radio
+	  or motion-capture compatibility profile.
 
 endchoice
 
