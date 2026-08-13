@@ -1,0 +1,8 @@
+tests:
+  rdd2.lockstep_transport:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - rdd2
+      - lockstep
+      - safety

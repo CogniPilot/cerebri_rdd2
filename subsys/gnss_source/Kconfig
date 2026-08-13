@@ -31,11 +31,16 @@ config RDD2_GNSS_SOURCE_ONBOARD
 	  streams it out as telemetry. This is the default whenever the
 	  devicetree gnss node is enabled.
 
-	  Decodes UBX-NAV-PVT, which the receiver streams unprompted, so
-	  nothing is sent to the module and no configuration is required. That
-	  one message also carries the accuracy estimates NMEA cannot express,
-	  so the fix is published with real horizontal, vertical and velocity
-	  accuracy rather than the "unusable" sentinel.
+	  Configures the M10 deterministically over UBX-CFG-VALSET, then decodes
+	  UBX-NAV-PVT. Boot configuration enables UBX on receiver UART1 at
+	  115200 baud, disables NMEA output, selects the airborne 2g dynamics
+	  model, and requests NAV-PVT at 10 Hz. Configuration ACK, fix quality,
+	  accuracy, age, and observed rate all remain fail-closed readiness gates.
+
+	  Once ready, NAV-PVT publishes the accuracy estimates NMEA cannot express.
+	  Before readiness or after a gate drops, the topic is actively refreshed
+	  as NoFix with unusable accuracy sentinels so consumers cannot replay an
+	  earlier usable sample.
 
 	  The receiver's serial rate must match current-speed on the parent
 	  UART.
@@ -46,11 +51,12 @@ if RDD2_GNSS_SOURCE_ONBOARD
 
 config RDD2_GNSS_UBX_MAX_PAYLOAD
 	int "Largest UBX payload buffered"
-	default 128
-	range 92 1024
+	default 160
+	range 144 512
 	help
-	  NAV-PVT is 92 bytes. Larger frames from other message classes are
-	  counted and skipped rather than buffered.
+	  The complete boot CFG-VALSET payload is 144 bytes and NAV-PVT is 92
+	  bytes. Larger frames from other message classes are counted and skipped
+	  in their entirety rather than buffered, including their checksums.
 
 config RDD2_GNSS_UBX_RX_RING_SIZE
 	int "Receive ring buffer size in bytes"
@@ -65,6 +71,10 @@ config RDD2_GNSS_UBX_POLL_MS
 	int "Reader thread poll period in milliseconds"
 	default 5
 	range 1 100
+	help
+	  The same low-priority polling loop drains received bytes and advances
+	  bounded configuration retry/timeout state. It never waits synchronously
+	  for an ACK.
 
 config RDD2_GNSS_UBX_THREAD_PRIORITY
 	int "Reader thread priority"

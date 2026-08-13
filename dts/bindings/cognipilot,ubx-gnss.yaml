@@ -4,14 +4,19 @@
 description: |
   u-blox receiver read as UBX binary rather than NMEA.
 
-  The module streams UBX-NAV-PVT unprompted, and that one message carries
-  everything the synapse GnssFix contract wants, including the accuracy
-  estimates NMEA cannot express. This is a receive-only decoder: it sends the
-  receiver nothing and configures nothing, so it works with whatever output
-  rate the module is already set to.
+  At boot the driver sends one RAM-layer UBX-CFG-VALSET transaction on receiver
+  UART1 at 115200 baud. It enables UBX input/output, disables NMEA input/output,
+  selects airborne-2g dynamics, sets a 100 ms navigation measurement period,
+  and enables UBX-NAV-PVT on UART1. Configuration is ACK-gated and fails closed
+  after three attempts rejected by NAKs or bounded ACK timeouts.
+
+  NAV-PVT carries everything the synapse GnssFix contract wants, including the
+  accuracy estimates NMEA cannot express. The driver publishes a usable fix
+  only after configuration and stable, recent 10 Hz samples pass fix and
+  accuracy gates; otherwise it publishes NoFix with unusable sentinels.
 
   Declare it as a child of the UART the receiver is wired to, and set that
-  UART's current-speed to the receiver's actual rate.
+  UART's current-speed to 115200.
 
 compatible: "cognipilot,ubx-gnss"
 

@@ -100,22 +100,36 @@ entirely so `lpuart2` stays free.
 
 The onboard reader lives in `subsys/gnss_source` and decodes UBX-NAV-PVT
 directly rather than going through Zephyr's generic NMEA driver: the M10 on
-this airframe streams UBX, so `gnss-nmea-generic` cannot read it. The reader is
-receive-only — it sends the module nothing and configures nothing — so it works
-at whatever output rate the receiver happens to be set to. `current-speed` on
-`lpuart2` in `boards/mr_vmu_tropic.overlay` must still match the receiver's
-actual serial rate; it is set to 115200, confirmed against the hardware by a
-port dump returning `b5 62 01 07`, a UBX NAV-PVT header.
+this airframe streams UBX, so `gnss-nmea-generic` cannot read it. At boot the
+reader sends one RAM-layer UBX-CFG-VALSET request that enables UBX input/output
+on receiver UART1, disables NMEA input/output, selects airborne-2g dynamics,
+and emits NAV-PVT at 10 Hz. The whole configuration is one transaction so all
+three bounded retries are byte-identical and an ACK cannot ambiguously advance
+part of the configuration. Each NAK or 1.1-second ACK timeout retries; three
+unsuccessful attempts fail closed.
+`current-speed` on `lpuart2` in `boards/mr_vmu_tropic.overlay` is 115200, which
+was confirmed against the hardware by a port dump returning `b5 62 01 07`, a
+UBX NAV-PVT header.
+
+The onboard source reports a usable fix only after the configuration ACK and
+five consecutive accepted NAV-PVT samples with 75--125 ms gaps. The latest
+sample must be no more than 300 ms old, carry a 3D/DGNSS/RTK fix, and report
+positive horizontal, vertical, and velocity accuracy within 10 m, 15 m, and
+5 m/s respectively. Until every gate holds, after any gate drops, or when a
+topic update fails, it publishes or retries `NoFix` with 65535 accuracy/DOP
+sentinels. `gnss status` reports the configuration, stream, fix, accuracy, age,
+rate, gap, and error evidence used by those gates.
 
 NAV-PVT alone carries every field the `GnssFix` contract wants, including the
 accuracy estimates NMEA has no way to express, so horizontal, vertical and
 velocity accuracy are published as the receiver's own figures rather than the
-65535 "unusable" sentinel, and vertical velocity arrives with its validity bit
-set. Course over ground is marked valid only above 150 mm/s of ground speed,
-below which the receiver's heading of motion is noise rather than a course, and
-the UTC timestamp only with both validDate and validTime and a fix, since a
-timestamp that silently stops advancing is worse for a consumer than none.
-Receiver yaw is absent with its validity bit clear — NAV-PVT does not carry it.
+65535 "unusable" sentinel once ready, and vertical velocity arrives with its
+validity bit set. Course over ground is marked valid only above 150 mm/s of
+ground speed, below which the receiver's heading of motion is noise rather than
+a course, and the UTC timestamp only with both validDate and validTime and a
+fix, since a timestamp that silently stops advancing is worse for a consumer
+than none. Receiver yaw is absent with its validity bit clear — NAV-PVT does not
+carry it.
 
 See `docs/ground_station_telemetry.md` for the serial wire contract.
 

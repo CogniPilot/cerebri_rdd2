@@ -1,0 +1,12 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/ {
+	aliases {
+		rc = &lockstep_rc0;
+	};
+
+	lockstep_rc0: lockstep_rc {
+		compatible = "cognipilot,lockstep-rc";
+		status = "okay";
+	};
+};

@@ -1,8 +1,8 @@
 # Ground station interface: RDD2 telemetry link
 
 Interface contract for software on the other end of the RDD2 telemetry radio.
-Everything here is derived from the pinned `synapse_fbs` **0.7.0** catalog
-(schema set hash `2fd857effb6c7558d6869f4307a5354c`) and from what
+Everything here is derived from the pinned `synapse_fbs` **0.9.0** catalog
+(schema set hash `32e4a059d1b0dad9ca560b180be291d4`) and from what
 `src/interfaces/data.c` actually populates.
 
 Vehicle side is `subsys/zros_serial/`. The framing and payload contract below
@@ -86,7 +86,7 @@ sent, which is the only way a topic goes quiet.
 
 | Topic | id | Payload | Frame | Notes |
 |---|---|---|---|---|
-| `VehicleHealth` | 1 | 48 B | 58 B | arming, mode, RC link |
+| `VehicleHealth` | 1 | 56 B | 66 B | arming, mode, RC link |
 | `GnssFix` | 8 | 64 B | 74 B | the onboard fix, or the injected one returned — see "Build variants" |
 | `AttitudeEstimate` | 11 | 40 B | 50 B | estimated attitude and rates |
 | `AttitudeCommand` | 19 | 48 B | 58 B | desired attitude and rates |
@@ -102,11 +102,11 @@ list is application-owned and may grow.
 
 Offsets are generated from the firmware's own structs, padding included.
 
-### VehicleHealth — id 1, 48 bytes
+### VehicleHealth — id 1, 56 bytes
 
 ```
 off  size  type    field
-  0     8  u64     timestamp_us              monotonic boot time
+  0     8  u64     timestamp_ns              monotonic boot time
   8     4  u32     sensors_present           SensorComponentFlags bitmask
  12     4  u32     sensors_enabled           SensorComponentFlags bitmask
  16     4  u32     sensors_health            SensorComponentFlags bitmask
@@ -120,10 +120,12 @@ off  size  type    field
  40     2  u16     errors_comm               (not populated)
  42     1  i8      battery_remaining_pct     (not populated)
  43     1  u8      vehicle_type              (not populated)
- 44     1  u8      flight_mode               0 = ACRO, 1 = AUTO_LEVEL
+ 44     1  u8      flight_mode               0 = ACRO, 1 = ATTITUDE, 2 = POSITION
  45     1  u8      system_state              (not populated)
  46     1  u8      link_quality_pct          RC link quality, 0..100
  47     1  u8      flags                     VehicleHealthFlags bitmask
+ 48     1  u8      time_status               LocalFreerun
+ 49     7  --      padding
 ```
 
 `SensorComponentFlags`: `Gyro=1`, `Accel=2`, `Mag=4`, `AbsolutePressure=8`,
@@ -134,17 +136,20 @@ off  size  type    field
 RDD2 reports `Gyro | Accel | RadioControl | MotorOutputs | Estimator` as
 present and enabled. In `sensors_health`, `MotorOutputs` and `Estimator` are
 always set; `Gyro|Accel` are set only while the IMU is delivering samples, and
-`RadioControl` only while RC is valid and not stale. **This bitmask is the
-authoritative failsafe indicator.**
+`RadioControl` only while RC is valid and not stale. This bitmask reports
+component health; it is not the complete flight-control failsafe state.
 
-`VehicleHealthFlags`: `Armed=1`, `Failsafe=2`. RDD2 sets `Armed` only.
+`VehicleHealthFlags`: `Armed=1`, `Failsafe=2`. RDD2 mirrors the Rate
+control-fault latch into `Failsafe` until a valid low-switch acknowledgement.
+Ground stations must treat `Failsafe` together with `Armed` and component
+health as the authoritative output-inhibition state.
 
 ### GnssFix — id 8, 64 bytes
 
 ```
 off  size  type    field
-  0     8  u64     timestamp_us              monotonic boot time
-  8     8  u64     time_unix_us              valid iff TimeValid
+  0     8  u64     timestamp_ns              monotonic boot time
+  8     8  u64     time_unix_ns              valid iff TimeValid
  16     4  i32     latitude_deg_e7           WGS-84 degrees x 1e7
  20     4  i32     longitude_deg_e7          WGS-84 degrees x 1e7
  24     4  i32     altitude_msl_mm           above mean sea level
@@ -163,8 +168,9 @@ off  size  type    field
  53     1  u8      fix_type                  GnssFixType
  54     1  u8      satellites_used
  55     1  u8      satellites_visible
- 56     1  u8      id                        receiver instance
- 57     7  --      padding
+ 56     1  u8      time_status               LocalFreerun
+ 57     1  u8      id                        receiver instance
+ 58     6  --      padding
 ```
 
 `GnssFixFlags`: `TimeValid=1`, `CourseValid=2`, `YawValid=4`,
@@ -197,10 +203,12 @@ validity flags and `fix_type`, never the value.
 
 ```
 off  size  type    field
-  0     8  u64     timestamp_us
+  0     8  u64     timestamp_ns
   8    16  f32[4]  attitude                  quaternion w, x, y, z (in that order)
  24    12  f32[3]  angular_velocity_flu_rad_s  roll, pitch, yaw rate
  36     1  u8      flags                     AttitudeEstimateFlags
+ 37     1  u8      time_status               LocalFreerun
+ 38     2  --      padding
 ```
 
 `AttitudeEstimateFlags`: `AttitudeValid=1`, `RatesValid=2`. Both are set
@@ -214,11 +222,13 @@ Angular velocity is body-frame FLU in rad/s and comes straight from the gyro.
 
 ```
 off  size  type    field
-  0     8  u64     timestamp_us
+  0     8  u64     timestamp_ns
   8    16  f32[4]  attitude                  desired quaternion w, x, y, z
  24    12  f32[3]  body_rate_flu_rad_s       desired roll, pitch, yaw rate
- 36     4  f32     thrust                    (not populated)
+ 36     4  f32     thrust                    generated thrust command
  40     1  u8      type_mask                 (not populated)
+ 41     1  u8      time_status               LocalFreerun
+ 42     6  --      padding
 ```
 
 Pair with `AttitudeEstimate` to plot desired against actual.
@@ -227,7 +237,7 @@ Pair with `AttitudeEstimate` to plot desired against actual.
 
 ```
 off  size  type    field
-  0     8  u64     timestamp_us
+  0     8  u64     timestamp_ns
   8     4  u32     active_mask               0x0F: outputs 0..3 in use
  12     1  u8      port                      (not populated)
  13     1  --      padding
@@ -236,7 +246,8 @@ off  size  type    field
  18     2  u16     output2_us
  20     2  u16     output3_us
  22    24  u16[12] output4_us .. output15_us (not populated)
- 46     2  --      padding
+ 46     1  u8      time_status               LocalFreerun
+ 47     1  --      padding
 ```
 
 Note the pad byte at offset 13: `output0_us` starts at **14**, not 13.
@@ -247,11 +258,13 @@ disarmed.
 
 ```
 off  size  type    field
-  0     8  u64     timestamp_us
+  0     8  u64     timestamp_ns
   8     4  u32     period_us                 always 625 (1600 Hz)
  12     4  u32     latency_us                IMU interrupt -> DSHOT trigger
  16     4  u32     overrun_count             (not populated)
  20     2  u16     load_dpermille            (not populated)
+ 22     1  u8      time_status               LocalFreerun
+ 23     1  --      padding
 ```
 
 `latency_us` is the measured hot-path latency and the most useful number on
@@ -267,7 +280,7 @@ render them as real data:
 - **CPU load**, in both `VehicleHealth` and `ControlLoopMetrics`.
 - **Comm drop rate and error counters.**
 - **`vehicle_type`, `system_state`** — use `flight_mode` and the `Armed` flag.
-- **`thrust` and `type_mask`** in `AttitudeCommand`.
+- **`type_mask`** in `AttitudeCommand`.
 - **`overrun_count`.**
 
 ## Uplink: what the ground station may send

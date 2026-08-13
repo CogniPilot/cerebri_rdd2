@@ -2,6 +2,8 @@ if(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
   target_include_directories(app PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 
   target_sources(app PRIVATE
+    gnss_m10_protocol.c
+    gnss_m10_topic.c
     gnss_onboard.c
   )
 

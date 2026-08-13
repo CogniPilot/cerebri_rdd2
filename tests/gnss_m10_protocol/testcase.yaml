@@ -1,0 +1,8 @@
+tests:
+  rdd2.gnss_m10_protocol:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - rdd2
+      - gnss
+      - safety

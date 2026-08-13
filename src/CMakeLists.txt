@@ -1,3 +1,5 @@
+include(${CMAKE_CURRENT_LIST_DIR}/efmi.cmake)
+
 target_include_directories(app PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}
   ${WORKSPACE_ROOT}/modules/lib/zenoh-pico/src/system/zephyr
@@ -12,8 +14,13 @@ target_sources(app PRIVATE
   main.c
   processes/guidance_controller.c
   processes/navigation_estimator.c
+  processes/navigation_gps.c
   processes/rate_control_allocator.c
   processes/waypoint_trajectory_planner.c
+)
+
+target_sources_ifdef(CONFIG_SHELL app PRIVATE
+  interfaces/mission_shell.c
 )
 
 target_sources_ifdef(CONFIG_TOP_SHELL app PRIVATE
@@ -41,6 +48,7 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
       interfaces/zros_topics.c
       processes/guidance_controller.c
       processes/navigation_estimator.c
+      processes/navigation_gps.c
       processes/rate_control_allocator.c
       processes/waypoint_trajectory_planner.c
     LOCATION ITCM_TEXT_RODATA

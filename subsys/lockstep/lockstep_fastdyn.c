@@ -6,14 +6,13 @@
 
 #include <errno.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
 #include <cerebri_lockstep/sequence.h>
-
-#include <csyn/csyn_codec.h>
 
 LOG_MODULE_REGISTER(rdd2_lockstep_fastdyn, LOG_LEVEL_INF);
 
@@ -41,7 +40,6 @@ static void fastdyn_thread(void *arg0, void *arg1, void *arg2) {
     rdd2_topic_motor_output_blob_t motor;
     size_t flight_len = 0U;
     size_t motor_len = 0U;
-    struct csyn_manual_control manual = {0};
     int rc = cerebri_lockstep_sequence_wait(&g_lockstep);
 
     if (rc == -ECANCELED) {
@@ -52,11 +50,8 @@ static void fastdyn_thread(void *arg0, void *arg1, void *arg2) {
       return;
     }
     sequence = cerebri_lockstep_sequence_current(&g_lockstep);
-    if (!csyn_decode_manual_control(
-            &rdd2_fastdyn_lockstep_shared.manual_control,
-            sizeof(rdd2_fastdyn_lockstep_shared.manual_control), &manual.rc,
-            &manual.valid) ||
-        !rdd2_lockstep_handle_manual_control(&manual) ||
+    if (!rdd2_lockstep_handle_manual_control(
+            &rdd2_fastdyn_lockstep_shared.manual_control) ||
         !rdd2_lockstep_handle_navigation(
             &rdd2_fastdyn_lockstep_shared.external_odometry,
             &rdd2_fastdyn_lockstep_shared.local_position_command) ||
@@ -91,9 +86,8 @@ static void fastdyn_thread(void *arg0, void *arg1, void *arg2) {
 static int fastdyn_init(void) {
   int rc;
 
-  rdd2_fastdyn_lockstep_shared = (struct rdd2_lockstep_shared){
-      .magic = RDD2_LOCKSTEP_MAGIC,
-  };
+  memset(&rdd2_fastdyn_lockstep_shared, 0,
+         sizeof(rdd2_fastdyn_lockstep_shared));
   rc = rdd2_lockstep_navigation_init();
   if (rc != 0) {
     return rc;
@@ -105,6 +99,8 @@ static int fastdyn_init(void) {
   if (rc != 0) {
     return rc;
   }
+  __atomic_store_n(&rdd2_fastdyn_lockstep_shared.magic, RDD2_LOCKSTEP_MAGIC,
+                   __ATOMIC_RELEASE);
 
   k_thread_create(&g_fastdyn_thread, g_fastdyn_stack,
                   K_THREAD_STACK_SIZEOF(g_fastdyn_stack), fastdyn_thread, NULL,

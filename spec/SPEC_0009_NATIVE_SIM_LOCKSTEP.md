@@ -22,6 +22,11 @@ paces lockstep.
 - Inbound simulator data uses generated `ManualControlData`,
   `InertialSampleData`, `ExternalOdometryData`, and `LocalPositionCommandData`
   fixed-layout payloads.
+- In lockstep builds, the inbound `LocalPositionCommandData` is the Guidance
+  trajectory-reference source. It must pass the same frame, mask, finiteness,
+  and control-time freshness gates as a Planning publication. The host's
+  three-position mode channel must decode to all three firmware modes; a
+  `POSITION` request must not be collapsed into `ATTITUDE`.
 - Outbound data uses generated `PwmSignalOutputsData`, `VehicleHealthData`,
   `AttitudeEstimateData`, `AttitudeCommandData`, and `ControlLoopMetricsData`
   fixed-layout payloads.

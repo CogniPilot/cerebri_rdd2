@@ -12,7 +12,7 @@
 
 #define RDD2_LOCKSTEP_MAGIC UINT32_C(0x52444432)
 
-/* Vehicle-owned storage containing only generated synapse_fbs 0.7 payloads. */
+/* Vehicle-owned storage containing only generated synapse_fbs 0.9 payloads. */
 struct rdd2_lockstep_shared {
   uint32_t magic;
   uint32_t input_sequence;
@@ -33,20 +33,18 @@ _Static_assert(sizeof(struct rdd2_lockstep_shared) == 440,
                "native SIL shared layout mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_shared, inertial_sample) == 16,
                "inertial sample ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, manual_control) == 72,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, manual_control) == 56,
                "manual control ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, external_odometry) == 112,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, external_odometry) == 96,
                "external odometry ABI offset mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_shared, local_position_command) ==
-                   176,
+                   168,
                "local position command ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, pwm_signal_outputs) ==
-                   232,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, pwm_signal_outputs) == 224,
                "PWM output ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, vehicle_health) == 280,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, vehicle_health) == 272,
                "vehicle health ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, attitude_estimate) ==
-                   328,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, attitude_estimate) == 328,
                "attitude estimate ABI offset mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_shared, attitude_command) == 368,
                "attitude command ABI offset mismatch");

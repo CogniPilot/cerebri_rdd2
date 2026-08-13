@@ -1,0 +1,9 @@
+tests:
+  rdd2.waypoint_mission_ingress.lifecycle:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - rdd2
+      - safety
+      - mission
+

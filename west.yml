@@ -52,7 +52,7 @@ manifest:
       path: modules/lib/zros
     - name: csyn
       remote: cognipilot
-      revision: 93dfb7a69463b89fd6bcf7f82ef5b2391c5ab98a # synapse_fbs 0.9.0, nanosecond time domain, magnetometer split
+      revision: c34dd35d7b81f33b1480fda07558f26617e85a26 # synapse_fbs 0.9.0, nanosecond time domain, contract matching fix
       path: modules/lib/csyn
     - name: cerebri_modules
       remote: cognipilot
@@ -60,7 +60,7 @@ manifest:
       path: modules/lib/cerebri_lockstep
     - name: modelica_models
       remote: cognipilot
-      revision: d319854bcbe5758f8beace3c99c6068796585d3f
+      revision: a9e5037ab3e57b3fac6ca783c0bdbfdd2b6dd98e
       path: models/modelica_models
     - name: fastdyn
       url: https://github.com/jgoppert/FastDyn.git

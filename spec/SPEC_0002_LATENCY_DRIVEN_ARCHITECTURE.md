@@ -47,12 +47,25 @@ thread boundary actually exists.
   and no more than `25 ms` old (five `200 Hz` Guidance release periods) when
   consumed by Rate. A future-dated command is unusable. Wall-clock time may not
   age a retained command while lockstep control ticks are paused.
+- A disarmed-to-armed transition additionally requires a newly observed usable
+  Rate command whose control timestamp is not earlier than the current
+  low-to-high arm-switch request. Rate must first publish a disarmed
+  `VehicleHealth` generation while the switch is low. If that acknowledgement
+  was unavailable, the edge must publish it, discard the edge-cycle command
+  for arming, and wait for a newly observed usable command on a later control
+  tick. A retained command from before
+  that request may remain usable for disarmed controller evaluation, but it
+  must not arm or energize the normal motor-output path. This is the
+  actuator-side completion of Guidance publication withholding and is
+  independent of whether decimated Guidance observed a brief low switch.
 - An unusable Rate command, nonzero Rate `ErrorSignalStatus`, or nonfinite Rate
   output must disarm and zero the normal flight-output path. If the arm switch
   was high when the fault occurred, that fault remains latched until the switch
   is observed low in a valid, fresh manual-control sample; recovery may not
   reactivate motors without pilot
   acknowledgement and the ordinary throttle-low arming check.
+- `VehicleHealthData.Failsafe` mirrors that Rate control-fault latch, including
+  its high-switch persistence and valid low-switch acknowledgement.
 - The Navigation, Guidance, and Rate firmware wrappers must sample their generated eFMU
   `ErrorSignalStatus` immediately after `DoStep`. A nonzero status or a
   nonfinite value at a publication or actuator boundary must fail closed:
@@ -65,6 +78,19 @@ thread boundary actually exists.
   Guidance propagates the validated Navigation timestamp into the commands it
   publishes. Generated floating-point time values are not converted back into
   firmware topic timestamps.
+- A trajectory reference is usable for `POSITION` only after a new reference
+  sample has been observed. Its timestamp must be in the same IMU-derived
+  control-time domain as Navigation, may not be future dated, and may be no
+  more than `100 ms` old when Guidance consumes it. Its coordinate frame and
+  type mask must match the supported local-ENU position interface, and every
+  position, velocity, acceleration, yaw, and yaw-rate value must be finite.
+- Planning may publish a current-position hold while an accepted mission is
+  pending. Every such reference and every generated mission reference carries
+  the current Navigation control timestamp; wall-clock time may not be used to
+  establish reference freshness in lockstep.
+- The bounded local mission ingress uses fixed-capacity ZROS data and runs in
+  the existing Planning and shell contexts. It may not add a queue, heap
+  allocation, network dependency, or control-cycle worker.
 
 **ALLOWED:**
 - Existing Zephyr driver threads that already belong to subsystems such as CRSF.
@@ -83,6 +109,9 @@ thread boundary actually exists.
 - Periodic shell or log output from the 1600 Hz body-rate loop.
 - Kalman or measurement-correction steps in the IMU-paced rate thread.
 - Adding latency-oriented abstractions without measured justification on `mr_vmu_tropic`.
+- Reusing a retained trajectory reference after its freshness budget expires.
+- Allowing a stale, future-dated, nonfinite, unsupported-frame, or
+  unsupported-mask reference to enable `POSITION` control.
 
 ## Motivation
 
@@ -95,3 +124,7 @@ thread boundary actually exists.
 - `SPEC_0003_RATE_MODE_CONTROL_SCOPE.md`
 - `SPEC_0006_CODE_SIZE_AND_DEBUG_SHELL.md`
 - `../tests/process_control_safety/`
+- `../tests/process_wrapper_fault_injection/`
+- `../tests/generated_navigation_fault_injection/`
+- `../tests/waypoint_mission_ingress/`
+- `../tests/mission_shell/`

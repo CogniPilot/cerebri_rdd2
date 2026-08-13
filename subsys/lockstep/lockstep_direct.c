@@ -16,8 +16,6 @@
 
 #include <cerebri_lockstep/sequence.h>
 
-#include <csyn/csyn_codec.h>
-
 LOG_MODULE_REGISTER(rdd2_lockstep_direct, LOG_LEVEL_INF);
 
 void *rdd2_lockstep_host_map(const char *path, unsigned long size);
@@ -50,7 +48,6 @@ static void direct_thread(void *arg0, void *arg1, void *arg2) {
     size_t flight_len = 0U;
     size_t motor_len = 0U;
     int rc = cerebri_lockstep_sequence_wait(&g_lockstep);
-    struct csyn_manual_control manual = {0};
 
     if (rc == -ECANCELED) {
       nsi_exit(0);
@@ -60,10 +57,7 @@ static void direct_thread(void *arg0, void *arg1, void *arg2) {
       return;
     }
     sequence = cerebri_lockstep_sequence_current(&g_lockstep);
-    if (!csyn_decode_manual_control(&g_shared->manual_control,
-                                    sizeof(g_shared->manual_control),
-                                    &manual.rc, &manual.valid) ||
-        !rdd2_lockstep_handle_manual_control(&manual) ||
+    if (!rdd2_lockstep_handle_manual_control(&g_shared->manual_control) ||
         !rdd2_lockstep_handle_navigation(&g_shared->external_odometry,
                                          &g_shared->local_position_command) ||
         !rdd2_lockstep_handle_input_blob(
@@ -106,7 +100,8 @@ static int direct_init(void) {
     LOG_ERR("cannot map direct lockstep transport");
     return -EIO;
   }
-  if (g_shared->magic != RDD2_LOCKSTEP_MAGIC) {
+  if (__atomic_load_n(&g_shared->magic, __ATOMIC_ACQUIRE) !=
+      RDD2_LOCKSTEP_MAGIC) {
     rdd2_lockstep_host_unmap(g_shared, sizeof(*g_shared));
     g_shared = NULL;
     LOG_ERR("direct lockstep transport has invalid magic");

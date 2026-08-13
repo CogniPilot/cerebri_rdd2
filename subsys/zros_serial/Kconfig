@@ -29,9 +29,10 @@ config RDD2_ZROS_SERIAL_MAX_PAYLOAD
 	default 128
 	range 8 512
 	help
-	  Frames with a larger payload are dropped and counted. Fixed-layout
-	  struct topics are at most 64 bytes in synapse_fbs 0.7, so the
-	  default leaves headroom without reserving a full flatbuffer buffer.
+	  Frames with a larger payload are dropped and counted. The
+	  synapse_fbs 0.9 struct topics selected for this serial transport
+	  fit within the default, leaving headroom without reserving a full
+	  flatbuffer buffer.
 
 config RDD2_ZROS_SERIAL_TX_MIN_INTERVAL_MS
 	int "Minimum milliseconds between frames of the same topic"

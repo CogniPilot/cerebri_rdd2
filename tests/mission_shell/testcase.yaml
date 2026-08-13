@@ -1,0 +1,8 @@
+tests:
+  rdd2.mission_shell.ingress:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - rdd2
+      - mission
+      - shell

@@ -3,11 +3,10 @@
  *
  * Onboard u-blox receiver -> synapse gnss topic, read as UBX.
  *
- * The module streams UBX-NAV-PVT unprompted, so this is receive-only: it sends
- * the receiver nothing and configures nothing, which keeps it working whatever
- * output rate the module happens to be set to. NAV-PVT alone carries every
- * field the GnssFix contract wants, including the accuracy estimates NMEA has
- * no way to express.
+ * Boot sends one bounded UBX-CFG-VALSET transaction that puts the receiver into
+ * a known RAM configuration, then the same low-priority thread decodes
+ * UBX-NAV-PVT. NAV-PVT alone carries every field the GnssFix contract wants,
+ * including the accuracy estimates NMEA has no way to express.
  *
  * A dedicated thread rather than a workqueue is deliberate. SPEC_0005 forbids
  * GNSS threads justified only by convenience, but the alternative here is the
@@ -17,10 +16,10 @@
  */
 
 #include "gnss_onboard.h"
+#include "gnss_m10_protocol.h"
+#include "gnss_m10_topic.h"
 
 #include "interfaces/zros_topics.h"
-
-#include <string.h>
 
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
@@ -44,26 +43,12 @@ LOG_MODULE_REGISTER(gnss_onboard, LOG_LEVEL_INF);
 #error "RDD2_GNSS_SOURCE_ONBOARD needs a \"gnss\" devicetree alias"
 #endif
 
-BUILD_ASSERT(DT_NODE_HAS_STATUS_OKAY(GNSS_NODE), "the \"gnss\" alias names a disabled node");
-BUILD_ASSERT(sizeof(struct ubx_nav_pvt) == 92U, "unexpected UBX NAV-PVT payload size");
-
-#define UBX_HEADER_SIZE  6U  /* sync(2) class id len(2) */
-#define UBX_MAX_PAYLOAD  CONFIG_RDD2_GNSS_UBX_MAX_PAYLOAD
-#define UBX_NAV_PVT_ID   0x07U
-
-/* The schema wants "unusable" rather than a zero that reads as perfect. */
-#define ACCURACY_UNKNOWN 65535U
-
-/* Below this the receiver's heading of motion is noise rather than a course. */
-#define COURSE_VALID_MIN_MM_S 150
-
-enum rx_state {
-	RX_SYNC1 = 0,
-	RX_SYNC2,
-	RX_HEADER,
-	RX_PAYLOAD,
-	RX_CHECKSUM,
-};
+BUILD_ASSERT(DT_NODE_HAS_STATUS_OKAY(GNSS_NODE),
+             "the \"gnss\" alias names a disabled node");
+BUILD_ASSERT(DT_PROP(GNSS_UART, current_speed) == 115200U,
+             "M10 UART and UBX boot configuration must both use 115200 baud");
+BUILD_ASSERT(sizeof(struct ubx_nav_pvt) == 92U,
+             "unexpected UBX NAV-PVT payload size");
 
 static const struct device *const g_uart = DEVICE_DT_GET(GNSS_UART);
 
@@ -73,6 +58,11 @@ static K_THREAD_STACK_DEFINE(g_stack, CONFIG_RDD2_GNSS_UBX_THREAD_STACK_SIZE);
 static struct k_thread g_thread;
 
 static struct rdd2_gnss_onboard_stats g_stats;
+static struct rdd2_gnss_m10_parser g_parser;
+static struct rdd2_gnss_m10_state g_m10;
+static uint8_t g_tx_frame[RDD2_GNSS_M10_FRAME_MAX];
+static struct k_spinlock g_state_lock;
+static struct rdd2_gnss_m10_publication_state g_publication;
 
 /* This build is the sole producer of the fix: the Kconfig choice compiles in
  * either this reader or the transport's inbound path, never both, so the
@@ -81,326 +71,335 @@ static struct zros_node g_node;
 static struct zros_pub g_pub;
 static synapse_topic_GnssFixData_t g_fix;
 
-static enum rx_state g_state;
-static uint8_t g_header[4]; /* class, id, len lo, len hi */
-static uint8_t g_payload[UBX_MAX_PAYLOAD];
-static uint8_t g_checksum[2];
-static uint16_t g_pos;
-static uint16_t g_len;
-
-void rdd2_gnss_onboard_stats_get(struct rdd2_gnss_onboard_stats *stats)
-{
-	if (stats != NULL) {
-		*stats = g_stats;
-	}
+/* Materialize the shell/status view whenever the protocol state is committed.
+ * This keeps the concurrent getter to one fixed-size copy under the lock. */
+static void sync_protocol_stats_locked(void) {
+  g_stats.config_acks = g_m10.config_acks;
+  g_stats.config_naks = g_m10.config_naks;
+  g_stats.config_timeouts = g_m10.config_timeouts;
+  g_stats.unexpected_acks = g_m10.unexpected_acks;
+  g_stats.bad_ack_length = g_m10.bad_ack_length;
+  g_stats.rate_errors = g_m10.rate_errors;
+  g_stats.last_gap_ms = g_m10.last_gap_ms;
+  g_stats.max_gap_ms = g_m10.max_gap_ms;
+  g_stats.measured_rate_millihz = g_m10.measured_rate_millihz;
+  g_stats.last_hacc_mm = g_m10.horizontal_accuracy_mm;
+  g_stats.last_vacc_mm = g_m10.vertical_accuracy_mm;
+  g_stats.last_sacc_mm_s = g_m10.velocity_accuracy_mm_s;
+  g_stats.config_status = g_m10.config_status;
+  g_stats.config_step = g_m10.config_step;
+  g_stats.config_attempt = g_m10.attempts_this_step;
+  g_stats.stable_samples = g_m10.stable_samples;
+  g_stats.fix_accepted = g_m10.fix_accepted;
+  g_stats.accuracy_accepted = g_m10.accuracy_accepted;
+  g_stats.configured = g_m10.config_status == RDD2_GNSS_M10_CONFIG_CONFIGURED;
+  g_stats.ready = g_m10.ready;
 }
 
-static uint16_t saturate_u16(uint32_t value)
-{
-	return (uint16_t)MIN(value, 65535U);
+void rdd2_gnss_onboard_stats_get(struct rdd2_gnss_onboard_stats *stats) {
+  if (stats != NULL) {
+    int64_t now_ms = k_uptime_get();
+    k_spinlock_key_t key = k_spin_lock(&g_state_lock);
+
+    *stats = g_stats;
+    k_spin_unlock(&g_state_lock, key);
+    /* Keep shell readiness truthful even if this lower-priority thread
+     * has not had a release to commit the age transition yet. */
+    if (stats->ready &&
+        (stats->last_sample_ms < 0 || now_ms < stats->last_sample_ms ||
+         now_ms - stats->last_sample_ms > RDD2_GNSS_M10_RECENT_MS)) {
+      stats->ready = false;
+    }
+  }
 }
 
-static int16_t clamp_i16(int32_t value)
-{
-	return (int16_t)CLAMP(value, INT16_MIN, INT16_MAX);
+bool rdd2_gnss_onboard_ready_get(void) {
+  int64_t now_ms = k_uptime_get();
+  k_spinlock_key_t key = k_spin_lock(&g_state_lock);
+  bool ready = rdd2_gnss_m10_ready_at(&g_m10, now_ms);
+
+  k_spin_unlock(&g_state_lock, key);
+  return ready;
 }
 
-static void uart_isr(const struct device *dev, void *user_data)
-{
-	ARG_UNUSED(user_data);
-
-	/* uart_irq_update() returns void as of Zephyr main, so the status
-	 * refresh and the pending check are separate statements; it still has
-	 * to run once per iteration to re-cache the interrupt status. */
-	while (true) {
-		uint8_t buf[32];
-		int read;
-
-		uart_irq_update(dev);
-
-		if (uart_irq_is_pending(dev) <= 0) {
-			break;
-		}
-
-		if (!uart_irq_rx_ready(dev)) {
-			continue;
-		}
-
-		read = uart_fifo_read(dev, buf, sizeof(buf));
-		if (read > 0) {
-			uint32_t stored = ring_buf_put(&g_ring, buf, (uint32_t)read);
-
-			if (stored < (uint32_t)read) {
-				g_stats.ring_overrun += (uint32_t)read - stored;
-			}
-		}
-	}
+static uint16_t saturate_u16(uint32_t value) {
+  return (uint16_t)MIN(value, 65535U);
 }
 
-/* UBX Fletcher-8 over class, id, length and payload. */
-static void checksum(const uint8_t *data, size_t len, uint8_t *ck_a, uint8_t *ck_b)
-{
-	for (size_t i = 0U; i < len; i++) {
-		*ck_a = (uint8_t)(*ck_a + data[i]);
-		*ck_b = (uint8_t)(*ck_b + *ck_a);
-	}
+static void uart_isr(const struct device *dev, void *user_data) {
+  ARG_UNUSED(user_data);
+
+  /* uart_irq_update() returns void as of Zephyr main, so the status
+   * refresh and the pending check are separate statements; it still has
+   * to run once per iteration to re-cache the interrupt status. */
+  while (true) {
+    uint8_t buf[32];
+    int read;
+
+    uart_irq_update(dev);
+
+    if (uart_irq_is_pending(dev) <= 0) {
+      break;
+    }
+
+    if (!uart_irq_rx_ready(dev)) {
+      continue;
+    }
+
+    read = uart_fifo_read(dev, buf, sizeof(buf));
+    if (read > 0) {
+      uint32_t stored = ring_buf_put(&g_ring, buf, (uint32_t)read);
+
+      if (stored < (uint32_t)read) {
+        k_spinlock_key_t key = k_spin_lock(&g_state_lock);
+
+        g_stats.ring_overrun += (uint32_t)read - stored;
+        k_spin_unlock(&g_state_lock, key);
+      }
+    }
+  }
 }
 
-static synapse_types_GnssFixType_enum_t fix_type_from(const struct ubx_nav_pvt *pvt)
-{
-	if ((pvt->flags & UBX_NAV_PVT_FLAGS_GNSS_FIX_OK) == 0U) {
-		return synapse_types_GnssFixType_NoFix;
-	}
-	if ((pvt->flags & UBX_NAV_PVT_FLAGS_GNSS_CARR_SOLN_FIXED) != 0U) {
-		return synapse_types_GnssFixType_RtkFixed;
-	}
-	if ((pvt->flags & UBX_NAV_PVT_FLAGS_GNSS_CARR_SOLN_FLOATING) != 0U) {
-		return synapse_types_GnssFixType_RtkFloat;
-	}
-
-	switch (pvt->fix_type) {
-	case UBX_NAV_FIX_TYPE_2D:
-		return synapse_types_GnssFixType_Fix2d;
-	case UBX_NAV_FIX_TYPE_3D:
-		return synapse_types_GnssFixType_Fix3d;
-	case UBX_NAV_FIX_TYPE_GNSS_DR_COMBINED:
-	case UBX_NAV_FIX_TYPE_DR:
-		return synapse_types_GnssFixType_DeadReckoning;
-	case UBX_NAV_FIX_TYPE_TIME_ONLY:
-		return synapse_types_GnssFixType_TimeOnly;
-	case UBX_NAV_FIX_TYPE_NO_FIX:
-	default:
-		return synapse_types_GnssFixType_NoFix;
-	}
+static synapse_types_GnssFixType_enum_t
+fix_type_from(enum rdd2_gnss_m10_fix fix) {
+  switch (fix) {
+  case RDD2_GNSS_M10_FIX_DEAD_RECKONING:
+    return synapse_types_GnssFixType_DeadReckoning;
+  case RDD2_GNSS_M10_FIX_2D:
+    return synapse_types_GnssFixType_Fix2d;
+  case RDD2_GNSS_M10_FIX_3D:
+    return synapse_types_GnssFixType_Fix3d;
+  case RDD2_GNSS_M10_FIX_DGNSS:
+    return synapse_types_GnssFixType_Dgnss;
+  case RDD2_GNSS_M10_FIX_RTK_FLOAT:
+    return synapse_types_GnssFixType_RtkFloat;
+  case RDD2_GNSS_M10_FIX_RTK_FIXED:
+    return synapse_types_GnssFixType_RtkFixed;
+  case RDD2_GNSS_M10_FIX_TIME_ONLY:
+    return synapse_types_GnssFixType_TimeOnly;
+  case RDD2_GNSS_M10_FIX_NONE:
+  default:
+    return synapse_types_GnssFixType_NoFix;
+  }
 }
 
-/* Days from 1970-01-01, Howard Hinnant's days_from_civil. */
-static int64_t days_from_civil(int64_t y, unsigned m, unsigned d)
-{
-	int64_t era;
-	unsigned yoe;
-	unsigned doy;
-	unsigned doe;
+static bool publish_result(const synapse_topic_GnssFixData_t *fix) {
+  g_fix = *fix;
+  if (zros_pub_update(&g_pub) != 0) {
+    k_spinlock_key_t key = k_spin_lock(&g_state_lock);
 
-	y -= m <= 2;
-	era = (y >= 0 ? y : y - 399) / 400;
-	yoe = (unsigned)(y - era * 400);
-	doy = (153U * (m + (m > 2 ? -3U : 9U)) + 2U) / 5U + d - 1U;
-	doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
+    g_stats.publish_failed++;
+    k_spin_unlock(&g_state_lock, key);
+    return false;
+  }
+  {
+    k_spinlock_key_t key = k_spin_lock(&g_state_lock);
 
-	return era * 146097 + (int64_t)doe - 719468;
+    g_stats.published++;
+    k_spin_unlock(&g_state_lock, key);
+  }
+  return true;
 }
 
-static void publish_nav_pvt(const struct ubx_nav_pvt *pvt)
-{
-	synapse_topic_GnssFixData_t fix = {0};
-	int32_t ground_speed_mm_s = pvt->nav.ground_speed;
-	uint32_t course_cdeg;
+static bool publish_fail_closed(int64_t now_ms) {
+  synapse_topic_GnssFixData_t fix;
 
-	fix.timestamp_ns = (uint64_t)k_uptime_get() * 1000000ULL;
-	fix.latitude_deg_e7 = pvt->nav.latitude;
-	fix.longitude_deg_e7 = pvt->nav.longitude;
-	fix.altitude_msl_mm = pvt->nav.hmsl;
-	fix.altitude_ellipsoid_mm = pvt->nav.height;
-
-	/* The estimates NMEA could not provide. */
-	fix.horizontal_accuracy_mm = saturate_u16(pvt->nav.horiz_acc);
-	fix.vertical_accuracy_mm = saturate_u16(pvt->nav.vert_acc);
-	fix.velocity_accuracy_mm_s = saturate_u16(pvt->nav.speed_acc);
-	fix.hdop_centi = saturate_u16(pvt->nav.pdop);
-	fix.vdop_centi = saturate_u16(pvt->nav.pdop);
-
-	fix.ground_speed_cm_s = saturate_u16((uint32_t)MAX(ground_speed_mm_s, 0) / 10U);
-	/* NED down positive, the contract wants up positive. */
-	fix.velocity_up_cm_s = clamp_i16(-pvt->nav.vel_down / 10);
-
-	/* Heading of motion is 1e-5 deg; the contract wants centidegrees. */
-	course_cdeg = (uint32_t)(((int64_t)pvt->nav.head_motion / 1000) % 36000 + 36000) % 36000;
-	fix.course_over_ground_cdeg = (uint16_t)course_cdeg;
-
-	fix.fix_type = fix_type_from(pvt);
-	fix.satellites_used = pvt->nav.num_sv;
-	fix.satellites_visible = pvt->nav.num_sv;
-
-	fix.flags = synapse_topic_GnssFixFlags_VelocityUpValid;
-	if (ground_speed_mm_s >= COURSE_VALID_MIN_MM_S) {
-		fix.flags |= synapse_topic_GnssFixFlags_CourseValid;
-	}
-
-	/*
-	 * validDate and validTime, and only with a fix: NAV-PVT keeps
-	 * reporting a time field once acquired, and a timestamp that silently
-	 * stops advancing is worse for a consumer than no timestamp at all.
-	 */
-	if ((pvt->time.valid & 0x03U) == 0x03U &&
-	    fix.fix_type != synapse_types_GnssFixType_NoFix) {
-		int64_t days = days_from_civil(pvt->time.year, pvt->time.month, pvt->time.day);
-
-		if (days >= 0) {
-			fix.time_unix_ns = ((uint64_t)days * 86400ULL +
-					    (uint64_t)pvt->time.hour * 3600ULL +
-					    (uint64_t)pvt->time.minute * 60ULL +
-					    (uint64_t)pvt->time.second) *
-					   1000000000ULL;
-			fix.flags |= synapse_topic_GnssFixFlags_TimeValid;
-		}
-	}
-
-	g_stats.samples++;
-	g_stats.last_sample_ms = k_uptime_get();
-	g_stats.last_fix_type = fix.fix_type;
-	g_stats.last_satellites = fix.satellites_used;
-	g_stats.last_hdop_centi = fix.hdop_centi;
-	g_stats.last_hacc_mm = fix.horizontal_accuracy_mm;
-
-	g_fix = fix;
-	if (zros_pub_update(&g_pub) != 0) {
-		g_stats.publish_failed++;
-		return;
-	}
-	g_stats.published++;
+  rdd2_gnss_m10_topic_invalidate(now_ms, &fix);
+  return publish_result(&fix);
 }
 
-static void frame_complete(void)
-{
-	uint8_t ck_a = 0U;
-	uint8_t ck_b = 0U;
+static void process_frame(const struct rdd2_gnss_m10_frame *frame,
+                          int64_t now_ms) {
+  enum rdd2_gnss_m10_frame_kind kind;
+  enum rdd2_gnss_m10_fix receiver_fix = RDD2_GNSS_M10_FIX_NONE;
+  synapse_topic_GnssFixData_t fix;
+  struct rdd2_gnss_m10_state next_state;
+  bool topic_usable = false;
+  k_spinlock_key_t key = k_spin_lock(&g_state_lock);
 
-	checksum(g_header, sizeof(g_header), &ck_a, &ck_b);
-	checksum(g_payload, g_len, &ck_a, &ck_b);
+  next_state = g_m10;
+  k_spin_unlock(&g_state_lock, key);
 
-	if (ck_a != g_checksum[0] || ck_b != g_checksum[1]) {
-		g_stats.checksum_errors++;
-		return;
-	}
+  kind = rdd2_gnss_m10_handle_frame(&next_state, frame, now_ms);
+  if (kind == RDD2_GNSS_M10_FRAME_PVT) {
+    receiver_fix = next_state.fix;
+    rdd2_gnss_m10_topic_build((const struct ubx_nav_pvt *)frame->payload,
+                              &next_state, now_ms, &fix);
+    /* Publication is part of readiness. Commit the gate closed before
+     * touching ZROS so a higher-priority reader can never observe ready
+     * after a rejected sample or before a newly usable sample lands. */
+    topic_usable = rdd2_gnss_m10_publication_barrier(&next_state, &fix);
+  }
 
-	g_stats.frames++;
+  key = k_spin_lock(&g_state_lock);
+  g_m10 = next_state;
+  g_stats.frames++;
+  if (kind == RDD2_GNSS_M10_FRAME_BAD_LENGTH) {
+    g_stats.bad_length++;
+  } else if (kind != RDD2_GNSS_M10_FRAME_PVT) {
+    g_stats.other_frames++;
+  } else {
+    const struct ubx_nav_pvt *pvt = (const struct ubx_nav_pvt *)frame->payload;
 
-	if (g_header[0] != UBX_CLASS_ID_NAV || g_header[1] != UBX_NAV_PVT_ID) {
-		g_stats.other_frames++;
-		return;
-	}
-	if (g_len != sizeof(struct ubx_nav_pvt)) {
-		g_stats.bad_length++;
-		return;
-	}
+    g_stats.samples++;
+    g_stats.last_sample_ms = now_ms;
+    g_stats.last_fix_type = fix_type_from(receiver_fix);
+    g_stats.last_satellites = pvt->nav.num_sv;
+    g_stats.last_hdop_centi = saturate_u16(pvt->nav.pdop);
+  }
+  sync_protocol_stats_locked();
+  k_spin_unlock(&g_state_lock, key);
 
-	publish_nav_pvt((const struct ubx_nav_pvt *)g_payload);
+  if (kind == RDD2_GNSS_M10_FRAME_PVT) {
+    bool published = publish_result(&fix);
+
+    key = k_spin_lock(&g_state_lock);
+    rdd2_gnss_m10_publication_complete(&g_publication, &g_m10, topic_usable,
+                                       published);
+    sync_protocol_stats_locked();
+    k_spin_unlock(&g_state_lock, key);
+  }
 }
 
-static void rx_byte(uint8_t byte)
-{
-	switch (g_state) {
-	case RX_SYNC1:
-		if (byte == UBX_PREAMBLE_SYNC_CHAR_1) {
-			g_state = RX_SYNC2;
-		}
-		break;
+static void rx_byte(uint8_t byte) {
+  struct rdd2_gnss_m10_frame frame;
+  enum rdd2_gnss_m10_rx_event event =
+      rdd2_gnss_m10_parser_feed(&g_parser, byte, &frame);
 
-	case RX_SYNC2:
-		if (byte == UBX_PREAMBLE_SYNC_CHAR_2) {
-			g_state = RX_HEADER;
-			g_pos = 0U;
-		} else if (byte != UBX_PREAMBLE_SYNC_CHAR_1) {
-			g_state = RX_SYNC1;
-		}
-		break;
+  if (event == RDD2_GNSS_M10_RX_FRAME) {
+    process_frame(&frame, k_uptime_get());
+  } else if (event == RDD2_GNSS_M10_RX_CHECKSUM_ERROR) {
+    k_spinlock_key_t key = k_spin_lock(&g_state_lock);
 
-	case RX_HEADER:
-		g_header[g_pos++] = byte;
-		if (g_pos < sizeof(g_header)) {
-			break;
-		}
-		g_len = (uint16_t)g_header[2] | ((uint16_t)g_header[3] << 8);
-		if (g_len > UBX_MAX_PAYLOAD) {
-			/* Not ours, and too big to buffer: resynchronise
-			 * rather than tie up the parser for a frame we would
-			 * discard anyway. */
-			g_stats.oversize++;
-			g_state = RX_SYNC1;
-			break;
-		}
-		g_pos = 0U;
-		g_state = g_len == 0U ? RX_CHECKSUM : RX_PAYLOAD;
-		break;
+    g_stats.checksum_errors++;
+    k_spin_unlock(&g_state_lock, key);
+  } else if (event == RDD2_GNSS_M10_RX_OVERSIZE) {
+    k_spinlock_key_t key = k_spin_lock(&g_state_lock);
 
-	case RX_PAYLOAD:
-		g_payload[g_pos++] = byte;
-		if (g_pos >= g_len) {
-			g_pos = 0U;
-			g_state = RX_CHECKSUM;
-		}
-		break;
-
-	case RX_CHECKSUM:
-	default:
-		g_checksum[g_pos++] = byte;
-		if (g_pos < sizeof(g_checksum)) {
-			break;
-		}
-		frame_complete();
-		g_state = RX_SYNC1;
-		g_pos = 0U;
-		break;
-	}
+    g_stats.oversize++;
+    k_spin_unlock(&g_state_lock, key);
+  }
 }
 
-static void gnss_thread(void *arg0, void *arg1, void *arg2)
-{
-	uint8_t buf[64];
+static void advance_configuration(int64_t now_ms) {
+  int length;
+  struct rdd2_gnss_m10_state next_state;
+  k_spinlock_key_t key = k_spin_lock(&g_state_lock);
 
-	ARG_UNUSED(arg0);
-	ARG_UNUSED(arg1);
-	ARG_UNUSED(arg2);
+  next_state = g_m10;
+  k_spin_unlock(&g_state_lock, key);
 
-	while (true) {
-		uint32_t read;
+  /* Frame preparation includes payload encoding and checksum work. Keep it
+   * outside the IRQ-disabling spinlock; only the resulting state commit is
+   * serialized. The GNSS thread is the sole state writer. */
+  length = rdd2_gnss_m10_prepare_config(&next_state, now_ms, g_tx_frame,
+                                        sizeof(g_tx_frame));
+  key = k_spin_lock(&g_state_lock);
+  g_m10 = next_state;
+  sync_protocol_stats_locked();
+  k_spin_unlock(&g_state_lock, key);
 
-		while ((read = ring_buf_get(&g_ring, buf, sizeof(buf))) > 0U) {
-			for (uint32_t i = 0U; i < read; i++) {
-				rx_byte(buf[i]);
-			}
-		}
-		k_sleep(K_MSEC(CONFIG_RDD2_GNSS_UBX_POLL_MS));
-	}
+  if (length <= 0) {
+    return;
+  }
+
+  /* uart_poll_out can busy-wait for FIFO space, but this thread is
+   * preemptible and below every flight-control process. Configuration is
+   * boot-only and the one bounded frame is 152 bytes. Zephyr's poll-out API
+   * has no error result; a missing receiver acceptance is detected by the
+   * bounded ACK timeout and fails closed after three identical attempts. */
+  for (int i = 0; i < length; i++) {
+    uart_poll_out(g_uart, g_tx_frame[i]);
+  }
 }
 
-static int gnss_onboard_init(void)
-{
-	int rc;
+static void gnss_thread(void *arg0, void *arg1, void *arg2) {
+  uint8_t buf[64];
 
-	if (!device_is_ready(g_uart)) {
-		LOG_ERR("%s not ready", DT_NODE_FULL_NAME(GNSS_UART));
-		return -ENODEV;
-	}
+  ARG_UNUSED(arg0);
+  ARG_UNUSED(arg1);
+  ARG_UNUSED(arg2);
 
-	ring_buf_init(&g_ring, sizeof(g_ring_buf), g_ring_buf);
+  while (true) {
+    uint32_t read;
+    int64_t now_ms;
+    bool was_ready;
+    struct rdd2_gnss_m10_state next_state;
 
-	/* Registered before the reader thread exists, so the first decoded
-	 * frame cannot reach an unpublishable topic. */
-	zros_node_init(&g_node, "rdd2_gnss");
-	rc = zros_pub_init(&g_pub, &g_node, &topic_gnss_fix, &g_fix);
-	if (rc != 0) {
-		LOG_ERR("gnss publisher init failed: %d", rc);
-		return rc;
-	}
+    while ((read = ring_buf_get(&g_ring, buf, sizeof(buf))) > 0U) {
+      for (uint32_t i = 0U; i < read; i++) {
+        rx_byte(buf[i]);
+      }
+    }
+    now_ms = k_uptime_get();
+    k_spinlock_key_t key = k_spin_lock(&g_state_lock);
 
-	rc = uart_irq_callback_user_data_set(g_uart, uart_isr, NULL);
-	if (rc != 0) {
-		LOG_ERR("uart callback setup failed: %d", rc);
-		return rc;
-	}
+    next_state = g_m10;
+    k_spin_unlock(&g_state_lock, key);
+    was_ready = next_state.ready;
+    rdd2_gnss_m10_tick(&next_state, now_ms);
+    key = k_spin_lock(&g_state_lock);
+    g_m10 = next_state;
+    sync_protocol_stats_locked();
+    k_spin_unlock(&g_state_lock, key);
+    if (rdd2_gnss_m10_invalidation_due(&g_publication, was_ready,
+                                       &next_state)) {
+      rdd2_gnss_m10_publication_result(&g_publication,
+                                       publish_fail_closed(now_ms));
+    }
+    advance_configuration(now_ms);
+    k_sleep(K_MSEC(CONFIG_RDD2_GNSS_UBX_POLL_MS));
+  }
+}
 
-	uart_irq_rx_enable(g_uart);
+static int gnss_onboard_init(void) {
+  int rc;
 
-	k_thread_create(&g_thread, g_stack, K_THREAD_STACK_SIZEOF(g_stack), gnss_thread, NULL,
-			NULL, NULL, CONFIG_RDD2_GNSS_UBX_THREAD_PRIORITY, 0, K_NO_WAIT);
-	k_thread_name_set(&g_thread, "gnss_ubx");
+  if (!device_is_ready(g_uart)) {
+    LOG_ERR("%s not ready", DT_NODE_FULL_NAME(GNSS_UART));
+    return -ENODEV;
+  }
 
-	LOG_INF("ubx reader on %s at %u baud", DT_NODE_FULL_NAME(GNSS_UART),
-		(unsigned int)DT_PROP(GNSS_UART, current_speed));
+  ring_buf_init(&g_ring, sizeof(g_ring_buf), g_ring_buf);
+  rdd2_gnss_m10_parser_init(&g_parser);
+  rdd2_gnss_m10_state_init(&g_m10);
+  g_stats.last_sample_ms = -1;
+  sync_protocol_stats_locked();
+  /* The publisher's initial retained value is fail-closed even before the
+   * first UART byte or scheduler release. */
+  rdd2_gnss_m10_topic_invalidate(k_uptime_get(), &g_fix);
 
-	return 0;
+  /* Registered before the reader thread exists, so the first decoded
+   * frame cannot reach an unpublishable topic. */
+  zros_node_init(&g_node, "rdd2_gnss");
+  rc = zros_pub_init(&g_pub, &g_node, &topic_gnss_fix, &g_fix);
+  if (rc != 0) {
+    LOG_ERR("gnss publisher init failed: %d", rc);
+    return rc;
+  }
+  /* Create an actual initial topic generation, rather than relying only on
+   * zero-initialized storage that consumers correctly treat as no sample. */
+  rdd2_gnss_m10_publication_result(&g_publication, publish_result(&g_fix));
+
+  rc = uart_irq_callback_user_data_set(g_uart, uart_isr, NULL);
+  if (rc != 0) {
+    LOG_ERR("uart callback setup failed: %d", rc);
+    return rc;
+  }
+
+  uart_irq_rx_enable(g_uart);
+
+  k_thread_create(&g_thread, g_stack, K_THREAD_STACK_SIZEOF(g_stack),
+                  gnss_thread, NULL, NULL, NULL,
+                  CONFIG_RDD2_GNSS_UBX_THREAD_PRIORITY, 0, K_NO_WAIT);
+  k_thread_name_set(&g_thread, "gnss_ubx");
+
+  LOG_INF("M10 UBX configure/read on %s at %u baud, NAV-PVT %u Hz",
+          DT_NODE_FULL_NAME(GNSS_UART),
+          (unsigned int)DT_PROP(GNSS_UART, current_speed),
+          (unsigned int)RDD2_GNSS_M10_TARGET_RATE_HZ);
+
+  return 0;
 }
 
 SYS_INIT(gnss_onboard_init, POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);

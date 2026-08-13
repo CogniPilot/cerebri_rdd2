@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use synapse_fbs::{
     topic,
-    types::{LocalFrame, Quaternionf, RateTriplet, Vec3f},
+    types::{LocalFrame, Quaternionf, RateTriplet, TimeStatus, Vec3f},
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -57,22 +57,20 @@ pub fn lockstep_inputs(
     reference: TrajectoryReference,
     target_boot_time_ns: u64,
 ) -> LockstepInputs {
-    let timestamp_us = target_boot_time_ns / 1_000;
-    // synapse_fbs v0.7 standardizes inertial vectors as FLU, matching the
+    let timestamp_ns = target_boot_time_ns;
+    // synapse_fbs v0.9 standardizes inertial vectors as FLU, matching the
     // plant's body frame, so the sample passes through unconverted.
     let gyro_flu = Vec3f::new(gyro_flu[0], gyro_flu[1], gyro_flu[2]);
     let accel_flu = Vec3f::new(accel_flu[0], accel_flu[1], accel_flu[2]);
-    let zero = Vec3f::new(0.0, 0.0, 0.0);
     let inertial_flags =
         (topic::InertialFieldFlags::Accel | topic::InertialFieldFlags::Gyro).bits();
     let inertial_sample = topic::InertialSampleData::new(
-        timestamp_us,
+        timestamp_ns,
         &accel_flu,
         &gyro_flu,
-        &zero,
-        0.0,
         0.0,
         inertial_flags,
+        TimeStatus::LocalFreerun,
         0,
     );
 
@@ -88,7 +86,7 @@ pub fn lockstep_inputs(
     let centered_milli = |channel: i32| ((channel - 1500) * 2).clamp(-1000, 1000) as i16;
     let throttle_milli = (channels[2] - 1000).clamp(0, 1000) as i16;
     let manual_control = topic::ManualControlData::new(
-        timestamp_us,
+        timestamp_ns,
         0,
         axes,
         centered_milli(channels[1]),
@@ -101,8 +99,15 @@ pub fn lockstep_inputs(
         0,
         0,
         0,
-        u8::from(channels[5] >= 1500),
+        if channels[5] < 1333 {
+            0
+        } else if channels[5] < 1667 {
+            1
+        } else {
+            2
+        },
         flags.bits(),
+        TimeStatus::LocalFreerun,
     );
 
     let position = Vec3f::new(
@@ -127,7 +132,7 @@ pub fn lockstep_inputs(
         | topic::ExternalOdometryFlags::LinearVelocityValid
         | topic::ExternalOdometryFlags::AngularVelocityValid;
     let external_odometry = topic::ExternalOdometryData::new(
-        timestamp_us,
+        timestamp_ns,
         &position,
         &quaternion,
         &velocity,
@@ -135,6 +140,7 @@ pub fn lockstep_inputs(
         odometry_flags,
         topic::ExternalOdometryStatus::Filtered,
         0,
+        TimeStatus::LocalFreerun,
         0,
     );
 
@@ -153,16 +159,16 @@ pub fn lockstep_inputs(
         reference.acceleration_enu_m_s2[1],
         reference.acceleration_enu_m_s2[2],
     );
-    let command_mask = topic::LocalPositionCommandMask::IgnoreYawRate;
     let local_position_command = topic::LocalPositionCommandData::new(
-        timestamp_us,
+        timestamp_ns,
         &reference_position,
         &reference_velocity,
         &reference_acceleration,
         reference.yaw_rad,
         0.0,
-        command_mask.bits(),
+        0,
         LocalFrame::LocalEnu,
+        TimeStatus::LocalFreerun,
     );
 
     LockstepInputs {
@@ -210,7 +216,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inputs_use_generated_v07_structs() {
+    fn inputs_use_generated_v09_structs() {
         let mut channels = [1500; 16];
         channels[2] = 1250;
         channels[4] = 2000;
@@ -232,11 +238,13 @@ mod tests {
             reference,
             5_000_000,
         );
-        assert_eq!(inputs.inertial_sample.timestamp_us(), 5_000);
+        assert_eq!(inputs.inertial_sample.timestamp_ns(), 5_000_000);
         assert_eq!(inputs.inertial_sample.gyro_flu_rad_s().y(), 2.0);
         assert_eq!(inputs.manual_control.throttle_milli(), 250);
+        assert_eq!(inputs.manual_control.flight_mode(), 2);
         assert_eq!(inputs.external_odometry.position_enu_m().z(), 3.0);
         assert_eq!(inputs.local_position_command.position_enu_m().x(), 7.0);
+        assert_eq!(inputs.local_position_command.type_mask(), 0);
         assert!(
             topic::ManualControlFlags::from_bits_retain(inputs.manual_control.flags())
                 .contains(topic::ManualControlFlags::ArmSwitch)
@@ -244,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn outputs_use_generated_v07_accessors() {
+    fn outputs_use_generated_v09_accessors() {
         let mut pwm = topic::PwmSignalOutputsData::default();
         pwm.set_output0_us(1250);
         pwm.set_output1_us(1500);

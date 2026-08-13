@@ -137,7 +137,7 @@ impl Transport {
 
     fn shared(&self) -> &SharedLayout {
         // SAFETY: offset was resolved from the ELF and bounds-checked against
-        // the mapped RAM file. The C and Rust layouts are asserted to 320 B.
+        // the mapped RAM file. The C and Rust layouts are asserted to 440 B.
         unsafe {
             &*(self
                 .mapping
@@ -164,7 +164,7 @@ impl Transport {
         timeout: Duration,
     ) -> Result<(MotorCommand, FlightState)> {
         let shared = self.shared_mut_ptr();
-        // SAFETY: generated payload structs have the same fixed v0.7 wire
+        // SAFETY: generated payload structs have the same fixed v0.9 wire
         // layout on both sides. The release store publishes all completed
         // copies to the firmware.
         unsafe {
@@ -253,11 +253,11 @@ mod tests {
         assert_eq!(size_of::<SharedLayout>(), 440);
         assert_eq!(align_of::<SharedLayout>(), 4);
         assert_eq!(offset_of!(SharedLayout, inertial_sample), 16);
-        assert_eq!(offset_of!(SharedLayout, manual_control), 72);
-        assert_eq!(offset_of!(SharedLayout, external_odometry), 112);
-        assert_eq!(offset_of!(SharedLayout, local_position_command), 176);
-        assert_eq!(offset_of!(SharedLayout, pwm_signal_outputs), 232);
-        assert_eq!(offset_of!(SharedLayout, vehicle_health), 280);
+        assert_eq!(offset_of!(SharedLayout, manual_control), 56);
+        assert_eq!(offset_of!(SharedLayout, external_odometry), 96);
+        assert_eq!(offset_of!(SharedLayout, local_position_command), 168);
+        assert_eq!(offset_of!(SharedLayout, pwm_signal_outputs), 224);
+        assert_eq!(offset_of!(SharedLayout, vehicle_health), 272);
         assert_eq!(offset_of!(SharedLayout, attitude_estimate), 328);
         assert_eq!(offset_of!(SharedLayout, attitude_command), 368);
         assert_eq!(offset_of!(SharedLayout, control_loop_metrics), 416);
@@ -297,8 +297,8 @@ mod tests {
                 }
                 thread::yield_now();
             };
-            let received_timestamp_us =
-                unsafe { ptr::addr_of!((*shared).inertial_sample).read() }.timestamp_us();
+            let received_timestamp_ns =
+                unsafe { ptr::addr_of!((*shared).inertial_sample).read() }.timestamp_ns();
             let mut pwm = topic::PwmSignalOutputsData::default();
             pwm.set_output0_us(1750);
             let mut health = topic::VehicleHealthData::default();
@@ -314,7 +314,7 @@ mod tests {
                 ptr::copy_nonoverlapping(&health, ptr::addr_of_mut!((*shared).vehicle_health), 1);
                 (*ptr::addr_of!((*shared).response_sequence)).store(sequence, Ordering::Release);
             }
-            received_timestamp_us
+            received_timestamp_ns
         });
 
         let mut transport = Transport {
@@ -339,7 +339,7 @@ mod tests {
             .unwrap();
         assert_eq!(motor.values[0], 0.75);
         assert!(state.armed && state.rc_valid && state.imu_ok);
-        assert_eq!(firmware.join().unwrap(), 5_000);
+        assert_eq!(firmware.join().unwrap(), 5_000_000);
         assert_eq!(transport.shared().terminate.load(Ordering::Acquire), 0);
         drop(transport);
 
