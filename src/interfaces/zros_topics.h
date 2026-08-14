@@ -34,7 +34,6 @@ ZROS_TOPIC_DECLARE(control_loop_metrics, synapse_topic_ControlLoopMetricsData_t)
 ZROS_TOPIC_DECLARE(pwm_signal_outputs, synapse_topic_PwmSignalOutputsData_t);
 ZROS_TOPIC_DECLARE(inertial_sample, synapse_topic_InertialSampleData_t);
 ZROS_TOPIC_DECLARE(external_odometry, synapse_topic_ExternalOdometryData_t);
-ZROS_TOPIC_DECLARE(local_position_command, synapse_topic_LocalPositionCommandData_t);
 /* The fix lives on the internal bus whatever produced it: the onboard reader
  * in subsys/gnss_source, or the serial transport when a ground station injects
  * it. Exactly one of those is compiled in, so the single-publisher backend

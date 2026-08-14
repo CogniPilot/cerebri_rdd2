@@ -16,9 +16,15 @@ ACCEPTED
 - IMU is the onboard `ICM45686`.
 - GNSS integration target is the onboard M10 through Zephyr GNSS interfaces.
 - Four motor outputs are assumed.
+- The loadable `mr_vmu_tropic` flight image is a sysbuild composition containing
+  MCUboot and its signed application image. The standard Nix build and flash
+  entry points must use that composition rather than emitting or flashing an
+  application linked for the MCUboot slot without the bootloader.
 
 **CURRENT BOARD ASSUMPTIONS:**
-- The board DTS exposes the CRSF receiver path as the `crsf0` `tbs,crsf` device.
+- The pinned board DTS exposes the CRSF receiver path under the historical
+  `sbus0` node label, but the node remains a `tbs,crsf` device and RDD2 must
+  continue to use the Zephyr CRSF driver.
 - Application code consumes the `rc`, `imu0`, and `motors` aliases, not board-specific node labels.
 - DSHOT defaults to `DSHOT600`.
 - `DSHOT300` is the first fallback check if ESC signaling is marginal.

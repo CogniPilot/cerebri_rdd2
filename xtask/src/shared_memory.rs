@@ -12,7 +12,7 @@ use synapse_fbs::topic;
 
 use crate::protocol::{self, FlightState, LockstepInputs, MotorCommand};
 
-const RDD2_LOCKSTEP_MAGIC: u32 = 0x5244_4733;
+const RDD2_LOCKSTEP_MAGIC: u32 = 0x5244_4734;
 const SHARED_SYMBOL: &str = "rdd2_fastdyn_lockstep_shared";
 const RAM_START_SYMBOL: &str = "_image_ram_start";
 
@@ -148,7 +148,7 @@ impl Transport {
 
     fn shared(&self) -> &SharedLayout {
         // SAFETY: offset was resolved from the ELF and bounds-checked against
-        // the mapped RAM file. The C and Rust layouts are asserted to 1176 B.
+        // the mapped RAM file. The C and Rust layouts are asserted to 1192 B.
         unsafe {
             &*(self
                 .mapping
@@ -265,7 +265,7 @@ impl Drop for Transport {
     }
 }
 
-const _: () = assert!(size_of::<SharedLayout>() == 1176);
+const _: () = assert!(size_of::<SharedLayout>() == 1192);
 
 #[cfg(test)]
 mod tests {
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn layout_matches_firmware_abi() {
-        assert_eq!(size_of::<SharedLayout>(), 1176);
+        assert_eq!(size_of::<SharedLayout>(), 1192);
         assert_eq!(align_of::<SharedLayout>(), 8);
         assert_eq!(offset_of!(SharedLayout, inertial_sample), 16);
         assert_eq!(offset_of!(SharedLayout, manual_control), 56);
@@ -350,6 +350,10 @@ mod tests {
                 gnss_generation: 1,
                 plan_generation: 1,
                 reference_generation: 1,
+                odometry_generation: 1,
+                guidance_generation: 1,
+                motor_generation: 1,
+                health_generation: 1,
                 mission_state: 2,
                 flags: protocol::MissionStatusWire::SOURCE_READY
                     | protocol::MissionStatusWire::ORIGIN_VALID

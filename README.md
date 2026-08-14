@@ -24,7 +24,7 @@ Current implementation scope:
   in `Vehicles.Rdd2.AvionicsSystem`
 - the navigation estimator follows the 1 ms contract in
   `Avionics.PartialNavigationEstimator`
-- `ACRO` and `AUTO_LEVEL` manual flight modes
+- pilot-selectable `ACRO`, `ATTITUDE`, and `POSITION` flight modes
 - GNSS on the `gnss_fix` topic from either the onboard M10 read as UBX or a
   fix injected over the telemetry radio
 
@@ -168,9 +168,11 @@ asynchronous side-channel without changing the direct lockstep coordinator.
 Performance builds may omit the unused network stack; communications builds
 retain ENET and enable CSyn/Zenoh independently of lockstep pacing.
 
-CMake installs the Rumoca release pinned by `cmake/RumocaLock.cmake` into the
-build tree, verifies the installer, executable version, and platform binary
-hash, and generates eFMI Production Code from
+The repository Nix commands provide the exact source-pinned Rumoca executable
+and its SHA-256 to CMake. CMake rejects a missing or different compiler, so
+ordinary firmware and FastDyn cannot generate flight code with distinct
+binaries that happen to share a version string. That compiler generates eFMI
+Production Code from
 `Planning.Bezier.WaypointTrajectoryPlanner`,
 `Vehicles.Rdd2.NavigationEstimator`, `Vehicles.Rdd2.GuidanceController`, and
 `Vehicles.Rdd2.RateControlAllocator` in the `modelica_models` West project under
@@ -179,7 +181,7 @@ parameters, task composition, and model-level qualification mission all remain i
 that common project. Generated C and `.efmu` containers are build outputs, not
 committed source.
 
-## Raw Zephyr Build 
+## Workspace bootstrap
 
 To bootstrap a fresh minimal workspace from this repo's manifest, you must first
 install Zephyr's dependencies to the [getting started guide]
@@ -202,8 +204,19 @@ west init -l cerebri_rdd2
 west update
 west packages pip --install
 west sdk install -t arm-zephyr-eabi
-west build -p -b mr_vmu_tropic cerebri_rdd2
 ```
+
+Build firmware through the repository flake so CMake receives the exact
+source-pinned Rumoca executable and its SHA-256:
+
+```sh
+cd /tmp/cerebri-ws/cerebri_rdd2
+nix run path:.#west-update
+nix run path:.#build
+```
+
+A bare `west build` outside the repository Nix environment is intentionally
+rejected for flight firmware because it cannot prove compiler identity.
 
 ## Nix / NixOS
 
@@ -389,8 +402,9 @@ The shell defaults to the `gnuarmemb` Zephyr toolchain for
 for lockstep builds and uses `native_sim/native/64` by default to avoid multilib
 requirements on NixOS. Set `RDD2_NATIVE_SIM_BOARD=native_sim` if you need
 Zephyr's 32-bit native simulator variant. The Nix shell includes x86 multilib
-host support on `x86_64-linux`, so raw `west build -b native_sim` also works.
-Use separate build directories when switching boards:
+host support on `x86_64-linux`. Inside `nix develop`, direct `west build`
+commands inherit the pinned compiler and digest. Use separate build directories
+when switching boards:
 
 ```sh
 west build -b mr_vmu_tropic -d build

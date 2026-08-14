@@ -41,7 +41,16 @@ paces lockstep.
 - CSyn owns the `synapse_fbs` release, topic catalog, canonical Zenoh keys,
   payload sizes, and generated codecs; RDD2 must not duplicate them.
 - The transport stages only the latest inbound inertial payload instead of
-  queueing per-sample work into the controller.
+  queueing per-sample work into the controller. The host therefore exchanges
+  exactly once per 625 us control release; macro-step input coalescing is
+  prohibited because it starves the lower-priority Navigation, Guidance, and
+  Planning release chains.
+- The FastDyn mission's wall-time floor is a bounded-progress regression gate
+  for that exact one-release-per-exchange path. It must not reuse a throughput
+  target measured with coalesced macro-steps, nor may the implementation batch
+  releases to satisfy it. A batched controller catch-up benchmark may be
+  reported separately, but it cannot replace the complete lockstep mission or
+  any observed release-rate assertion.
 - Schema-shaped values must use generated FlatCC structs and accessors. Manual
   byte-offset decoding and handwritten wire mirrors are prohibited.
 - Lockstep transport and staging live under `subsys/lockstep/`, not `src/`.

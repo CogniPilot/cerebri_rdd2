@@ -19,7 +19,18 @@ set(_planner_header
 set(_planner_source
   "${RDD2_TEST_EFMI_ROOT}/Planning_Bezier_WaypointTrajectoryPlanner/ProductionCode/Planning_Bezier_WaypointTrajectoryPlanner.c"
 )
-foreach(_generated_file IN ITEMS "${_planner_header}" "${_planner_source}")
+set(_kernel_header
+  "${RDD2_TEST_EFMI_ROOT}/Planning_Bezier_WaypointTrajectoryPlanner/ProductionCode/rumoca_galec_kernels.h"
+)
+set(_kernel_source
+  "${RDD2_TEST_EFMI_ROOT}/Planning_Bezier_WaypointTrajectoryPlanner/ProductionCode/rumoca_galec_kernels.c"
+)
+foreach(_generated_file IN ITEMS
+    "${_planner_header}"
+    "${_planner_source}"
+    "${_kernel_header}"
+    "${_kernel_source}"
+)
   if(NOT EXISTS "${_generated_file}")
     message(FATAL_ERROR "Missing generated planner file: ${_generated_file}")
   endif()
@@ -43,4 +54,5 @@ target_sources(app PRIVATE
   src/main.c
   src/generated_real_test.c
   "${_planner_source}"
+  "${_kernel_source}"
 )

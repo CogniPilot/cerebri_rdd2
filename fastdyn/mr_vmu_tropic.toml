@@ -517,7 +517,7 @@ command = [
     "${CEREBRI_RDD2_ROOT}/target/release/xtask",
     "fastdyn-mission",
     "--duration",
-    "${RDD2_FASTDYN_MISSION_DURATION_S:-32}",
+    "${RDD2_FASTDYN_MISSION_DURATION_S:-44}",
     "--report",
     "${RDD2_FASTDYN_REPORT:-out/cerebri_rdd2_mission.json}",
     "--trajectory",
@@ -531,5 +531,7 @@ RDD2_FASTDYN_SHARED_MEMORY = "${FASTDYN_QEMU_MEMORY_DIR:-./fastdyn_qemu_memory}/
 RDD2_FASTDYN_FIRMWARE_ELF = "${RDD2_FASTDYN_BUILD_DIR}/zephyr/zephyr.elf"
 RDD2_RUMOCA_PLANT_LIBRARY = "${RDD2_RUMOCA_PLANT_LIBRARY}"
 RDD2_RUMOCA_PLANT_DESCRIPTION = "${RDD2_RUMOCA_PLANT_DESCRIPTION}"
-RDD2_FASTDYN_PLANT_DT_S = "${RDD2_FASTDYN_PLANT_DT_S:-0.020}"
-RDD2_FASTDYN_MIN_SPEEDUP = "${RDD2_FASTDYN_MIN_SPEEDUP:-3.0}"
+# This is a bounded-progress floor for the exact 625 us QEMU handshake, not a
+# batched-controller throughput target. The full mission still proves every
+# generated release and fails closed on any missed rate or behavioral oracle.
+RDD2_FASTDYN_MIN_SPEEDUP = "${RDD2_FASTDYN_MIN_SPEEDUP:-0.05}"

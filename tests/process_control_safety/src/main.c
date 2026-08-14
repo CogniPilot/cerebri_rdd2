@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include "control_safety.h"
+#include "motor_override.h"
 
 #include <math.h>
 #include <zephyr/ztest.h>
@@ -81,6 +82,36 @@ ZTEST(process_control_safety, test_guidance_requires_current_arm_switch) {
   zexpect_false(rdd2_guidance_arm_allowed(true, false, false, true));
   zexpect_false(rdd2_guidance_arm_allowed(true, true, true, true));
   zexpect_false(rdd2_guidance_arm_allowed(false, false, true, true));
+}
+
+ZTEST(process_control_safety,
+      test_inactive_motor_override_preserves_flight_outputs) {
+  float motors[] = {0.25f, 0.5f, 0.75f, 1.0f};
+  const float override[] = {0.0f, 0.0f, 0.0f, 0.0f};
+  uint16_t raw[] = {100U, 200U, 300U, 400U};
+  const uint16_t raw_override[] = {0U, 0U, 0U, 0U};
+
+  zexpect_false(rdd2_motor_override_copy_f32(false, motors, override, 4U));
+  zexpect_false(
+      rdd2_motor_override_copy_u16(false, raw, raw_override, 4U));
+  for (size_t index = 0U; index < 4U; ++index) {
+    zexpect_equal(motors[index], 0.25f * (float)(index + 1U));
+    zexpect_equal(raw[index], (uint16_t)(100U * (index + 1U)));
+  }
+}
+
+ZTEST(process_control_safety, test_active_motor_override_replaces_outputs) {
+  float motors[] = {0.25f, 0.5f, 0.75f, 1.0f};
+  const float override[] = {0.1f, 0.2f, 0.3f, 0.4f};
+  uint16_t raw[] = {100U, 200U, 300U, 400U};
+  const uint16_t raw_override[] = {1U, 2U, 3U, 4U};
+
+  zexpect_true(rdd2_motor_override_copy_f32(true, motors, override, 4U));
+  zexpect_true(rdd2_motor_override_copy_u16(true, raw, raw_override, 4U));
+  for (size_t index = 0U; index < 4U; ++index) {
+    zexpect_equal(motors[index], override[index]);
+    zexpect_equal(raw[index], raw_override[index]);
+  }
 }
 
 ZTEST_SUITE(process_control_safety, NULL, NULL, NULL, NULL, NULL);

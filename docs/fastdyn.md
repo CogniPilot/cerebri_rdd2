@@ -2,9 +2,9 @@
 
 RDD2 owns its board configuration, rehosting configuration, lockstep adapter,
 and mission acceptance test. FastDyn remains a generic QEMU rehosting runtime.
-The firmware eFMI generator release and artifact hashes are locked in
-`cmake/RumocaLock.cmake`. FastDyn's optional standalone Rumoca build is a
-separate tool pinned transitively by the exact FastDyn revision in `west.yml`.
+The firmware eFMI generator is the exact source-pinned Rumoca package in
+`flake.nix`. Nix supplies its executable SHA-256 to every firmware and FastDyn
+build, and CMake rejects a different binary even when its version text matches.
 
 The repository-owned pieces are:
 
@@ -18,7 +18,9 @@ The repository-owned pieces are:
 - `rdd2-fastdyn-mission`: Nix-shell convenience command for invoking the FMI
   plant and firmware lockstep host directly.
 - `rdd2-test-gps-lockstep`: mandatory native-firmware proof that GPS origin and
-  odometry become observable before the one-shot mission reaches `PENDING`.
+  odometry become observable before the one-shot mission reaches `PENDING`,
+  followed by nine focused Zephyr suites including the real generated Guidance
+  mode, hover-thrust, and altitude-response discriminator.
 
 The convenience commands locate the application and its West workspace.
 FastDyn CI requires a clean `modelica_models` checkout at the exact commit
@@ -35,13 +37,12 @@ The mission host is designed to load the tensor-native
 handwritten quadrotor equations. The same host and FMI plant are used for
 host-native firmware and the rehosted ARM binary.
 
-This path currently stops at a deliberate compiler capability boundary: the
-plant retains checked parameter assertions, while Rumoca's source-FMU profile
-currently rejects the resulting action partition. The landing-contact branches
-are explicitly `noEvent` and do not create zero crossings. The export therefore
-fails closed today. Do not suppress the assertions to make this test appear to
-pass; the workflow becomes runnable only after Rumoca's FMI kernel preserves
-them and its conformance suite covers them.
+The plant retains checked parameter assertions. The required Rumoca revision
+must execute those assertions in FMI initialization and before each step, while
+preserving rollback on failure. The landing-contact branches are explicitly
+`noEvent` and do not create zero crossings. Do not suppress the assertions to
+make this test appear to pass; `fastdyn-ci` is the acceptance gate for the exact
+pinned compiler, source FMU, and firmware combination.
 
 ## Standalone repository setup
 
@@ -78,9 +79,10 @@ cargo test --workspace --locked
 cargo build --release --locked --package cerebri-rdd2-xtask
 ```
 
-Run the native GPS ingress lifecycle proof. This command builds the real
-native firmware and runs the otherwise-ignored process integration test with
-the executable supplied explicitly; it cannot pass by skipping the process:
+Run the native GPS qualification suite. This command builds the real native
+firmware, runs the otherwise-ignored process integration test with the
+executable supplied explicitly, then builds and executes all nine focused
+Zephyr suites. It cannot pass by skipping the process or C tests:
 
 ```sh
 nix run .#test-gps-lockstep
@@ -96,7 +98,7 @@ MODELICA_MODELS_ROOT="$RDD2_MODELICA_MODELS_ROOT" \
   nix run "$RDD2_MODELICA_MODELS_ROOT#rdd2-export-plant"
 
 export RDD2_FASTDYN_BUILD_DIR="$PWD/build-mr_vmu_tropic-fastdyn"
-export RDD2_RUMOCA_PLANT_DESCRIPTION="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant/modelDescription.xml"
+export RDD2_RUMOCA_PLANT_DESCRIPTION="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant/Vehicles_Rdd2_Plant/modelDescription.xml"
 export RDD2_RUMOCA_PLANT_LIBRARY=/path/to/the/compiled/source-FMU/binary
 rdd2-fastdyn-ci
 ```
@@ -106,18 +108,36 @@ these paths automatically for a multi-repository editable checkout.
 
 ## Timing and communications
 
-The default 20 ms plant macro-step advances all 32 controller ticks at
-1,600 Hz. Direct shared memory is the only lockstep pacing path. Merge
-`fastdyn/comms.conf` when Ethernet, CSyn, and Zenoh are also needed as an
+The host advances the FMI plant and exchanges shared memory once per fixed
+625 us firmware release. This preserves the 1,600 Hz rate loop and the
+observed 1,000/200/50 Hz Navigation, Guidance, and Planning releases without
+latest-value coalescing across a macro-step. Direct shared memory is the only
+lockstep pacing path. Merge `fastdyn/comms.conf` when Ethernet, CSyn, and Zenoh
+are also needed as an
 asynchronous diagnostics channel. Host network provisioning is deliberately
 external to `xtask`, so the mission runner never invokes privileged platform
 commands.
 
-The mission writes its report and log below `artifacts/bil/`, plus the
+The QEMU mission's default `0.05x` minimum is a bounded-progress floor for this
+exact handshake, not evidence that the emulated Cortex-M7 meets physical
+real-time deadlines. The former `3x` value was measured with a 20 ms macro-step
+that coalesced Navigation, Guidance, and Planning work and is therefore not a
+valid target for this profile. The mission still requires one response per
+625 us release, exact observed 1,600/1,000/200/50/200 Hz generation deltas, and
+every GPS, planning, navigation, flight, landing, and disarm oracle. Its
+orchestrator allows up to 1,200 seconds so the speed floor, rather than a
+shorter incidental timeout, remains authoritative. Physical real-time closure
+requires the flight image's hardware timing/SystemView receipt.
+
+The mission uses a conservative first-flight profile: a 0.5 m square at
+0.1 m/s after an ATTITUDE takeoff and neutral settling window, followed by an
+ATTITUDE landing and explicit disarm. It writes its report and log below
+`artifacts/bil/`, plus the
 canonical `work/mission-trajectory.csv` consumed by
 `nix run .#trajectory-compare`. It verifies continuous GNSS readiness, GPS
 origin ownership, mission admission and `RUNNING` state, advancing planner
 references, ordered traversal of every square corner by both the reference and
-plant truth, exact 10 Hz GNSS and current-status generations, bounded GPS
+plant truth, exact 10 Hz GNSS, current-status and exact observed controller
+release generations, bounded GPS
 navigation error, final disarm and landing, and execution speed. Plant ground
 contact is intentionally expressed with `noEvent` branches.

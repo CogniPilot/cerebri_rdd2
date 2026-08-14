@@ -38,8 +38,11 @@
         pkgs.python3.withPackages (
           ps: with ps; [
             anytree
+            cbor2
             # Zephyr Twister imports these build/run-test modules eagerly.
+            click
             colorama
+            cryptography
             intelhex
             jinja2
             jsonschema
@@ -60,6 +63,7 @@
             pyyaml
             requests
             semver
+            setuptools
             tabulate
             tqdm
             west
@@ -413,8 +417,10 @@
                             modules/debug/segger \
                             modules/fs/fatfs \
                             modules/lib/cmsis-dsp \
+                            modules/lib/zcbor \
                             modules/lib/zenoh-pico \
-                            modules/lib/zephyr_boards
+                            modules/lib/zephyr_boards \
+                            bootloader/mcuboot
                           do
                             if [ ! -d "$workspace/$path" ]; then
                               printf 'error: missing required west checkout: %s/%s\n' "$workspace" "$path" >&2
@@ -458,9 +464,6 @@
                           export FASTDYN_EXECUTABLE="''${FASTDYN_EXECUTABLE:-$FASTDYN_STATE/venv/bin/fastdyn}"
                           export FASTDYN_QEMU_PATH="''${FASTDYN_QEMU_PATH:-$FASTDYN_STATE/qemu/build/qemu-system-arm}"
                           export FASTDYN_MONITOR_ELF="''${FASTDYN_MONITOR_ELF:-$FASTDYN_STATE/qemu/ws/monitor.elf}"
-                          export RDD2_RUMOCA_EXECUTABLE="''${RDD2_RUMOCA_EXECUTABLE:-${flightRumoca}/bin/rumoca}"
-                          export RDD2_RUMOCA_LIBRARY_PATH="''${RDD2_RUMOCA_LIBRARY_PATH:-}"
-
                           if [ -d "$workspace/zephyr" ]; then
                             export ZEPHYR_BASE="$workspace/zephyr"
                           fi
@@ -494,6 +497,135 @@
                           rdd2_require_module_paths "$workspace"
                         }
 
+                        rdd2_require_mcuboot_sysbuild() {
+                          local build_dir="$1"
+                          local domains="$build_dir/domains.yaml"
+                          local main_image
+                          local main_config
+                          local boot_config="$build_dir/mcuboot/zephyr/.config"
+                          local merged_hex
+                          local required
+                          local -a merged_hexes
+
+                          if [ ! -f "$domains" ]; then
+                            printf 'error: %s is not a sysbuild output; refusing an app-only MCUboot image\n' \
+                              "$build_dir" >&2
+                            return 1
+                          fi
+
+                          main_image="$(sed -n 's/^default: //p' "$domains")"
+                          if [ -z "$main_image" ] || [ "$main_image" = "mcuboot" ]; then
+                            printf 'error: invalid default sysbuild image in %s\n' "$domains" >&2
+                            return 1
+                          fi
+                          main_config="$build_dir/$main_image/zephyr/.config"
+
+                          mapfile -t merged_hexes < <(
+                            find "$build_dir" -maxdepth 1 -type f -name 'merged_*.hex' -print
+                          )
+                          if [ "''${#merged_hexes[@]}" -ne 1 ]; then
+                            printf 'error: expected exactly one merged sysbuild HEX in %s, found %d\n' \
+                              "$build_dir" "''${#merged_hexes[@]}" >&2
+                            return 1
+                          fi
+                          merged_hex="''${merged_hexes[0]}"
+
+                          for required in \
+                            "$build_dir/mcuboot/zephyr/zephyr.hex" \
+                            "$build_dir/$main_image/zephyr/zephyr.signed.bin" \
+                            "$build_dir/$main_image/zephyr/zephyr.signed.hex" \
+                            "$merged_hex" \
+                            "$main_config" \
+                            "$boot_config"
+                          do
+                            if [ ! -s "$required" ]; then
+                              printf 'error: incomplete MCUboot sysbuild output: %s\n' "$required" >&2
+                              return 1
+                            fi
+                          done
+
+                          if ! grep -qx 'CONFIG_BOOTLOADER_MCUBOOT=y' "$main_config" ||
+                             ! grep -q '^CONFIG_MCUBOOT_SIGNATURE_KEY_FILE="..*"$' "$main_config" ||
+                             ! grep -qx 'CONFIG_BOOT_SIGNATURE_TYPE_ECDSA_P256=y' "$boot_config" ||
+                             ! grep -qx 'CONFIG_BOOT_ECDSA_TINYCRYPT=y' "$boot_config"; then
+                            printf 'error: MCUboot image/signature configuration is incomplete\n' >&2
+                            return 1
+                          fi
+
+                          if ! grep -qx '  - mcuboot' "$domains" ||
+                             ! grep -qx "  - $main_image" "$domains"; then
+                            printf 'error: sysbuild flash order does not contain MCUboot and %s\n' \
+                              "$main_image" >&2
+                            return 1
+                          fi
+
+                          printf '[firmware] verified MCUboot sysbuild artifacts\n'
+                          sha256sum \
+                            "$build_dir/mcuboot/zephyr/zephyr.hex" \
+                            "$build_dir/$main_image/zephyr/zephyr.signed.bin" \
+                            "$merged_hex"
+                        }
+
+                        rdd2_require_flight_configuration() {
+                          local build_dir="$1"
+                          local domains="$build_dir/domains.yaml"
+                          local main_image
+                          local main_config
+                          local setting
+
+                          main_image="$(sed -n 's/^default: //p' "$domains")"
+                          main_config="$build_dir/$main_image/zephyr/.config"
+
+                          for setting in \
+                            CONFIG_INPUT_CRSF=y \
+                            CONFIG_ICM45686_STREAM=y \
+                            CONFIG_RDD2_GNSS_SOURCE_ONBOARD=y \
+                            CONFIG_NET_GPTP=y \
+                            CONFIG_NET_GPTP_STATIC_TIME_RECEIVER=y \
+                            CONFIG_CSYN_ZENOH=y
+                          do
+                            if ! grep -qx "$setting" "$main_config"; then
+                              printf 'error: flight image is missing required setting %s\n' \
+                                "$setting" >&2
+                              return 1
+                            fi
+                          done
+
+                          if grep -qx 'CONFIG_RDD2_COMMS_STUB=y' "$main_config"; then
+                            printf 'error: refusing the non-flyable communications stub as flight firmware\n' >&2
+                            return 1
+                          fi
+                        }
+
+                        rdd2_require_comms_stub_configuration() {
+                          local build_dir="$1"
+                          local domains="$build_dir/domains.yaml"
+                          local main_image
+                          local main_config
+                          local setting
+
+                          main_image="$(sed -n 's/^default: //p' "$domains")"
+                          main_config="$build_dir/$main_image/zephyr/.config"
+
+                          for setting in \
+                            CONFIG_RDD2_COMMS_STUB=y \
+                            CONFIG_INPUT_CRSF=y \
+                            CONFIG_ICM45686_STREAM=y \
+                            CONFIG_RDD2_GNSS_SOURCE_ONBOARD=y \
+                            CONFIG_NET_GPTP=y \
+                            CONFIG_NET_GPTP_STATIC_TIME_RECEIVER=y \
+                            CONFIG_CSYN_ZENOH=y
+                          do
+                            if ! grep -qx "$setting" "$main_config"; then
+                              printf 'error: communications bench image is missing required setting %s\n' \
+                                "$setting" >&2
+                              return 1
+                            fi
+                          done
+
+                          printf '[firmware] verified communications bench hardware configuration\n'
+                        }
+
                         rdd2_require_fastdyn_runtime() {
                           local missing=0
 
@@ -515,6 +647,13 @@
                             fi
                           done
 
+                          if [ -x "$FASTDYN_EXECUTABLE" ] &&
+                             ! "$FASTDYN_EXECUTABLE" --help >/dev/null 2>&1; then
+                            printf 'error: FastDyn launcher is not runnable: %s\n' \
+                              "$FASTDYN_EXECUTABLE" >&2
+                            missing=1
+                          fi
+
                           if [ "$missing" -ne 0 ]; then
                             printf '       prepare the pinned runtime with: rdd2-fastdyn-setup\n' >&2
                             return 1
@@ -527,6 +666,7 @@
 
                           revision="$(git -C "$FASTDYN_ROOT" rev-parse HEAD 2>/dev/null || true)"
                           [ -x "$FASTDYN_EXECUTABLE" ] &&
+                            "$FASTDYN_EXECUTABLE" --help >/dev/null 2>&1 &&
                             [ -x "$FASTDYN_QEMU_PATH" ] &&
                             [ -f "$FASTDYN_MONITOR_ELF" ] &&
                             [ -f "$FASTDYN_ROOT/build/libfastdyn.so" ] &&
@@ -650,7 +790,7 @@
                               -DDTC_OVERLAY_FILE="$overlay" \
                               -DRDD2_MODELICA_MODELS_ROOT="$RDD2_MODELICA_MODELS_ROOT" \
                               -DRDD2_RUMOCA_EXECUTABLE="$RDD2_RUMOCA_EXECUTABLE" \
-                              -DRDD2_RUMOCA_LIBRARY_PATH="$RDD2_RUMOCA_LIBRARY_PATH"
+                              -DRDD2_RUMOCA_EXECUTABLE_SHA256="$RDD2_RUMOCA_EXECUTABLE_SHA256" \
                           )
 
                           if [ ! -f "$RDD2_FASTDYN_BUILD_DIR/zephyr/zephyr.elf" ]; then
@@ -689,7 +829,7 @@
                               ${pkgs.nix}/bin/nix run "$RDD2_MODELICA_MODELS_ROOT#rdd2-export-plant"
                           fi
 
-                          plant_root="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant"
+                          plant_root="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant/Vehicles_Rdd2_Plant"
                           description="''${RDD2_RUMOCA_PLANT_DESCRIPTION:-$plant_root/modelDescription.xml}"
                           if [ ! -f "$description" ]; then
                             printf 'error: plant export did not produce %s\n' "$description" >&2
@@ -707,7 +847,7 @@
             print(interface.get("modelIdentifier"))
             PY
                           )"
-                          source="$plant_root/sources/$model_identifier.c"
+                          source="$plant_root/sources/model.c"
                           if [ ! -f "$source" ]; then
                             printf 'error: plant export did not produce %s\n' "$source" >&2
                             return 1
@@ -730,6 +870,14 @@
                           export RDD2_RUMOCA_PLANT_DESCRIPTION="$description"
                           export RDD2_RUMOCA_PLANT_LIBRARY="$library"
                         }
+          '';
+
+          flightCompilerScript = ''
+            export RDD2_RUMOCA_EXECUTABLE="${flightRumoca}/bin/rumoca"
+            pinned_rumoca_sha256="$(${pkgs.coreutils}/bin/sha256sum \
+              ${flightRumoca}/bin/rumoca)"
+            pinned_rumoca_sha256="''${pinned_rumoca_sha256%% *}"
+            export RDD2_RUMOCA_EXECUTABLE_SHA256="$pinned_rumoca_sha256"
           '';
 
           mkWestApp =
@@ -760,6 +908,7 @@
 
           rdd2-build = mkWestApp "rdd2-build" ''
             ${commonScript}
+            ${flightCompilerScript}
 
             app="$(rdd2_find_app)"
             rdd2_export_common "$app"
@@ -773,7 +922,9 @@
             build_dir="''${RDD2_BUILD_DIR:-$app/build-$board_slug}"
 
             cd "$workspace"
-            exec west build -p always -b "$board" -d "$build_dir" "$app" "$@"
+            west build --sysbuild -p always -b "$board" -d "$build_dir" "$app" "$@"
+            rdd2_require_mcuboot_sysbuild "$build_dir" "$board"
+            rdd2_require_flight_configuration "$build_dir"
           '';
 
           rdd2-build-comms-stub = mkWestApp "rdd2-build-comms-stub" ''
@@ -791,12 +942,15 @@
             build_dir="''${RDD2_COMMS_STUB_BUILD_DIR:-$app/build-$board_slug-comms-stub}"
 
             cd "$workspace"
-            exec west build -p always -b "$board" -d "$build_dir" "$app" "$@" -- \
+            west build --sysbuild -p always -b "$board" -d "$build_dir" "$app" "$@" -- \
               -DEXTRA_CONF_FILE="$app/comms_stub.conf"
+            rdd2_require_mcuboot_sysbuild "$build_dir" "$board"
+            rdd2_require_comms_stub_configuration "$build_dir"
           '';
 
           rdd2-build-native-sim = mkWestApp "rdd2-build-native-sim" ''
             ${commonScript}
+            ${flightCompilerScript}
 
             app="$(rdd2_find_app)"
             rdd2_export_common "$app"
@@ -814,6 +968,7 @@
 
           rdd2-test-gps-lockstep = mkCargoApp "rdd2-test-gps-lockstep" ''
             ${commonScript}
+            ${flightCompilerScript}
 
             app="$(rdd2_find_app)"
             rdd2_ensure_workspace "$app" "${rdd2-west-update}/bin/rdd2-west-update"
@@ -840,6 +995,34 @@
               cargo test --workspace --locked \
                 native_firmware_exposes_odometry_before_the_one_shot_plan -- \
                 --ignored --nocapture
+
+            focused_root="$(mktemp -d -t rdd2-gps-focused.XXXXXXXX)"
+            trap 'chmod -R u+w "$focused_root" 2>/dev/null || true; rm -rf -- "$focused_root"' EXIT
+            efmi_root="$build_dir/generated/rumoca"
+            for suite in \
+              mission_shell \
+              waypoint_mission_ingress \
+              process_wrapper_fault_injection \
+              process_control_safety \
+              generated_guidance_validity \
+              generated_navigation_fault_injection \
+              gnss_m10_protocol \
+              lockstep_transport \
+              gnss_lockstep_source
+            do
+              suite_build="$focused_root/$suite"
+              cd "$RDD2_WORKSPACE_ROOT"
+              west build -p always -b "$board" -d "$suite_build" \
+                "$app/tests/$suite" -- \
+                -DRDD2_TEST_EFMI_ROOT="$efmi_root"
+              suite_executable="$suite_build/zephyr/zephyr.exe"
+              if [ ! -x "$suite_executable" ]; then
+                printf 'error: %s did not produce %s\n' \
+                  "$suite" "$suite_executable" >&2
+                exit 1
+              fi
+              "$suite_executable"
+            done
           '';
 
           rdd2-flash = mkWestApp "rdd2-flash" ''
@@ -858,6 +1041,7 @@
             build_dir="''${RDD2_BUILD_DIR:-$app/build-$board_slug}"
             runner="''${RDD2_FLASH_RUNNER:-jlink}"
             runner_args=()
+            flash_domains=()
 
             if [ -n "$runner" ]; then
               runner_args=(--runner "$runner")
@@ -867,8 +1051,68 @@
               rdd2_require_jlink_access
             fi
 
+            rdd2_require_mcuboot_sysbuild "$build_dir" "$board"
+            rdd2_require_flight_configuration "$build_dir"
+
+            mapfile -t flash_domains < <(
+              sed -n '/^flash_order:/,$s/^  - //p' "$build_dir/domains.yaml"
+            )
+            if [ "''${#flash_domains[@]}" -ne 2 ] ||
+              [ "''${flash_domains[0]}" != "mcuboot" ]; then
+              printf 'error: refusing unexpected sysbuild flash order\n' >&2
+              exit 1
+            fi
+
             cd "$workspace"
-            exec west flash -d "$build_dir" "''${runner_args[@]}" "$@"
+            for domain in "''${flash_domains[@]}"; do
+              west flash --no-rebuild -d "$build_dir" --domain "$domain" \
+                "''${runner_args[@]}" "$@"
+            done
+          '';
+
+          rdd2-flash-comms-stub = mkWestApp "rdd2-flash-comms-stub" ''
+            ${commonScript}
+            ${jlinkAccessScript}
+
+            app="$(rdd2_find_app)"
+            rdd2_export_common "$app"
+            rdd2_require_workspace "$app"
+            workspace="$RDD2_WORKSPACE_ROOT"
+
+            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
+
+            board="''${RDD2_BOARD:-mr_vmu_tropic}"
+            board_slug="''${board//\//_}"
+            build_dir="''${RDD2_COMMS_STUB_BUILD_DIR:-$app/build-$board_slug-comms-stub}"
+            runner="''${RDD2_FLASH_RUNNER:-jlink}"
+            runner_args=()
+            flash_domains=()
+
+            if [ -n "$runner" ]; then
+              runner_args=(--runner "$runner")
+            fi
+
+            if [ "$runner" = "jlink" ]; then
+              rdd2_require_jlink_access
+            fi
+
+            rdd2_require_mcuboot_sysbuild "$build_dir"
+            rdd2_require_comms_stub_configuration "$build_dir"
+
+            mapfile -t flash_domains < <(
+              sed -n '/^flash_order:/,$s/^  - //p' "$build_dir/domains.yaml"
+            )
+            if [ "''${#flash_domains[@]}" -ne 2 ] ||
+              [ "''${flash_domains[0]}" != "mcuboot" ]; then
+              printf 'error: refusing unexpected sysbuild flash order\n' >&2
+              exit 1
+            fi
+
+            cd "$workspace"
+            for domain in "''${flash_domains[@]}"; do
+              west flash --no-rebuild -d "$build_dir" --domain "$domain" \
+                "''${runner_args[@]}" "$@"
+            done
           '';
 
           # `west debug` attaches gdb to the running target through the J-Link
@@ -928,6 +1172,7 @@
 
           rdd2-menuconfig = mkWestApp "rdd2-menuconfig" ''
             ${commonScript}
+            ${flightCompilerScript}
 
             app="$(rdd2_find_app)"
             rdd2_export_common "$app"
@@ -1012,13 +1257,12 @@
 
             unset RDD2_MODELICA_MODELS_ROOT
             unset RDD2_RUMOCA_EXECUTABLE
-            unset RDD2_RUMOCA_LIBRARY_PATH
+            unset RDD2_RUMOCA_EXECUTABLE_SHA256
             app="$(rdd2_find_app)"
             rdd2_ensure_workspace "$app" "${rdd2-west-update}/bin/rdd2-west-update"
             rdd2_export_common "$app"
             rdd2_require_workspace "$app"
-            export RDD2_RUMOCA_EXECUTABLE="${flightRumoca}/bin/rumoca"
-            export RDD2_RUMOCA_LIBRARY_PATH=""
+            ${flightCompilerScript}
             rdd2_require_pinned_modelica_checkout
             rdd2_build_fastdyn_firmware "$app"
 
@@ -1056,6 +1300,13 @@
             fi
 
             mkdir -p "$FASTDYN_STATE"
+            if [ -d "$FASTDYN_STATE/venv" ] &&
+               ! "$FASTDYN_STATE/venv/bin/python" -c 'import sys' >/dev/null 2>&1; then
+              printf 'Removing invalid generated FastDyn virtualenv at %s\n' \
+                "$FASTDYN_STATE/venv"
+              chmod -R u+w "$FASTDYN_STATE/venv" 2>/dev/null || true
+              rm -rf -- "$FASTDYN_STATE/venv"
+            fi
             cjson_prefix="$FASTDYN_ROOT/out/deps/cjson/install"
             export PKG_CONFIG_PATH="${
               lib.makeSearchPathOutput "dev" "lib/pkgconfig" (mkFastDynCiLibraries pkgs)
@@ -1066,6 +1317,7 @@
 
             "$FASTDYN_ROOT/setup.sh" \
               --venv "$FASTDYN_STATE/venv" \
+              --python "${pythonEnv}/bin/python" \
               --build-qemu \
               --qemu-root "$FASTDYN_STATE/qemu" \
               --with-rumoca \
@@ -1313,6 +1565,7 @@
               rdd2-build-native-sim
               rdd2-test-gps-lockstep
               rdd2-flash
+              rdd2-flash-comms-stub
               rdd2-debug
               rdd2-menuconfig
               rdd2-console
@@ -1336,6 +1589,7 @@
             rdd2-build-native-sim
             rdd2-test-gps-lockstep
             rdd2-flash
+            rdd2-flash-comms-stub
             rdd2-debug
             rdd2-menuconfig
             rdd2-console
@@ -1386,6 +1640,12 @@
             type = "app";
             program = "${packages.rdd2-flash}/bin/rdd2-flash";
             meta.description = "Flash the RDD2 firmware build";
+          };
+
+          flash-comms-stub = {
+            type = "app";
+            program = "${packages.rdd2-flash-comms-stub}/bin/rdd2-flash-comms-stub";
+            meta.description = "Flash the non-flyable RDD2 communications bench firmware";
           };
 
           debug = {
@@ -1528,7 +1788,11 @@
                 export FASTDYN_EXECUTABLE="''${FASTDYN_EXECUTABLE:-$FASTDYN_STATE/venv/bin/fastdyn}"
                 export FASTDYN_QEMU_PATH="''${FASTDYN_QEMU_PATH:-$FASTDYN_STATE/qemu/build/qemu-system-arm}"
                 export FASTDYN_MONITOR_ELF="''${FASTDYN_MONITOR_ELF:-$FASTDYN_STATE/qemu/ws/monitor.elf}"
-                export RDD2_RUMOCA_EXECUTABLE="''${RDD2_RUMOCA_EXECUTABLE:-${rumoca.packages.${system}.default}/bin/rumoca}"
+                export RDD2_RUMOCA_EXECUTABLE="${rumoca.packages.${system}.default}/bin/rumoca"
+                pinned_rumoca_sha256="$(${pkgs.coreutils}/bin/sha256sum \
+                  ${rumoca.packages.${system}.default}/bin/rumoca)"
+                pinned_rumoca_sha256="''${pinned_rumoca_sha256%% *}"
+                export RDD2_RUMOCA_EXECUTABLE_SHA256="$pinned_rumoca_sha256"
                 if [ -d "$workspace/zephyr" ]; then
                   export ZEPHYR_BASE="$workspace/zephyr"
                 elif [ -z "''${ZEPHYR_BASE:-}" ]; then
@@ -1554,7 +1818,7 @@
               fi
 
               echo "cerebri_rdd2 Nix shell: clangd + Zephyr compile_commands configured"
-              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-test-gps-lockstep, rdd2-flash, rdd2-debug, rdd2-console, rdd2-systemview, rdd2-systemview-capture"
+              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-test-gps-lockstep, rdd2-flash, rdd2-flash-comms-stub, rdd2-debug, rdd2-console, rdd2-systemview, rdd2-systemview-capture"
               echo "cerebri_rdd2 Nix shell: rdd2-fastdyn-setup, rdd2-fastdyn-ci, rdd2-fastdyn-mission"
             '';
           };

@@ -41,8 +41,6 @@ CSYN_TOPIC_DEFINE(imu, "imu", CSYN_DIR_RX,
                   sizeof(synapse_topic_InertialSampleData_t));
 CSYN_TOPIC_DEFINE(external_pose, "external_pose", CSYN_DIR_RX,
                   sizeof(synapse_topic_ExternalOdometryData_t));
-CSYN_TOPIC_DEFINE(pos_sp, "pos_sp", CSYN_DIR_RX,
-                  sizeof(synapse_topic_LocalPositionCommandData_t));
 CSYN_TOPIC_DEFINE(pwm, "pwm", CSYN_DIR_TX,
                   sizeof(synapse_topic_PwmSignalOutputsData_t));
 CSYN_TOPIC_DEFINE(health, "health", CSYN_DIR_TX,
@@ -58,8 +56,6 @@ CSYN_TOPIC_DEFINE(loop, "loop", CSYN_DIR_TX,
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(inertial_sample,
                                    synapse_topic_InertialSampleData_t);
 ZROS_TOPIC_DEFINE(external_odometry, synapse_topic_ExternalOdometryData_t);
-ZROS_TOPIC_DEFINE(local_position_command,
-                  synapse_topic_LocalPositionCommandData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(pwm_signal_outputs,
                                    synapse_topic_PwmSignalOutputsData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(vehicle_health,
@@ -98,9 +94,6 @@ static uint16_t topic_synapse_id(const struct zros_topic *topic) {
   }
   if (topic == &topic_external_odometry) {
     return synapse_topic_TopicId_ExternalOdometry;
-  }
-  if (topic == &topic_local_position_command) {
-    return synapse_topic_TopicId_LocalPositionCommand;
   }
   if (topic == &topic_pwm_signal_outputs) {
     return synapse_topic_TopicId_PwmSignalOutputs;
@@ -195,7 +188,6 @@ static struct zros_shell_topic_formatter g_topic_shell_formatters[] = {
     {.topic = &topic_navigation_odometry, .format = format_synapse_topic},
     {.topic = &topic_inertial_sample, .format = format_synapse_topic},
     {.topic = &topic_external_odometry, .format = format_synapse_topic},
-    {.topic = &topic_local_position_command, .format = format_synapse_topic},
     {.topic = &topic_pwm_signal_outputs, .format = format_synapse_topic},
     {.topic = &topic_vehicle_health, .format = format_synapse_topic},
     {.topic = &topic_attitude_estimate, .format = format_synapse_topic},

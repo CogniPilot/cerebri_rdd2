@@ -4,6 +4,7 @@
 
 #include "drivers.h"
 
+#include "motor_override.h"
 #include "zros_topics.h"
 
 #include <errno.h>
@@ -212,10 +213,8 @@ bool rdd2_motor_test_get(rdd2_motor_values_t *motors) {
   bool active;
   unsigned int key = irq_lock();
 
-  for (size_t i = 0; i < 4U; i++) {
-    motor_values[i] = test_values[i];
-  }
   active = atomic_get(&g_motor_test_active) != 0;
+  active = rdd2_motor_override_copy_f32(active, motor_values, test_values, 4U);
 
   irq_unlock(key);
 
@@ -251,10 +250,8 @@ bool rdd2_motor_raw_test_get(rdd2_motor_raw_t *raw) {
   bool active;
   unsigned int key = irq_lock();
 
-  for (size_t i = 0; i < 4U; i++) {
-    raw_values[i] = test_values[i];
-  }
   active = atomic_get(&g_motor_raw_test_active) != 0;
+  active = rdd2_motor_override_copy_u16(active, raw_values, test_values, 4U);
 
   irq_unlock(key);
 

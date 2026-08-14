@@ -200,6 +200,11 @@ int rdd2_waypoint_trajectory_planner_process_start(void)
 	return 0;
 }
 
+uint8_t rdd2_waypoint_mission_state_get(void)
+{
+	return RDD2_WAYPOINT_MISSION_EMPTY;
+}
+
 int rdd2_guidance_controller_process_start(void)
 {
 	return 0;

@@ -9,7 +9,7 @@ composition root.
 |---|---:|---:|---|---|
 | `RateControlAllocator` | IMU data-ready, 1600 Hz | 2 (main thread) | IMU and motor drivers; latest `rate_command` and `attitude_estimate` | DSHOT driver; `control_imu`, health, and loop metrics |
 | `NavigationEstimator` | latest-value IMU, 1000 Hz | 3 | `control_imu`, external odometry, GNSS | `navigation_odometry`, `attitude_estimate` |
-| `WaypointTrajectoryPlanner` | estimator release, 50 Hz | 5 | waypoint-plan ingress and external-reference fallback | `trajectory_reference` |
+| `WaypointTrajectoryPlanner` | estimator release, 50 Hz | 5 | bounded waypoint-plan ingress | `trajectory_reference` |
 | `GuidanceController` | estimator release, 200 Hz | 6 | manual/health, navigation, trajectory reference | `rate_command`, `attitude_command` |
 
 Zephyr priorities are numerically ascending in execution precedence. Planner
@@ -18,8 +18,7 @@ rate process keeps IMU acquisition, eFMU execution, and DSHOT in one thread;
 all actual thread crossings use latest-value ZROS topics rather than queues.
 
 The waypoint-plan connector does not yet exist in the pinned Synapse catalog,
-so `rdd2_waypoint_plan_t` is the fixed-capacity ingress contract for the future
-mission transport adapter. The externally catalogued
-`LocalPositionCommandData` path remains a fallback until that adapter is
-present. It is intentionally isolated at the planner boundary instead of
-leaking mission handling into the generated model or other processes.
+so `rdd2_waypoint_plan_t` is the fixed-capacity ingress contract owned by the
+mission shell and lockstep GPS adapter. Only the generated planner publishes
+`trajectory_reference`; there is no direct local-position-command ingress or
+fallback around mission admission.

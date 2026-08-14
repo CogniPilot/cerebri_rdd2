@@ -39,13 +39,6 @@ LOG_MODULE_DECLARE(rdd2, LOG_LEVEL_INF);
 #define RDD2_FLIGHT_MODE_ATTITUDE 1U
 #define RDD2_FLIGHT_MODE_POSITION 2U
 
-enum waypoint_mission_state {
-  WAYPOINT_MISSION_EMPTY = 0,
-  WAYPOINT_MISSION_PENDING,
-  WAYPOINT_MISSION_RUNNING,
-  WAYPOINT_MISSION_ABORTED,
-};
-
 struct waypoint_trajectory_planner_process {
   WaypointTrajectoryPlannerState efmu;
   rdd2_waypoint_plan_t ingress_plan;
@@ -63,7 +56,7 @@ struct waypoint_trajectory_planner_process {
   struct zros_sub odometry_sub;
   struct zros_pub reference_pub;
   struct rdd2_release_scheduler release_scheduler;
-  enum waypoint_mission_state mission_state;
+  enum rdd2_waypoint_mission_state mission_state;
   int32_t last_plan_sequence;
   bool plan_sequence_observed;
   bool manual_observed;
@@ -80,7 +73,7 @@ K_THREAD_STACK_DEFINE(g_planner_stack, PLANNER_STACK_SIZE);
 
 static void
 mission_state_set(struct waypoint_trajectory_planner_process *process,
-                  enum waypoint_mission_state state) {
+                  enum rdd2_waypoint_mission_state state) {
   process->mission_state = state;
   atomic_set(&g_mission_state, (atomic_val_t)state);
 }
@@ -227,7 +220,8 @@ odometry_is_current(const struct waypoint_trajectory_planner_process *process,
       process->odometry.velocity_enu_m_s.z,
   };
 
-  return process->odometry.quality_pct > 0 &&
+  return rdd2_navigation_position_quality_is_usable(
+             process->odometry.quality_pct) &&
          rdd2_control_values_are_finite(values, ARRAY_SIZE(values)) &&
          rdd2_control_timestamp_is_fresh(
              process->odometry_observed, process->odometry.timestamp_ns,
@@ -317,7 +311,7 @@ static void abort_mission(struct waypoint_trajectory_planner_process *process) {
   (void)zros_pub_update(&process->reference_pub);
   reset_planner_efmu(process);
   process->mission_plan = (rdd2_waypoint_plan_t){0};
-  mission_state_set(process, WAYPOINT_MISSION_ABORTED);
+  mission_state_set(process, RDD2_WAYPOINT_MISSION_ABORTED);
 }
 
 static void
@@ -433,7 +427,7 @@ handle_plan_update(struct waypoint_trajectory_planner_process *process,
 
   reset_planner_efmu(process);
   process->mission_plan = process->ingress_plan;
-  mission_state_set(process, WAYPOINT_MISSION_PENDING);
+  mission_state_set(process, RDD2_WAYPOINT_MISSION_PENDING);
 }
 
 static void
@@ -447,7 +441,7 @@ waypoint_mission_cycle(struct waypoint_trajectory_planner_process *process,
     handle_plan_update(process, control_now_ns, source_ready);
   }
 
-  if (process->mission_state == WAYPOINT_MISSION_PENDING) {
+  if (process->mission_state == RDD2_WAYPOINT_MISSION_PENDING) {
     if (!mission_pending_is_allowed(process, control_now_ns, source_ready)) {
       abort_mission(process);
       return;
@@ -455,7 +449,7 @@ waypoint_mission_cycle(struct waypoint_trajectory_planner_process *process,
     if (mission_run_is_allowed(process, control_now_ns, source_ready)) {
       rebase_mission_plan(process);
       copy_waypoint_plan_input_to_efmu(&process->efmu, &process->mission_plan);
-      mission_state_set(process, WAYPOINT_MISSION_RUNNING);
+      mission_state_set(process, RDD2_WAYPOINT_MISSION_RUNNING);
     } else {
       if (navigation_current && source_ready &&
           !publish_pending_hold(process)) {
@@ -465,7 +459,7 @@ waypoint_mission_cycle(struct waypoint_trajectory_planner_process *process,
     }
   }
 
-  if (process->mission_state != WAYPOINT_MISSION_RUNNING) {
+  if (process->mission_state != RDD2_WAYPOINT_MISSION_RUNNING) {
     return;
   }
   if (!mission_run_is_allowed(process, control_now_ns, source_ready)) {
@@ -528,7 +522,7 @@ int rdd2_waypoint_trajectory_planner_process_start(void) {
   int rc;
 
   *process = (struct waypoint_trajectory_planner_process){0};
-  mission_state_set(process, WAYPOINT_MISSION_EMPTY);
+  mission_state_set(process, RDD2_WAYPOINT_MISSION_EMPTY);
   reset_planner_efmu(process);
   zros_node_init(&process->node, "efmu_planner");
 

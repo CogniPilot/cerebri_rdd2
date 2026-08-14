@@ -90,7 +90,7 @@ pub fn run() -> Result<()> {
     });
     let timeout = Duration::from_secs(
         env::var("FASTDYN_RDD2_TIMEOUT_SEC")
-            .unwrap_or_else(|_| "300".into())
+            .unwrap_or_else(|_| "1200".into())
             .parse()
             .context("FASTDYN_RDD2_TIMEOUT_SEC must be an integer")?,
     );

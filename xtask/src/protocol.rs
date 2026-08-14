@@ -55,6 +55,10 @@ pub struct MissionStatusWire {
     pub gnss_generation: u32,
     pub plan_generation: u32,
     pub reference_generation: u32,
+    pub odometry_generation: u32,
+    pub guidance_generation: u32,
+    pub motor_generation: u32,
+    pub health_generation: u32,
     pub mission_state: u8,
     pub flags: u8,
     pub reserved: [u8; 6],
@@ -112,9 +116,17 @@ pub fn bounded_square_plan(sequence: i32, side_m: f32, speed_m_s: f32) -> Result
     Ok(plan)
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct SyntheticGnss {
     latest: topic::GnssFixData,
+}
+
+impl Default for SyntheticGnss {
+    fn default() -> Self {
+        Self {
+            latest: unusable_gnss_fix(0),
+        }
+    }
 }
 
 impl SyntheticGnss {
@@ -311,7 +323,7 @@ fn make_gnss_fix(
 
 const _: () = assert!(size_of::<WaypointPlanWire>() == 480);
 const _: () = assert!(align_of::<WaypointPlanWire>() == 4);
-const _: () = assert!(size_of::<MissionStatusWire>() == 32);
+const _: () = assert!(size_of::<MissionStatusWire>() == 48);
 const _: () = assert!(align_of::<MissionStatusWire>() == 8);
 
 pub fn motor_output(payload: &[u8]) -> Result<MotorCommand> {
@@ -366,16 +378,20 @@ mod tests {
         assert_eq!(offset_of!(WaypointPlanWire, valid), 476);
         assert_eq!(offset_of!(WaypointPlanWire, global_frame), 477);
 
-        assert_eq!(size_of::<MissionStatusWire>(), 32);
+        assert_eq!(size_of::<MissionStatusWire>(), 48);
         assert_eq!(align_of::<MissionStatusWire>(), 8);
         assert_eq!(offset_of!(MissionStatusWire, timestamp_ns), 0);
         assert_eq!(offset_of!(MissionStatusWire, plan_sequence), 8);
         assert_eq!(offset_of!(MissionStatusWire, gnss_generation), 12);
         assert_eq!(offset_of!(MissionStatusWire, plan_generation), 16);
         assert_eq!(offset_of!(MissionStatusWire, reference_generation), 20);
-        assert_eq!(offset_of!(MissionStatusWire, mission_state), 24);
-        assert_eq!(offset_of!(MissionStatusWire, flags), 25);
-        assert_eq!(offset_of!(MissionStatusWire, reserved), 26);
+        assert_eq!(offset_of!(MissionStatusWire, odometry_generation), 24);
+        assert_eq!(offset_of!(MissionStatusWire, guidance_generation), 28);
+        assert_eq!(offset_of!(MissionStatusWire, motor_generation), 32);
+        assert_eq!(offset_of!(MissionStatusWire, health_generation), 36);
+        assert_eq!(offset_of!(MissionStatusWire, mission_state), 40);
+        assert_eq!(offset_of!(MissionStatusWire, flags), 41);
+        assert_eq!(offset_of!(MissionStatusWire, reserved), 42);
     }
 
     #[test]
@@ -413,6 +429,12 @@ mod tests {
         let mut gnss = SyntheticGnss::default();
         let before_first_period = gnss.sample([0.0; 3], [0.0; 3], GNSS_PERIOD_NS - 1);
         assert_eq!(before_first_period.timestamp_ns(), 0);
+        assert_eq!(before_first_period.fix_type(), GnssFixType::NoFix);
+        assert_eq!(before_first_period.horizontal_accuracy_mm(), u16::MAX);
+        assert_eq!(before_first_period.vertical_accuracy_mm(), u16::MAX);
+        assert_eq!(before_first_period.velocity_accuracy_mm_s(), u16::MAX);
+        assert_eq!(before_first_period.yaw_accuracy_cdeg(), u16::MAX);
+        assert_eq!(before_first_period.time_status(), TimeStatus::LocalFreerun);
 
         let first = gnss.sample([1.0, 2.0, 3.0], [2.0, 0.0, 0.25], GNSS_PERIOD_NS);
         let repeated = gnss.sample(

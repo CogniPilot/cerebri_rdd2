@@ -3,6 +3,7 @@
 #include "zros_topics.h"
 
 #include "gnss_source.h"
+#include "processes/processes.h"
 
 #include <errno.h>
 #include <math.h>
@@ -84,7 +85,8 @@ navigation_is_valid(const synapse_topic_OdometryEstimateData_t *navigation,
   const uint8_t attitude_required =
       synapse_topic_AttitudeEstimateFlags_AttitudeValid;
 
-  if (navigation->timestamp_ns == 0U || navigation->quality_pct <= 0 ||
+  if (navigation->timestamp_ns == 0U ||
+      !rdd2_navigation_position_quality_is_usable(navigation->quality_pct) ||
       attitude->timestamp_ns == 0U ||
       (attitude->flags & attitude_required) != attitude_required ||
       navigation->timestamp_ns > attitude->timestamp_ns ||
@@ -283,13 +285,33 @@ static int cmd_mission_status(const struct shell *sh, size_t argc,
       [MISSION_SHELL_REQUEST_PUBLISHED] = "published",
       [MISSION_SHELL_CANCELLED] = "cancelled",
   };
+  const char *planner_name;
+
+  switch (rdd2_waypoint_mission_state_get()) {
+  case RDD2_WAYPOINT_MISSION_EMPTY:
+    planner_name = "empty";
+    break;
+  case RDD2_WAYPOINT_MISSION_PENDING:
+    planner_name = "pending";
+    break;
+  case RDD2_WAYPOINT_MISSION_RUNNING:
+    planner_name = "running";
+    break;
+  case RDD2_WAYPOINT_MISSION_ABORTED:
+    planner_name = "aborted";
+    break;
+  default:
+    planner_name = "invalid";
+    break;
+  }
 
   ARG_UNUSED(argc);
   ARG_UNUSED(argv);
   shell_print(sh,
-              "ingress=%s planner=unknown sequence=%d side_mm=%d speed_mm_s=%d "
+              "ingress=%s planner=%s ingress_sequence=%d side_mm=%d "
+              "speed_mm_s=%d "
               "publisher=%s",
-              names[g_mission.state], g_mission.plan.sequence,
+              names[g_mission.state], planner_name, g_mission.plan.sequence,
               (int)(g_mission.side_m * 1000.0f + 0.5f),
               (int)(g_mission.speed_m_s * 1000.0f + 0.5f),
               g_mission.publisher_ready ? "ready" : "idle");
@@ -304,7 +326,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
         cmd_mission_box, 3, 0),
     SHELL_CMD(cancel, NULL, "Publish mission cancellation.",
               cmd_mission_cancel),
-    SHELL_CMD(status, NULL, "Show shell ingress publication state.",
+    SHELL_CMD(status, NULL, "Show ingress and authoritative planner state.",
               cmd_mission_status),
     SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(mission, &mission_commands,

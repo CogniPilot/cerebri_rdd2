@@ -248,6 +248,13 @@ void rdd2_lockstep_gps_mission_status_get(
       .plan_generation = rdd2_topic_generation(&topic_waypoint_plan),
       .reference_generation =
           rdd2_topic_generation(&topic_trajectory_reference),
+      .odometry_generation =
+          rdd2_topic_generation(&topic_navigation_odometry),
+      .guidance_generation =
+          rdd2_topic_generation(&topic_attitude_command),
+      .motor_generation =
+          rdd2_topic_generation(&topic_pwm_signal_outputs),
+      .health_generation = rdd2_topic_generation(&topic_vehicle_health),
       .mission_state = state,
   };
   if (rdd2_position_source_ready_get()) {

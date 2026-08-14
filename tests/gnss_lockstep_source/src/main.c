@@ -27,6 +27,19 @@ static synapse_topic_GnssFixData_t usable_fix(uint64_t timestamp_ns) {
   };
 }
 
+static synapse_topic_GnssFixData_t unavailable_fix(void) {
+  return (synapse_topic_GnssFixData_t){
+      .horizontal_accuracy_mm = UINT16_MAX,
+      .vertical_accuracy_mm = UINT16_MAX,
+      .velocity_accuracy_mm_s = UINT16_MAX,
+      .yaw_accuracy_cdeg = UINT16_MAX,
+      .hdop_centi = UINT16_MAX,
+      .vdop_centi = UINT16_MAX,
+      .fix_type = synapse_types_GnssFixType_NoFix,
+      .time_status = synapse_types_TimeStatus_LocalFreerun,
+  };
+}
+
 static uint32_t gnss_generation(void) {
   return (uint32_t)atomic_get(&topic_gnss_fix._lockless_generation);
 }
@@ -39,6 +52,13 @@ ZTEST(gnss_lockstep_source, test_readiness_and_invalid_input_fail_closed) {
   zassert_ok(rdd2_gnss_lockstep_init());
   zassert_false(rdd2_gnss_lockstep_ready_get());
   generation = gnss_generation();
+  fix = unavailable_fix();
+  zassert_true(rdd2_gnss_lockstep_submit(&fix, UINT64_C(625000)));
+  zassert_equal(gnss_generation(), generation,
+                "the retained pre-fix sentinel must not republish");
+  zassert_false(rdd2_gnss_lockstep_ready_get());
+  zassert_false(rdd2_gnss_lockstep_submit(&fix, UINT64_C(1)),
+                "pre-fix control time must not move backwards");
   for (size_t sample = 0U; sample < RDD2_GNSS_M10_STABLE_SAMPLES; ++sample) {
     fix = usable_fix(control_now_ns);
     zassert_true(rdd2_gnss_lockstep_submit(&fix, control_now_ns));

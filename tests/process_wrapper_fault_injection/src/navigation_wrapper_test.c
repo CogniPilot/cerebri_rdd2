@@ -51,8 +51,12 @@ enum navigation_cycle {
   NAV_CYCLE_TIMESTAMP_RECOVERY,
   NAV_CYCLE_INVALID_IMU,
   NAV_CYCLE_IMU_RECOVERY_NO_MOCAP,
-  NAV_CYCLE_COVARIANCE_REINITIALIZED,
-  NAV_CYCLE_AFTER_COVARIANCE_REINITIALIZED,
+  NAV_CYCLE_NONFINITE_MOCAP,
+  NAV_CYCLE_LARGE_CORRECTION_REJECTED,
+  NAV_CYCLE_RECOVERY_STAGE_1,
+  NAV_CYCLE_RECOVERY_STAGE_2,
+  NAV_CYCLE_RECOVERY_MISCONFIGURED,
+  NAV_CYCLE_RECOVERY_NOMINAL,
   NAV_CYCLE_COUNT,
 };
 
@@ -74,6 +78,9 @@ struct navigation_generated_observation {
   float mocap_quaternion[4];
   bool output_estimate_valid;
   bool output_status_initialized;
+  int32_t output_correction_outcome;
+  int32_t output_correction_source;
+  int32_t output_recovery_stage;
   uint32_t error_signal_status;
 };
 
@@ -119,9 +126,14 @@ static void navigation_fill_valid_estimate(NavigationEstimatorState *self) {
   self->estimate_angularVelocityBodyFlu_rad_s[1] = -0.02f;
   self->estimate_angularVelocityBodyFlu_rad_s[2] = 0.03f;
   self->status_consecutiveRejectedCorrections = 0;
-  self->status_innovationGateRejected = false;
-  self->status_covarianceReinitialized = false;
-  self->rejectedCorrectionLimit = 10;
+  self->status_rejectionElapsed_s = 0.0f;
+  self->mocapConsecutiveRejections = 0;
+  self->gpsConsecutiveRejections = 0;
+  self->opticalFlowConsecutiveRejections = 0;
+  self->status_correctionOutcome = 0;
+  self->status_correctionSource = 0;
+  self->status_recoveryStage = 0;
+  self->status_anchorSource = 0;
 }
 
 void NavigationEstimator_startup(NavigationEstimatorState *self) {
@@ -167,20 +179,38 @@ void NavigationEstimator_dostep(NavigationEstimatorState *self) {
     self->status_initialized = false;
     break;
   case NAV_CYCLE_ESTIMATE_INVALID:
-  case NAV_CYCLE_INVALID_IMU:
     self->estimate_valid = false;
     break;
   case NAV_CYCLE_NEGATIVE_TIMESTAMP:
     self->estimate_timestamp_s = -0.001f;
     break;
-  case NAV_CYCLE_COVARIANCE_REINITIALIZED:
-    self->status_covarianceReinitialized = true;
+  case NAV_CYCLE_LARGE_CORRECTION_REJECTED:
+    self->status_consecutiveRejectedCorrections = 1;
+    self->status_rejectionElapsed_s = 0.001f;
+    self->gpsConsecutiveRejections = 1;
+    self->status_correctionOutcome = 3; /* CorrectionRejectedGate */
+    self->status_correctionSource = 2;  /* SourceGps */
+    self->status_anchorSource = 2;
+    break;
+  case NAV_CYCLE_RECOVERY_STAGE_1:
+    self->status_recoveryStage = 1; /* RecoveryCovarianceInflated */
+    self->status_anchorSource = 2;
+    break;
+  case NAV_CYCLE_RECOVERY_STAGE_2:
+    self->status_recoveryStage = 2; /* RecoveryAidingDivergent */
+    self->status_anchorSource = 2;
+    break;
+  case NAV_CYCLE_RECOVERY_MISCONFIGURED:
+    self->status_recoveryStage = 3; /* RecoveryMisconfigured */
     break;
   default:
     break;
   }
   observation->output_estimate_valid = self->estimate_valid;
   observation->output_status_initialized = self->status_initialized;
+  observation->output_correction_outcome = self->status_correctionOutcome;
+  observation->output_correction_source = self->status_correctionSource;
+  observation->output_recovery_stage = self->status_recoveryStage;
   observation->error_signal_status = self->rumoca_galec_error_signal_status;
   navigation_step_count++;
 }
@@ -246,6 +276,9 @@ int navigation_fake_zros_sub_update(struct zros_sub *sub) {
         .flags = synapse_topic_ExternalOdometryFlags_PositionValid |
                  synapse_topic_ExternalOdometryFlags_AttitudeValid,
     };
+    if (navigation_active_cycle == NAV_CYCLE_NONFINITE_MOCAP) {
+      g_process.external_odometry.position_enu_m.x = NAN;
+    }
     return navigation_active_cycle == NAV_CYCLE_IMU_RECOVERY_NO_MOCAP ? -1 : 0;
   }
   if (sub == &g_process.gnss_sub) {
@@ -314,7 +347,8 @@ static void navigation_expect_safe_publication(size_t cycle) {
                     &zero_covariance, sizeof(zero_covariance));
 }
 
-static void navigation_expect_valid_publication(size_t cycle) {
+static void navigation_expect_valid_publication_with_quality(size_t cycle,
+                                                             int8_t quality) {
   const struct navigation_publication_observation *observation =
       &navigation_publications[cycle];
   const uint8_t required = synapse_topic_AttitudeEstimateFlags_AttitudeValid |
@@ -334,7 +368,11 @@ static void navigation_expect_valid_publication(size_t cycle) {
   zexpect_equal(observation->attitude.angular_velocity_flu_rad_s.yaw, 0.03f);
   zexpect_equal(observation->odometry.position_enu_m.y, -2.5f);
   zexpect_equal(observation->odometry.velocity_enu_m_s.z, 0.3f);
-  zexpect_equal(observation->odometry.quality_pct, 100);
+  zexpect_equal(observation->odometry.quality_pct, quality);
+}
+
+static void navigation_expect_valid_publication(size_t cycle) {
+  navigation_expect_valid_publication_with_quality(cycle, 100);
 }
 
 ZTEST(process_wrapper_fault_injection,
@@ -367,8 +405,15 @@ ZTEST(process_wrapper_fault_injection,
   navigation_expect_valid_publication(NAV_CYCLE_TIMESTAMP_RECOVERY);
   navigation_expect_safe_publication(NAV_CYCLE_INVALID_IMU);
   navigation_expect_valid_publication(NAV_CYCLE_IMU_RECOVERY_NO_MOCAP);
-  navigation_expect_valid_publication(NAV_CYCLE_COVARIANCE_REINITIALIZED);
-  navigation_expect_valid_publication(NAV_CYCLE_AFTER_COVARIANCE_REINITIALIZED);
+  navigation_expect_valid_publication(NAV_CYCLE_NONFINITE_MOCAP);
+  navigation_expect_valid_publication(NAV_CYCLE_LARGE_CORRECTION_REJECTED);
+  navigation_expect_valid_publication_with_quality(NAV_CYCLE_RECOVERY_STAGE_1,
+                                                   50);
+  navigation_expect_valid_publication_with_quality(NAV_CYCLE_RECOVERY_STAGE_2,
+                                                   1);
+  navigation_expect_valid_publication_with_quality(
+      NAV_CYCLE_RECOVERY_MISCONFIGURED, 1);
+  navigation_expect_valid_publication(NAV_CYCLE_RECOVERY_NOMINAL);
 
   zexpect_true(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].reset);
   zexpect_false(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].imu_valid);
@@ -382,7 +427,7 @@ ZTEST(process_wrapper_fault_injection,
                    .output_estimate_valid);
   zexpect_true(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET]
                    .output_status_initialized);
-  zexpect_true(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RECOVERY].reset);
+  zexpect_false(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RECOVERY].reset);
   zexpect_true(
       navigation_generated[NAV_CYCLE_NONFINITE_IMU_RECOVERY].imu_valid);
   zexpect_true(
@@ -408,7 +453,7 @@ ZTEST(process_wrapper_fault_injection,
   zexpect_false(navigation_generated[NAV_CYCLE_INVALID_IMU].imu_valid);
   zexpect_true(navigation_generated[NAV_CYCLE_INVALID_IMU].imu_fresh);
   zexpect_true(navigation_generated[NAV_CYCLE_IMU_RECOVERY_NO_MOCAP].imu_valid);
-  zexpect_true(navigation_generated[NAV_CYCLE_IMU_RECOVERY_NO_MOCAP].reset);
+  zexpect_false(navigation_generated[NAV_CYCLE_IMU_RECOVERY_NO_MOCAP].reset);
   zexpect_false(
       navigation_generated[NAV_CYCLE_IMU_RECOVERY_NO_MOCAP].mocap_fresh);
   zexpect_false(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].gps_valid);
@@ -433,11 +478,31 @@ ZTEST(process_wrapper_fault_injection,
   zexpect_equal(
       navigation_generated[NAV_CYCLE_GENERATED_ERROR].error_signal_status,
       UINT32_C(0x80));
-  zexpect_equal(navigation_publications[NAV_CYCLE_COVARIANCE_REINITIALIZED]
-                    .odometry.reset_counter,
-                1U);
+  zexpect_true(
+      isnan(navigation_generated[NAV_CYCLE_NONFINITE_MOCAP].mocap_position[0]));
+  zexpect_false(navigation_generated[NAV_CYCLE_NONFINITE_MOCAP].mocap_valid);
+  zexpect_equal(navigation_generated[NAV_CYCLE_LARGE_CORRECTION_REJECTED]
+                    .output_correction_outcome,
+                3);
+  zexpect_equal(navigation_generated[NAV_CYCLE_LARGE_CORRECTION_REJECTED]
+                    .output_correction_source,
+                2);
   zexpect_equal(
-      navigation_publications[NAV_CYCLE_AFTER_COVARIANCE_REINITIALIZED]
-          .odometry.reset_counter,
-      1U);
+      navigation_generated[NAV_CYCLE_RECOVERY_STAGE_1].output_recovery_stage,
+      1);
+  zexpect_equal(
+      navigation_generated[NAV_CYCLE_RECOVERY_STAGE_2].output_recovery_stage,
+      2);
+  zexpect_false(rdd2_navigation_position_quality_is_usable(
+      navigation_publications[NAV_CYCLE_RECOVERY_STAGE_2]
+          .odometry.quality_pct));
+  zexpect_false(rdd2_navigation_position_quality_is_usable(
+      navigation_publications[NAV_CYCLE_RECOVERY_MISCONFIGURED]
+          .odometry.quality_pct));
+  zexpect_true(rdd2_navigation_position_quality_is_usable(
+      navigation_publications[NAV_CYCLE_RECOVERY_STAGE_1]
+          .odometry.quality_pct));
+  zexpect_equal(navigation_publications[NAV_CYCLE_RECOVERY_NOMINAL]
+                    .odometry.reset_counter,
+                0U);
 }

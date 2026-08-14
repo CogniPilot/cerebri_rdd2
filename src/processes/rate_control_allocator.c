@@ -255,6 +255,12 @@ static void step_efmu(struct rate_control_allocator_process *process,
   outputs_finite =
       rdd2_control_values_are_finite(process->efmu.motor, EFMU_MOTOR_COUNT);
   if (!inputs_usable || !step_ok || !outputs_finite) {
+    if (process->status.arm_switch && !process->control_fault_latched) {
+      LOG_ERR("Rate-control fault: inputs=%d generated_status=%u "
+              "outputs_finite=%d",
+              inputs_usable, process->efmu.rumoca_galec_error_signal_status,
+              outputs_finite);
+    }
     process->control_fault_latched = rdd2_control_fault_latch(
         process->control_fault_latched, !process->status.rc_stale,
         process->status.arm_switch, true);

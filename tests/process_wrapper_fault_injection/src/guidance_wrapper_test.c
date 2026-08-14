@@ -69,7 +69,7 @@ enum guidance_cycle {
   GUIDANCE_CYCLE_KILL_SWITCH_ARMED,
   GUIDANCE_CYCLE_POSITION_UNREADY_ARMED_REQUEST,
   GUIDANCE_CYCLE_POSITION_READY_ARMED,
-  GUIDANCE_CYCLE_POSITION_LOST_ARMED,
+  GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED,
   GUIDANCE_CYCLE_POSITION_UNREADY_DISARMED_HIGH,
   GUIDANCE_CYCLE_POSITION_UNREADY_DISARMED_HIGH_LATCHED,
   GUIDANCE_CYCLE_POSITION_UNREADY_DISARMED_FAILED_LOW,
@@ -190,7 +190,6 @@ static bool guidance_arm_switch_high(size_t cycle) {
 bool guidance_fake_gnss_onboard_ready_get(void) {
   switch (guidance_active_cycle) {
   case GUIDANCE_CYCLE_POSITION_UNREADY_ARMED_REQUEST:
-  case GUIDANCE_CYCLE_POSITION_LOST_ARMED:
   case GUIDANCE_CYCLE_POSITION_UNREADY_DISARMED_HIGH:
   case GUIDANCE_CYCLE_POSITION_UNREADY_DISARMED_HIGH_LATCHED:
   case GUIDANCE_CYCLE_POSITION_UNREADY_DISARMED_FAILED_LOW:
@@ -368,6 +367,9 @@ static void guidance_fill_navigation(void) {
     break;
   case GUIDANCE_CYCLE_QUALITY_FAULT:
     g_process.odometry.quality_pct = 0;
+    break;
+  case GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED:
+    g_process.odometry.quality_pct = 1;
     break;
   case GUIDANCE_CYCLE_NONFINITE_NAV_FAULT:
     g_process.odometry.velocity_enu_m_s.z = INFINITY;
@@ -637,7 +639,7 @@ ZTEST(process_wrapper_fault_injection,
   guidance_expect_armed_publication(
       GUIDANCE_CYCLE_POSITION_UNREADY_ARMED_REQUEST);
   guidance_expect_armed_publication(GUIDANCE_CYCLE_POSITION_READY_ARMED);
-  guidance_expect_armed_publication(GUIDANCE_CYCLE_POSITION_LOST_ARMED);
+  guidance_expect_armed_publication(GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED);
   guidance_expect_not_published(GUIDANCE_CYCLE_POSITION_UNREADY_DISARMED_HIGH);
   guidance_expect_not_published(
       GUIDANCE_CYCLE_POSITION_UNREADY_DISARMED_HIGH_LATCHED);
@@ -701,8 +703,12 @@ ZTEST(process_wrapper_fault_injection,
   zexpect_equal(guidance_generated[GUIDANCE_CYCLE_POSITION_READY_ARMED].mode,
                 1);
   zexpect_true(guidance_generated[GUIDANCE_CYCLE_POSITION_READY_ARMED].armed);
-  zexpect_equal(guidance_generated[GUIDANCE_CYCLE_POSITION_LOST_ARMED].mode, 1);
-  zexpect_true(guidance_generated[GUIDANCE_CYCLE_POSITION_LOST_ARMED].armed);
+  zexpect_equal(guidance_generated[GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED].mode,
+                1);
+  zexpect_true(guidance_generated[GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED].armed);
+  zexpect_equal(
+      guidance_generated[GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED].position[2],
+      3.0f);
   zexpect_false(
       guidance_generated[GUIDANCE_CYCLE_POSITION_UNREADY_DISARMED_HIGH].armed);
   zexpect_false(
@@ -770,6 +776,22 @@ static void guidance_expect_position_fallback(size_t cycle) {
   zexpect_true(guidance_generated[cycle].armed,
                "cycle %zu unexpectedly disarmed", cycle);
   guidance_expect_armed_publication(cycle);
+}
+
+ZTEST(process_wrapper_fault_injection,
+      test_guidance_stage_2_recovery_demotes_position_without_disarming) {
+  guidance_run_cycles(GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED,
+                      GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED + 1U);
+
+  guidance_expect_position_fallback(GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED);
+  zexpect_equal(
+      guidance_generated[GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED].position[2],
+      3.0f);
+  zexpect_true(
+      isfinite(guidance_generated[GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED]
+                   .output_rates[0]));
+  zexpect_true(isfinite(
+      guidance_generated[GUIDANCE_CYCLE_RECOVERY_STAGE_2_ARMED].output_thrust));
 }
 
 ZTEST(process_wrapper_fault_injection,

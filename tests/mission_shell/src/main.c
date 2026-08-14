@@ -28,8 +28,11 @@ ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(attitude_estimate,
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(waypoint_plan, rdd2_waypoint_plan_t);
 
 static bool position_source_ready;
+static uint8_t planner_state;
 
 bool rdd2_gnss_onboard_ready_get(void) { return position_source_ready; }
+
+uint8_t rdd2_waypoint_mission_state_get(void) { return planner_state; }
 
 bool rdd2_topic_has_sample(const struct zros_topic *topic) {
   return rdd2_topic_generation(topic) != 0U;
@@ -122,6 +125,7 @@ static void *mission_shell_setup(void) {
 
 static void mission_shell_before(void *fixture) {
   ARG_UNUSED(fixture);
+  planner_state = RDD2_WAYPOINT_MISSION_EMPTY;
   valid_inputs();
 }
 
@@ -286,8 +290,7 @@ ZTEST(mission_shell, test_bounds_are_inclusive) {
   zassert_ok(run("mission box 3.0 0.5"));
 }
 
-ZTEST(mission_shell,
-      test_status_reports_published_request_without_claiming_acceptance) {
+ZTEST(mission_shell, test_status_reports_authoritative_planner_state) {
   const struct shell *sh = shell_backend_dummy_get_ptr();
   const char *output;
   size_t output_size;
@@ -298,13 +301,36 @@ ZTEST(mission_shell,
   output = shell_backend_dummy_get_output(sh, &output_size);
   zassert_not_null(output);
   zassert_not_null(strstr(output, "ingress=published"));
-  zassert_not_null(strstr(output, "planner=unknown"));
+  zassert_not_null(strstr(output, "planner=empty"));
+  zassert_not_null(strstr(output, "ingress_sequence="));
+  zassert_is_null(strstr(output, " planner=empty sequence="));
   zassert_is_null(strstr(output, "loaded"));
   zassert_is_null(strstr(output, "accepted"));
   zassert_is_null(strstr(output, "pending"));
   zassert_is_null(strstr(output, "running"));
   zassert_not_null(strstr(output, "side_mm=2000"));
   zassert_not_null(strstr(output, "speed_mm_s=300"));
+
+  planner_state = RDD2_WAYPOINT_MISSION_PENDING;
+  shell_backend_dummy_clear_output(sh);
+  zassert_ok(run("mission status"));
+  output = shell_backend_dummy_get_output(sh, &output_size);
+  zassert_not_null(output);
+  zassert_not_null(strstr(output, "planner=pending"));
+
+  planner_state = RDD2_WAYPOINT_MISSION_RUNNING;
+  shell_backend_dummy_clear_output(sh);
+  zassert_ok(run("mission status"));
+  output = shell_backend_dummy_get_output(sh, &output_size);
+  zassert_not_null(output);
+  zassert_not_null(strstr(output, "planner=running"));
+
+  planner_state = RDD2_WAYPOINT_MISSION_ABORTED;
+  shell_backend_dummy_clear_output(sh);
+  zassert_ok(run("mission status"));
+  output = shell_backend_dummy_get_output(sh, &output_size);
+  zassert_not_null(output);
+  zassert_not_null(strstr(output, "planner=aborted"));
 }
 
 ZTEST(mission_shell,

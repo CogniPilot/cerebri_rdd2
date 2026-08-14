@@ -41,31 +41,6 @@ rdd2_cache_path(RDD2_MODELICA_MODELS_ROOT
   "${WORKSPACE_ROOT}/models/modelica_models"
   "Shared CogniPilot Modelica model library"
 )
-rdd2_cache_path(RDD2_PREBUILT_EFMI_DIR
-  ""
-  "Optional root containing prebuilt eFMI control model directories"
-)
-if(DEFINED ENV{RDD2_PREBUILT_EFMI_MANIFEST_SHA256})
-  set(RDD2_PREBUILT_EFMI_MANIFEST_SHA256
-    "$ENV{RDD2_PREBUILT_EFMI_MANIFEST_SHA256}" CACHE STRING
-    "Expected SHA-256 of the prebuilt eFMI manifest" FORCE
-  )
-else()
-  set(RDD2_PREBUILT_EFMI_MANIFEST_SHA256 "" CACHE STRING
-    "Expected SHA-256 of the prebuilt eFMI manifest"
-  )
-endif()
-
-if(RDD2_PREBUILT_EFMI_DIR)
-  get_filename_component(RDD2_PREBUILT_EFMI_DIR
-    "${RDD2_PREBUILT_EFMI_DIR}" REALPATH
-  )
-  if(NOT IS_DIRECTORY "${RDD2_PREBUILT_EFMI_DIR}")
-    message(FATAL_ERROR
-      "RDD2_PREBUILT_EFMI_DIR is not a directory: ${RDD2_PREBUILT_EFMI_DIR}"
-    )
-  endif()
-endif()
 
 set(ZEPHYR_EXTRA_MODULES
   ${RDD2_CEREBRI_MODULES_ROOT}

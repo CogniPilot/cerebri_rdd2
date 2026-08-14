@@ -223,7 +223,7 @@ static void advance_control_time(uint64_t control_now_ns) {
 static void load_pending(int32_t sequence) {
   g_process.ingress_plan = square_plan(sequence, 2.0f);
   waypoint_mission_cycle(&g_process, true);
-  zassert_equal(g_process.mission_state, WAYPOINT_MISSION_PENDING);
+  zassert_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_PENDING);
 }
 
 static void start_running(int32_t sequence) {
@@ -234,7 +234,7 @@ static void start_running(int32_t sequence) {
   g_process.manual.flight_mode = RDD2_FLIGHT_MODE_POSITION;
   g_process.health.flags = synapse_topic_VehicleHealthFlags_Armed;
   waypoint_mission_cycle(&g_process, false);
-  zassert_equal(g_process.mission_state, WAYPOINT_MISSION_RUNNING);
+  zassert_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_RUNNING);
 }
 
 static void expect_abort_invalidation(uint64_t timestamp_ns) {
@@ -333,14 +333,14 @@ ZTEST(waypoint_mission_ingress,
   g_process.manual.flight_mode = 1U;
   g_process.health.flags = synapse_topic_VehicleHealthFlags_Armed;
   waypoint_mission_cycle(&g_process, false);
-  zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_PENDING);
+  zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_PENDING);
   zexpect_equal(planner_fake_step_count, 0U);
   zexpect_equal(planner_fake_publish_count, 2U);
 
   advance_control_time(TEST_NS_FROM_US(UINT64_C(1040000)));
   g_process.manual.flight_mode = RDD2_FLIGHT_MODE_POSITION;
   waypoint_mission_cycle(&g_process, false);
-  zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_RUNNING);
+  zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_RUNNING);
   zexpect_equal(planner_fake_step_count, 1U);
   zexpect_true(planner_fake_plan_seen);
   zexpect_equal(planner_fake_publish_count, 3U);
@@ -374,14 +374,14 @@ ZTEST(waypoint_mission_ingress,
   g_process.manual.flags |= synapse_topic_ManualControlFlags_ArmSwitch;
   g_process.health.flags = synapse_topic_VehicleHealthFlags_Armed;
   waypoint_mission_cycle(&g_process, false);
-  zassert_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED);
+  zassert_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED);
   zexpect_equal(planner_fake_publish_count, 2U);
   zexpect_equal(planner_fake_step_count, 0U);
 
   advance_control_time(TEST_NS_FROM_US(UINT64_C(1040000)));
   g_process.manual.flight_mode = RDD2_FLIGHT_MODE_POSITION;
   waypoint_mission_cycle(&g_process, false);
-  zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED,
+  zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED,
                 "armed ACRO abort unexpectedly resumed in POSITION");
   zexpect_equal(planner_fake_step_count, 0U);
 }
@@ -442,7 +442,7 @@ ZTEST(waypoint_mission_ingress, test_running_faults_abort_and_never_resume) {
     planner_fake_step_count = 0U;
     apply_runtime_fault(fault);
     waypoint_mission_cycle(&g_process, false);
-    zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED,
+    zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED,
                   "runtime fault %d did not abort", fault);
     zexpect_equal(planner_fake_publish_count, 1U);
     expect_abort_invalidation(TEST_NS_FROM_US(UINT64_C(1060000)));
@@ -457,7 +457,7 @@ ZTEST(waypoint_mission_ingress, test_running_faults_abort_and_never_resume) {
     g_process.health.flags = synapse_topic_VehicleHealthFlags_Armed;
     g_process.odometry.quality_pct = 80;
     waypoint_mission_cycle(&g_process, false);
-    zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED,
+    zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED,
                   "runtime fault %d resumed after recovery", fault);
     zexpect_equal(planner_fake_publish_count, 1U);
     zexpect_equal(planner_fake_step_count, 0U);
@@ -470,7 +470,7 @@ ZTEST(waypoint_mission_ingress,
   advance_control_time(TEST_NS_FROM_US(UINT64_C(1060000)));
   g_process.manual.flight_mode = 1U;
   waypoint_mission_cycle(&g_process, false);
-  zassert_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED);
+  zassert_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED);
 
   advance_control_time(TEST_NS_FROM_US(UINT64_C(1080000)));
   g_process.manual.flags = synapse_topic_ManualControlFlags_Valid |
@@ -478,17 +478,17 @@ ZTEST(waypoint_mission_ingress,
   g_process.health.flags = 0U;
   g_process.ingress_plan = square_plan(51, 2.0f);
   waypoint_mission_cycle(&g_process, true);
-  zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED,
+  zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED,
                 "same sequence unexpectedly reloaded an aborted mission");
 
   g_process.ingress_plan = square_plan(52, 2.0f);
   waypoint_mission_cycle(&g_process, true);
-  zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_PENDING);
+  zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_PENDING);
 
   g_process.ingress_plan =
       (rdd2_waypoint_plan_t){.sequence = 53, .valid = false};
   waypoint_mission_cycle(&g_process, true);
-  zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED);
+  zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED);
   expect_abort_invalidation(TEST_NS_FROM_US(UINT64_C(1080000)));
 }
 
@@ -515,7 +515,7 @@ ZTEST(waypoint_mission_ingress,
                                                : PLANNER_FAKE_STEP_OK;
     planner_fake_publish_failure = fault == GENERATED_PUBLISH_FAILURE;
     waypoint_mission_cycle(&g_process, false);
-    zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED,
+    zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED,
                   "generated fault %d did not abort", fault);
     zexpect_equal(planner_fake_step_count, 1U);
     zexpect_equal(planner_fake_publish_count,
@@ -583,7 +583,7 @@ ZTEST(waypoint_mission_ingress, test_load_requires_current_disarmed_inputs) {
     }
     g_process.ingress_plan = square_plan(80 + fault, 1.0f);
     waypoint_mission_cycle(&g_process, true);
-    zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED,
+    zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED,
                   "load fault %d was admitted", fault);
     zexpect_equal(planner_fake_publish_count, 1U);
     zexpect_equal(planner_fake_step_count, 0U);
@@ -599,19 +599,19 @@ ZTEST(waypoint_mission_ingress,
   g_process.health_age_cycles = MISSION_INPUT_MAX_AGE_CYCLES;
   g_process.ingress_plan = square_plan(100, 1.0f);
   waypoint_mission_cycle(&g_process, true);
-  zassert_equal(g_process.mission_state, WAYPOINT_MISSION_PENDING,
+  zassert_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_PENDING,
                 "payload clocks were incorrectly compared with control time");
 
   g_process.manual_age_cycles = MISSION_INPUT_MAX_AGE_CYCLES + 1U;
   waypoint_mission_cycle(&g_process, false);
-  zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED,
+  zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED,
                 "pending mission survived a sixth missed manual update");
 
   planner_test_reset(TEST_NS_FROM_US(UINT64_C(1000000)));
   g_process.health_age_cycles = MISSION_INPUT_MAX_AGE_CYCLES + 1U;
   g_process.ingress_plan = square_plan(101, 1.0f);
   waypoint_mission_cycle(&g_process, true);
-  zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED,
+  zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED,
                 "stale health was admitted");
 }
 
@@ -622,7 +622,7 @@ ZTEST(waypoint_mission_ingress,
   advance_control_time(TEST_NS_FROM_US(UINT64_C(1020000)));
   g_process.manual.flags = 0U;
   waypoint_mission_cycle(&g_process, false);
-  zassert_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED);
+  zassert_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED);
 
   advance_control_time(TEST_NS_FROM_US(UINT64_C(1040000)));
   g_process.manual.flags = synapse_topic_ManualControlFlags_Valid |
@@ -631,14 +631,14 @@ ZTEST(waypoint_mission_ingress,
   g_process.manual.flight_mode = RDD2_FLIGHT_MODE_POSITION;
   g_process.health.flags = synapse_topic_VehicleHealthFlags_Armed;
   waypoint_mission_cycle(&g_process, false);
-  zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED,
+  zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED,
                 "pending mission resumed after manual recovery");
 
   planner_test_reset(TEST_NS_FROM_US(UINT64_C(1000000)));
   planner_fake_publish_failure = true;
   g_process.ingress_plan = square_plan(111, 1.0f);
   waypoint_mission_cycle(&g_process, true);
-  zexpect_equal(g_process.mission_state, WAYPOINT_MISSION_ABORTED,
+  zexpect_equal(g_process.mission_state, RDD2_WAYPOINT_MISSION_ABORTED,
                 "pending hold publication failure did not abort");
 }
 

@@ -69,9 +69,16 @@ static bool
 external_odometry_valid(const synapse_topic_ExternalOdometryData_t *odometry) {
   const uint8_t required = synapse_topic_ExternalOdometryFlags_PositionValid |
                            synapse_topic_ExternalOdometryFlags_AttitudeValid;
+  const float values[] = {
+      odometry->position_enu_m.x, odometry->position_enu_m.y,
+      odometry->position_enu_m.z, odometry->attitude.w,
+      odometry->attitude.x,       odometry->attitude.y,
+      odometry->attitude.z,
+  };
 
   return (odometry->flags & required) == required &&
-         (odometry->flags & synapse_topic_ExternalOdometryFlags_Lost) == 0U;
+         (odometry->flags & synapse_topic_ExternalOdometryFlags_Lost) == 0U &&
+         rdd2_control_values_are_finite(values, ARRAY_SIZE(values));
 }
 
 static bool external_odometry_source_allowed(bool gps_origin_source) {
@@ -154,32 +161,20 @@ health_use_control_time(synapse_topic_VehicleHealthData_t *health,
 }
 
 static int8_t estimate_quality_pct(const NavigationEstimatorState *efmu) {
-  int32_t rejection_count = efmu->status_consecutiveRejectedCorrections;
-  int32_t rejection_limit = efmu->rejectedCorrectionLimit;
-  int64_t rejection_penalty;
-
   if (!efmu->estimate_valid || !efmu->status_initialized) {
     return 0;
   }
-  if (rejection_count < 0) {
-    rejection_count = 0;
-  }
-  if (efmu->status_innovationGateRejected && rejection_count == 0) {
-    rejection_count = 1;
-  }
-  if (rejection_limit <= 0 || rejection_count >= rejection_limit) {
-    return 0;
-  }
 
-  rejection_penalty =
-      ((int64_t)rejection_count * 100 + rejection_limit - 1) / rejection_limit;
-  return (int8_t)(100 - rejection_penalty);
-}
-
-static void
-capture_estimator_health(struct navigation_estimator_process *process) {
-  if (process->efmu.status_covarianceReinitialized) {
-    process->reset_counter = (uint8_t)(process->reset_counter + 1U);
+  switch (efmu->status_recoveryStage) {
+  case 0: /* RecoveryNominal */
+    return 100;
+  case 1: /* RecoveryCovarianceInflated */
+    return 50;
+  case 2: /* RecoveryAidingDivergent */
+  case 3: /* RecoveryMisconfigured */
+  default:
+    /* Preserve finite attitude and rates, but mark position as demoted. */
+    return RDD2_NAVIGATION_POSITION_QUALITY_MIN_PCT - 1;
   }
 }
 
@@ -285,6 +280,7 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     bool origin_captured;
     bool estimate_valid;
     bool outputs_finite;
+    bool state_usable;
     bool step_ok;
 
     if (zros_sub_wait(&process->imu_sub, K_FOREVER) != 0 ||
@@ -339,14 +335,17 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     step_ok =
         rdd2_generated_step_ok(process->efmu.rumoca_galec_error_signal_status);
     outputs_finite = efmu_estimate_is_finite(&process->efmu);
-    estimate_valid = process->efmu.imu_valid && step_ok && outputs_finite &&
-                     process->efmu.estimate_valid &&
-                     process->efmu.status_initialized;
-    process->initialized = estimate_valid;
+    state_usable = step_ok && outputs_finite && process->efmu.estimate_valid &&
+                   process->efmu.status_initialized;
+    estimate_valid = process->efmu.imu_valid && state_usable;
+    /* A rejected non-finite IMU sample holds a usable generated state. Do not
+     * turn that one-cycle publication fault into an estimator reset. */
+    process->initialized = process->gps_origin_initialization_pending
+                               ? estimate_valid
+                               : state_usable;
     if (estimate_valid) {
       process->gps_origin_initialization_pending = false;
     }
-    capture_estimator_health(process);
     publish_efmu_estimate(process, estimate_valid);
   }
 }

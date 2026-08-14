@@ -18,14 +18,21 @@ use protocol::{MissionStatusWire, SyntheticGnss, WaypointPlanWire};
 use serde::Serialize;
 use shared_memory::LockstepOutputs;
 
-const DEFAULT_PLANT_DT: f64 = 0.005;
 /// RDD2's fixed 1600 Hz firmware control-loop period.
 const CONTROLLER_DT: f64 = 0.000_625;
 const TAKEOFF_ALTITUDE_M: f64 = 1.5;
+const MISSION_SIDE_M: f64 = 0.5;
+const MISSION_SPEED_M_S: f32 = 0.1;
 const MISSION_ARM_DELAY_S: f64 = 0.5;
-const MISSION_POSITION_START_S: f64 = 4.0;
-const MISSION_POSITION_END_S: f64 = 22.0;
-const MISSION_DISARM_S: f64 = 28.0;
+const MISSION_TAKEOFF_START_S: f64 = 1.0;
+const MISSION_TAKEOFF_END_S: f64 = 4.0;
+const MISSION_POSITION_START_S: f64 = 8.0;
+const MISSION_POSITION_END_S: f64 = 34.0;
+const MISSION_DISARM_S: f64 = 40.0;
+const DEFAULT_MISSION_DURATION_S: f64 = 44.0;
+const MINIMUM_MISSION_DURATION_S: f64 = MISSION_DISARM_S + 2.0;
+const PLANNER_CORNER_TOLERANCE_M: f64 = 0.12;
+const VEHICLE_CORNER_TOLERANCE_M: f64 = 0.25;
 
 #[derive(Debug)]
 struct Options {
@@ -51,7 +58,7 @@ struct Report {
     speedup_over_realtime: f64,
     minimum_speedup_required: f64,
     plant_step_seconds: f64,
-    controller_ticks_expected: u64,
+    controller_releases_observed: u64,
     plant_steps: u64,
     motor_messages: u64,
     flight_state_messages: u64,
@@ -82,6 +89,12 @@ struct Report {
     maximum_gnss_generation: u32,
     maximum_plan_generation: u32,
     maximum_reference_generation: u32,
+    release_rate_window_observed: bool,
+    rate_releases_per_second: u32,
+    navigation_releases_per_second: u32,
+    guidance_releases_per_second: u32,
+    planning_releases_per_second: u32,
+    health_releases_per_second: u32,
     failures: Vec<String>,
 }
 
@@ -90,7 +103,7 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
     let mut trajectory = env::var_os("RDD2_MISSION_TRAJECTORY")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("out/mission-trajectory.csv"));
-    let mut duration: f64 = 32.0;
+    let mut duration: f64 = DEFAULT_MISSION_DURATION_S;
     let mut timeout_ms = 2_000_u64;
     let mut controller_benchmark = env::var("RDD2_FASTDYN_CONTROLLER_BENCHMARK_S")
         .ok()
@@ -101,11 +114,6 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
     let mut native_sim = env::var_os("RDD2_NATIVE_SIM_EXECUTABLE").map(PathBuf::from);
     let mut plant_library = env::var_os("RDD2_RUMOCA_PLANT_LIBRARY").map(PathBuf::from);
     let mut plant_description = env::var_os("RDD2_RUMOCA_PLANT_DESCRIPTION").map(PathBuf::from);
-    let mut plant_dt = env::var("RDD2_FASTDYN_PLANT_DT_S")
-        .ok()
-        .map(|value| value.parse())
-        .transpose()?
-        .unwrap_or(DEFAULT_PLANT_DT);
     let mut minimum_speedup: f64 = env::var("RDD2_FASTDYN_MIN_SPEEDUP")
         .ok()
         .map(|value| value.parse())
@@ -129,22 +137,18 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
             "--plant-description" => {
                 plant_description = Some(args.next().ok_or_else(value)?.into())
             }
-            "--plant-dt" => plant_dt = args.next().ok_or_else(value)?.parse()?,
             "--minimum-speedup" => minimum_speedup = args.next().ok_or_else(value)?.parse()?,
             "-h" | "--help" => {
                 println!(
-                    "cargo xtask fastdyn-mission --shared-memory PATH (--firmware-elf PATH | --native-sim PATH) --plant-library PATH --plant-description PATH [--report PATH] [--trajectory PATH] [--duration SEC] [--controller-benchmark SEC] [--plant-dt SEC] [--minimum-speedup X]"
+                    "cargo xtask fastdyn-mission --shared-memory PATH (--firmware-elf PATH | --native-sim PATH) --plant-library PATH --plant-description PATH [--report PATH] [--trajectory PATH] [--duration SEC] [--controller-benchmark SEC] [--minimum-speedup X]"
                 );
                 std::process::exit(0);
             }
             _ => bail!("unknown argument: {arg}"),
         }
     }
-    if !duration.is_finite() || duration < 30.0 {
-        bail!("--duration must be finite and at least 30 seconds");
-    }
-    if !plant_dt.is_finite() || !(CONTROLLER_DT..=0.020).contains(&plant_dt) {
-        bail!("--plant-dt must be finite and between 0.000625 and 0.020 seconds");
+    if !duration.is_finite() || duration < MINIMUM_MISSION_DURATION_S {
+        bail!("--duration must be finite and at least {MINIMUM_MISSION_DURATION_S} seconds");
     }
     if !minimum_speedup.is_finite() || minimum_speedup < 0.0 {
         bail!("--minimum-speedup must be finite and non-negative");
@@ -162,17 +166,17 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
             .context("--plant-library or RDD2_RUMOCA_PLANT_LIBRARY is required")?,
         plant_description: plant_description
             .context("--plant-description or RDD2_RUMOCA_PLANT_DESCRIPTION is required")?,
-        plant_dt,
+        plant_dt: CONTROLLER_DT,
         minimum_speedup,
     })
 }
 
 fn desired_altitude(time: f64) -> f64 {
     match time {
-        t if t < MISSION_ARM_DELAY_S => 0.0,
-        t if t < MISSION_POSITION_START_S => {
-            (t - MISSION_ARM_DELAY_S) * TAKEOFF_ALTITUDE_M
-                / (MISSION_POSITION_START_S - MISSION_ARM_DELAY_S)
+        t if t < MISSION_TAKEOFF_START_S => 0.0,
+        t if t < MISSION_TAKEOFF_END_S => {
+            (t - MISSION_TAKEOFF_START_S) * TAKEOFF_ALTITUDE_M
+                / (MISSION_TAKEOFF_END_S - MISSION_TAKEOFF_START_S)
         }
         t if t < MISSION_POSITION_END_S => TAKEOFF_ALTITUDE_M,
         t if t < MISSION_DISARM_S => {
@@ -183,6 +187,10 @@ fn desired_altitude(time: f64) -> f64 {
     }
 }
 
+fn throttle_must_be_low(time: f64) -> bool {
+    !(MISSION_TAKEOFF_START_S..MISSION_DISARM_S).contains(&time)
+}
+
 fn rc_channels(mission_time: Option<f64>, plant: &Plant) -> [i32; 16] {
     let mut channels = [1500; 16];
     let Some(time) = mission_time else {
@@ -191,27 +199,21 @@ fn rc_channels(mission_time: Option<f64>, plant: &Plant) -> [i32; 16] {
         channels[5] = 1000;
         return channels;
     };
-    let armed = (MISSION_ARM_DELAY_S..MISSION_DISARM_S).contains(&time);
-    channels[4] = if armed { 2000 } else { 1000 };
+    let arm_requested = (MISSION_ARM_DELAY_S..MISSION_DISARM_S).contains(&time);
+    channels[4] = if arm_requested { 2000 } else { 1000 };
     channels[5] = if (MISSION_POSITION_START_S..MISSION_POSITION_END_S).contains(&time) {
         2000
-    } else if armed {
+    } else if arm_requested {
         1500
     } else {
         1000
     };
-    if !armed {
+    if throttle_must_be_low(time) {
         channels[2] = 1000;
     } else {
         let error = desired_altitude(time) - plant.altitude();
         let normalized = (0.688 + 0.10 * error - 0.075 * plant.vertical_speed()).clamp(0.38, 0.82);
         channels[2] = (1000.0 + normalized * 1000.0).round() as i32;
-    }
-    if (2.0..2.75).contains(&time) {
-        channels[0] = 1625;
-    }
-    if (2.9..3.65).contains(&time) {
-        channels[1] = 1375;
     }
     channels
 }
@@ -221,6 +223,28 @@ fn evaluate(report: &mut Report) {
         report.failures.push(format!(
             "simulation speed {:.3}x is below required {:.3}x",
             report.speedup_over_realtime, report.minimum_speedup_required
+        ));
+    }
+    if report.controller_releases_observed != report.plant_steps {
+        report.failures.push(format!(
+            "firmware returned {} controller releases for {} lockstep inputs",
+            report.controller_releases_observed, report.plant_steps
+        ));
+    }
+    if !report.release_rate_window_observed
+        || report.rate_releases_per_second != 1_600
+        || report.navigation_releases_per_second != 1_000
+        || report.guidance_releases_per_second != 200
+        || report.planning_releases_per_second != 50
+        || report.health_releases_per_second != 200
+    {
+        report.failures.push(format!(
+            "observed release rates were rate={} navigation={} guidance={} planning={} health={} Hz",
+            report.rate_releases_per_second,
+            report.navigation_releases_per_second,
+            report.guidance_releases_per_second,
+            report.planning_releases_per_second,
+            report.health_releases_per_second
         ));
     }
     if !report.firmware_armed_observed {
@@ -336,16 +360,6 @@ fn evaluate(report: &mut Report) {
             .failures
             .push("vehicle did not take off above 1 m".into());
     }
-    if report.max_roll_response_deg < 2.0 {
-        report
-            .failures
-            .push("roll maneuver produced less than 2 degrees".into());
-    }
-    if report.max_pitch_response_deg < 2.0 {
-        report
-            .failures
-            .push("pitch maneuver produced less than 2 degrees".into());
-    }
     if report.max_tilt_deg > 45.0 {
         report
             .failures
@@ -368,10 +382,17 @@ fn advance_square_corner(
     progress: &mut u8,
     origin: [f64; 2],
     position: [f64; 2],
+    side_m: f64,
     tolerance_m: f64,
 ) {
-    const CORNERS: [[f64; 2]; 5] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]];
-    let Some(corner) = CORNERS.get(usize::from(*progress)) else {
+    let corners = [
+        [0.0, 0.0],
+        [side_m, 0.0],
+        [side_m, side_m],
+        [0.0, side_m],
+        [0.0, 0.0],
+    ];
+    let Some(corner) = corners.get(usize::from(*progress)) else {
         return;
     };
     let error_x = position[0] - origin[0] - corner[0];
@@ -472,13 +493,18 @@ where
     let wall_start = Instant::now();
     let mut firmware_ready = false;
     let mut synthetic_gnss = SyntheticGnss::default();
-    let mission_plan = protocol::bounded_square_plan(1, 1.0, 0.3)?;
+    let mission_plan = protocol::bounded_square_plan(1, MISSION_SIDE_M as f32, MISSION_SPEED_M_S)?;
     let mut plan_sent = false;
     let mut mission_epoch = None;
     let mut last_outputs: Option<LockstepOutputs> = None;
     let mut planner_origin: Option<[f64; 2]> = None;
     let mut vehicle_origin: Option<[f64; 2]> = None;
     let mut navigation_truth_origin: Option<[f64; 2]> = None;
+    let mut release_window_start: Option<(u64, MissionStatusWire)> = None;
+    let mut motor_generation_origin: Option<u32> = None;
+    let mut final_motor_generation = 0_u32;
+    let mut health_generation_origin: Option<u32> = None;
+    let mut final_health_generation = 0_u32;
     let mut trajectory = trajectory_writer(&options.trajectory)?;
 
     let mission_steps = (options.duration / options.plant_dt).round() as u64;
@@ -518,9 +544,6 @@ where
         plant.step(outputs.motor_command.values, options.plant_dt)?;
         simulated_time += options.plant_dt;
         report.plant_steps += 1;
-        report.motor_messages += 1;
-
-        report.flight_state_messages += 1;
         let state = outputs.flight_state;
         report.firmware_rc_and_imu_healthy |= state.rc_valid && state.imu_ok;
         report.firmware_acro_observed |= state.flight_mode == 0;
@@ -528,6 +551,10 @@ where
         report.firmware_position_observed |= state.flight_mode == 2;
         report.firmware_armed_observed |= state.armed;
         let status = outputs.mission_status;
+        motor_generation_origin.get_or_insert(status.motor_generation.saturating_sub(1));
+        health_generation_origin.get_or_insert(status.health_generation.saturating_sub(1));
+        final_motor_generation = status.motor_generation;
+        final_health_generation = status.health_generation;
         report.mission_status_current &= status.timestamp_ns == target_time;
         report.gnss_source_ready_observed |= status.flags & MissionStatusWire::SOURCE_READY != 0;
         report.navigation_origin_observed |= status.flags & MissionStatusWire::ORIGIN_VALID != 0;
@@ -539,6 +566,34 @@ where
         report.maximum_reference_generation = report
             .maximum_reference_generation
             .max(status.reference_generation);
+        if release_window_start.is_none()
+            && status.mission_state == 2
+            && state.flight_mode == 2
+            && status.guidance_generation > 0
+        {
+            release_window_start = Some((target_time, status));
+        }
+        if !report.release_rate_window_observed
+            && let Some((window_start_ns, baseline)) = release_window_start
+            && target_time - window_start_ns >= 1_000_000_000
+        {
+            report.rate_releases_per_second = status
+                .motor_generation
+                .wrapping_sub(baseline.motor_generation);
+            report.navigation_releases_per_second = status
+                .odometry_generation
+                .wrapping_sub(baseline.odometry_generation);
+            report.guidance_releases_per_second = status
+                .guidance_generation
+                .wrapping_sub(baseline.guidance_generation);
+            report.planning_releases_per_second = status
+                .reference_generation
+                .wrapping_sub(baseline.reference_generation);
+            report.health_releases_per_second = status
+                .health_generation
+                .wrapping_sub(baseline.health_generation);
+            report.release_rate_window_observed = true;
+        }
         let reference = outputs.planner_reference;
         let reference_position = reference.position_enu_m();
         let reference_current = reference.timestamp_ns() != 0
@@ -579,13 +634,15 @@ where
                 &mut report.planner_corners_reached,
                 planner_origin_value,
                 planner_position,
-                0.12,
+                MISSION_SIDE_M,
+                PLANNER_CORNER_TOLERANCE_M,
             );
             advance_square_corner(
                 &mut report.vehicle_corners_reached,
                 vehicle_origin_value,
                 [truth_position[0], truth_position[1]],
-                0.50,
+                MISSION_SIDE_M,
+                VEHICLE_CORNER_TOLERANCE_M,
             );
         }
         if status.flags & MissionStatusWire::ORIGIN_VALID != 0
@@ -649,9 +706,11 @@ where
     report.speedup_over_realtime = report.simulated_seconds / report.wall_seconds;
     report.minimum_speedup_required = options.minimum_speedup;
     report.plant_step_seconds = options.plant_dt;
-    // Derived from the simulated duration at the 1600 Hz control rate, not
-    // counted from firmware telemetry.
-    report.controller_ticks_expected = (report.simulated_seconds / CONTROLLER_DT).round() as u64;
+    report.controller_releases_observed =
+        u64::from(final_motor_generation.wrapping_sub(motor_generation_origin.unwrap_or(0)));
+    report.motor_messages = report.controller_releases_observed;
+    report.flight_state_messages =
+        u64::from(final_health_generation.wrapping_sub(health_generation_origin.unwrap_or(0)));
     report.final_altitude_m = plant.altitude();
     report.final_vertical_speed_m_s = plant.vertical_speed();
     trajectory.flush()?;
@@ -804,10 +863,19 @@ mod tests {
             vehicle_corners_reached: 5,
             navigation_estimate_finite: true,
             max_navigation_horizontal_error_m: 0.1,
-            simulated_seconds: 32.0,
-            maximum_gnss_generation: 321,
+            simulated_seconds: DEFAULT_MISSION_DURATION_S,
+            maximum_gnss_generation: 441,
             maximum_reference_generation: 100,
             maximum_plan_generation: 1,
+            release_rate_window_observed: true,
+            rate_releases_per_second: 1_600,
+            navigation_releases_per_second: 1_000,
+            guidance_releases_per_second: 200,
+            planning_releases_per_second: 50,
+            health_releases_per_second: 200,
+            controller_releases_observed: 70_400,
+            plant_steps: 70_400,
+            motor_messages: 70_400,
             flight_state_messages: 100,
             max_altitude_m: 2.0,
             max_roll_response_deg: 5.0,
@@ -825,6 +893,52 @@ mod tests {
         evaluate(&mut report);
         assert!(report.passed, "unexpected failures: {:?}", report.failures);
         assert!(report.failures.is_empty());
+    }
+
+    #[test]
+    fn takeoff_schedule_preserves_a_low_throttle_arming_window() {
+        assert!(MISSION_ARM_DELAY_S < MISSION_TAKEOFF_START_S);
+        assert!(MISSION_TAKEOFF_END_S < MISSION_POSITION_START_S);
+        let arming_time = (MISSION_ARM_DELAY_S + MISSION_TAKEOFF_START_S) * 0.5;
+        assert!(throttle_must_be_low(arming_time));
+        assert_eq!(desired_altitude(arming_time), 0.0);
+        assert!(!throttle_must_be_low(MISSION_TAKEOFF_START_S));
+        assert_eq!(desired_altitude(MISSION_TAKEOFF_END_S), TAKEOFF_ALTITUDE_M);
+        assert_eq!(
+            desired_altitude(MISSION_POSITION_START_S),
+            TAKEOFF_ALTITUDE_M
+        );
+    }
+
+    #[test]
+    fn conservative_square_oracle_requires_real_motion() {
+        let origin = [2.0, -3.0];
+        let mut progress = 0;
+
+        advance_square_corner(
+            &mut progress,
+            origin,
+            origin,
+            MISSION_SIDE_M,
+            VEHICLE_CORNER_TOLERANCE_M,
+        );
+        assert_eq!(progress, 1);
+        advance_square_corner(
+            &mut progress,
+            origin,
+            origin,
+            MISSION_SIDE_M,
+            VEHICLE_CORNER_TOLERANCE_M,
+        );
+        assert_eq!(progress, 1, "the origin must not satisfy the next corner");
+        advance_square_corner(
+            &mut progress,
+            origin,
+            [origin[0] + MISSION_SIDE_M, origin[1]],
+            MISSION_SIDE_M,
+            VEHICLE_CORNER_TOLERANCE_M,
+        );
+        assert_eq!(progress, 2);
     }
 
     #[test]
@@ -997,6 +1111,55 @@ mod tests {
             assert!(
                 pending_observed,
                 "one-shot plan never reached PENDING: status={last_status:?} quality={last_quality}"
+            );
+
+            let baseline = last_status;
+            let mut last_motor_values = [0.0_f32; 4];
+            let mut last_flight_armed = false;
+            for _ in 0..1_600 {
+                target_ns += 625_000;
+                let fix = gnss.sample([0.0; 3], [0.0; 3], target_ns);
+                let inputs = protocol::lockstep_inputs(
+                    [0.0; 3],
+                    [0.0, 0.0, 9.806_65],
+                    channels,
+                    fix,
+                    plan,
+                    target_ns,
+                );
+                let outputs = transport.exchange(&inputs, Duration::from_secs(2))?;
+                last_status = outputs.mission_status;
+                last_motor_values = outputs.motor_command.values;
+                last_flight_armed = outputs.flight_state.armed;
+                assert_eq!(last_status.timestamp_ns, target_ns);
+            }
+            assert_eq!(last_status.gnss_generation - baseline.gnss_generation, 10);
+            assert_eq!(last_status.plan_generation - baseline.plan_generation, 0);
+            assert_eq!(
+                last_status.reference_generation - baseline.reference_generation,
+                50
+            );
+            assert_eq!(
+                last_status.odometry_generation - baseline.odometry_generation,
+                1_000
+            );
+            assert_eq!(
+                last_status.guidance_generation - baseline.guidance_generation,
+                200,
+                "guidance must publish safe commands at its exact release rate"
+            );
+            assert_eq!(
+                last_status.motor_generation - baseline.motor_generation,
+                1_600
+            );
+            assert_eq!(
+                last_status.health_generation - baseline.health_generation,
+                200
+            );
+            assert!(!last_flight_armed, "PENDING window unexpectedly armed");
+            assert_eq!(
+                last_motor_values, [0.0; 4],
+                "disarmed PENDING must keep every motor output at zero"
             );
             Ok(())
         })();

@@ -12,7 +12,7 @@
 #include <synapse/sensors_reader.h>
 #include <synapse/state_reader.h>
 
-#define RDD2_LOCKSTEP_MAGIC UINT32_C(0x52444733)
+#define RDD2_LOCKSTEP_MAGIC UINT32_C(0x52444734)
 
 /* Vehicle-owned storage containing only generated synapse_fbs 0.9 payloads. */
 struct rdd2_lockstep_shared {
@@ -34,8 +34,10 @@ struct rdd2_lockstep_shared {
   struct rdd2_lockstep_gps_mission_status mission_status;
 };
 
-_Static_assert(sizeof(struct rdd2_lockstep_shared) == 1176,
+_Static_assert(sizeof(struct rdd2_lockstep_shared) == 1192,
                "native SIL shared layout mismatch");
+_Static_assert(_Alignof(struct rdd2_lockstep_shared) == 8,
+               "native SIL shared alignment mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_shared, inertial_sample) == 16,
                "inertial sample ABI offset mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_shared, manual_control) == 56,

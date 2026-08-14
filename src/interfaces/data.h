@@ -63,13 +63,19 @@ struct rdd2_lockstep_gps_mission_status {
   uint32_t gnss_generation;
   uint32_t plan_generation;
   uint32_t reference_generation;
+  uint32_t odometry_generation;
+  uint32_t guidance_generation;
+  uint32_t motor_generation;
+  uint32_t health_generation;
   uint8_t mission_state;
   uint8_t flags;
   uint8_t reserved[6];
 };
 
-_Static_assert(sizeof(struct rdd2_lockstep_gps_mission_status) == 32U,
+_Static_assert(sizeof(struct rdd2_lockstep_gps_mission_status) == 48U,
                "lockstep GPS mission status ABI size mismatch");
+_Static_assert(_Alignof(struct rdd2_lockstep_gps_mission_status) == 8U,
+               "lockstep GPS mission status ABI alignment mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status,
                         plan_sequence) == 8U,
                "lockstep status plan sequence offset mismatch");
@@ -77,10 +83,24 @@ _Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status,
                         reference_generation) == 20U,
                "lockstep status reference generation offset mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status,
-                        mission_state) == 24U,
+                        odometry_generation) == 24U,
+               "lockstep status odometry generation offset mismatch");
+_Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status,
+                        guidance_generation) == 28U,
+               "lockstep status guidance generation offset mismatch");
+_Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status,
+                        motor_generation) == 32U,
+               "lockstep status motor generation offset mismatch");
+_Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status,
+                        health_generation) == 36U,
+               "lockstep status health generation offset mismatch");
+_Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status,
+                        mission_state) == 40U,
                "lockstep status mission state offset mismatch");
+_Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status, flags) == 41U,
+               "lockstep status flags offset mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status, reserved) ==
-                   26U,
+                   42U,
                "lockstep status reserved offset mismatch");
 
 typedef struct {

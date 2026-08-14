@@ -61,6 +61,8 @@ int rdd2_gnss_lockstep_init(void) {
   g_fix.vertical_accuracy_mm = UINT16_MAX;
   g_fix.velocity_accuracy_mm_s = UINT16_MAX;
   g_fix.yaw_accuracy_cdeg = UINT16_MAX;
+  g_fix.hdop_centi = UINT16_MAX;
+  g_fix.vdop_centi = UINT16_MAX;
   g_fix.fix_type = synapse_types_GnssFixType_NoFix;
   g_fix.time_status = synapse_types_TimeStatus_LocalFreerun;
   zros_node_init(&g_node, "rdd2_gnss_lockstep");
@@ -90,6 +92,15 @@ bool rdd2_gnss_lockstep_submit(const synapse_topic_GnssFixData_t *fix,
       fix->timestamp_ns > control_now_ns ||
       (next.observed && fix->timestamp_ns < next.last_timestamp_ns)) {
     return false;
+  }
+  if (!next.observed && fix->timestamp_ns == 0U) {
+    if (memcmp(fix, &g_fix, sizeof(*fix)) != 0) {
+      return false;
+    }
+    key = k_spin_lock(&g_lock);
+    g_state.control_now_ns = control_now_ns;
+    k_spin_unlock(&g_lock, key);
+    return true;
   }
   if (next.observed && fix->timestamp_ns == next.last_timestamp_ns) {
     if (memcmp(fix, &g_fix, sizeof(*fix)) != 0) {

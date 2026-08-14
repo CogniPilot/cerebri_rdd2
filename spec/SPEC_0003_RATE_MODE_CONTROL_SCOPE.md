@@ -25,7 +25,7 @@ therefore execute the same control laws at the same task boundaries.
   block's modeled sample rate. Firmware must not reconstruct generated state
   or mutate generated implementation details.
 - The explicit pilot-selectable modes are `ACRO`, `ATTITUDE`, and `POSITION`.
-- `CH5` uses three ranges: low selects `ACRO`, middle selects `ATTITUDE`, and
+- `CH6` uses three ranges: low selects `ACRO`, middle selects `ATTITUDE`, and
   high selects `POSITION`.
 - `ACRO` commands body angular velocity directly from pilot sticks.
 - `ATTITUDE` commands roll and pitch attitude while retaining direct pilot yaw

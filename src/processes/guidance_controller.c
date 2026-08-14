@@ -280,7 +280,9 @@ static void guidance_controller_thread(void *arg1, void *arg2, void *arg3) {
     reference_valid =
         reference_inputs_are_valid(&process->reference, process->have_reference,
                                    process->attitude.timestamp_ns);
-    position_capable = rdd2_position_source_ready_get() && reference_valid;
+    position_capable = rdd2_position_source_ready_get() && reference_valid &&
+                       rdd2_navigation_position_quality_is_usable(
+                           process->odometry.quality_pct);
     position_arm_blocked =
         position_requested && !position_capable && !health_armed && arm_switch;
     if (manual_update_ok && manual_valid && process->manual.flight_mode <= 1U) {
@@ -306,6 +308,12 @@ static void guidance_controller_thread(void *arg1, void *arg2, void *arg3) {
     outputs_finite = efmu_outputs_are_finite(&process->efmu);
     current_fault = !navigation_valid || position_arm_blocked || !step_ok ||
                     !outputs_finite;
+    if (current_fault && arm_switch && !process->control_fault_latched) {
+      LOG_ERR("Guidance fault: navigation=%d position_arm_blocked=%d "
+              "generated_status=%u outputs_finite=%d",
+              navigation_valid, position_arm_blocked,
+              process->efmu.rumoca_galec_error_signal_status, outputs_finite);
+    }
     process->control_fault_latched = rdd2_control_fault_latch(
         process->control_fault_latched, arm_switch_ack_valid, arm_switch,
         current_fault);

@@ -22,11 +22,24 @@ set(_navigation_source
 set(_navigation_header
   "${_navigation_production_dir}/Vehicles_Rdd2_NavigationEstimator.h"
 )
-foreach(_generated_file IN ITEMS "${_navigation_source}" "${_navigation_header}")
+set(_kernel_source "${_navigation_production_dir}/rumoca_galec_kernels.c")
+set(_kernel_header "${_navigation_production_dir}/rumoca_galec_kernels.h")
+foreach(_generated_file IN ITEMS
+    "${_navigation_source}"
+    "${_navigation_header}"
+)
   if(NOT EXISTS "${_generated_file}" OR IS_DIRECTORY "${_generated_file}")
     message(FATAL_ERROR "Missing staged generated estimator file: ${_generated_file}")
   endif()
 endforeach()
+set(_navigation_sources "${_navigation_source}")
+if(EXISTS "${_kernel_source}" AND EXISTS "${_kernel_header}")
+  list(APPEND _navigation_sources "${_kernel_source}")
+elseif(EXISTS "${_kernel_source}" OR EXISTS "${_kernel_header}")
+  message(FATAL_ERROR
+    "Staged generated estimator must provide both rumoca kernel files or neither"
+  )
+endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/../rdd2_test_environment.cmake")
 
@@ -43,6 +56,6 @@ target_sources(app PRIVATE
   src/log_module.c
   src/main.c
   "${RDD2_TEST_APP_ROOT}/src/processes/navigation_gps.c"
-  "${_navigation_source}"
+  ${_navigation_sources}
 )
 target_compile_definitions(app PRIVATE CONFIG_RDD2_LOCKSTEP=1)

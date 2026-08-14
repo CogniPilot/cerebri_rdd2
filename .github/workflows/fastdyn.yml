@@ -70,7 +70,7 @@ jobs:
           mkdir -p "$standard_root"
           unzip -q "$standard_zip" -d "$standard_root"
 
-          plant_root="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant"
+          plant_root="$RDD2_MODELICA_MODELS_ROOT/artifacts/vehicles/rdd2/plant/Vehicles_Rdd2_Plant"
           model_identifier="$(python3 - "$plant_root/modelDescription.xml" <<'PY'
           import sys
           import xml.etree.ElementTree as ET
