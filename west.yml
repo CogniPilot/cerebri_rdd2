@@ -54,7 +54,7 @@ manifest:
         - workspace-overridable
     - name: csyn
       remote: cognipilot
-      revision: 68d802aa00c727ff393ed9a282b16ad918b4a542 # synapse_fbs 0.9.0 plus optical-flow velocity ZROS bridge
+      revision: e0139e68d5e2db6fcaa6420a786b65cd1f8b035f # synapse_fbs 0.9.0, optical-flow ZROS bridge, sysbuild source override
       path: modules/lib/csyn
       groups:
         - workspace-overridable
