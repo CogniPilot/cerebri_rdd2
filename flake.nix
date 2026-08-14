@@ -404,13 +404,6 @@
                           ]
                         }:${jlinkCli}/opt/SEGGER/JLink''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-                        # A build directory is a function of its bindings, so
-                        # two callers with the same bindings share one
-                        # directory. Ninja does not lock, so the second writer
-                        # corrupts the first and the failure surfaces as object
-                        # files vanishing during archiving, far from the cause.
-                        # Hold an advisory lock for the life of the build and
-                        # name the conflict instead.
                         # Every provider boundary the caller actually set,
                         # promoted to an explicit -D. A value cached in a
                         # reused build directory otherwise outranks the
@@ -440,6 +433,15 @@
                           done
                         }
 
+                        # A build directory is a function of its bindings, so
+                        # two callers with the same bindings share one
+                        # directory. Ninja does not lock, so the second writer
+                        # corrupts the first and the failure surfaces as object
+                        # files vanishing during archiving, far from the cause.
+                        # Hold an advisory lock for the life of the build and
+                        # name the conflict instead. The lock uses one
+                        # descriptor, so a process holds one build directory at
+                        # a time, which matches how these apps build.
                         rdd2_lock_build_dir() {
                           local build_dir="$1"
 
@@ -849,6 +851,7 @@
 
                           printf '[deps] building the FastDyn firmware image incrementally\n'
                           rdd2_provider_cmake_args
+                          rdd2_lock_build_dir "$RDD2_FASTDYN_BUILD_DIR"
                           (
                             cd "$RDD2_WORKSPACE_ROOT"
                             west build -p always -b "$board" -d "$RDD2_FASTDYN_BUILD_DIR" "$app" -- \
