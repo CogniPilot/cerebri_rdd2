@@ -888,12 +888,35 @@
                         }
           '';
 
+          # Supply the pinned compiler as a default, never as an override. A
+          # caller that selected a provider keeps it; unsetting the variable
+          # asks for the pinned one. An override must carry its own digest so
+          # the eFMI kernel check verifies the compiler that actually ran, and
+          # the digest is checked against the file rather than trusted.
           flightCompilerScript = ''
-            export RDD2_RUMOCA_EXECUTABLE="${flightRumoca}/bin/rumoca"
-            pinned_rumoca_sha256="$(${pkgs.coreutils}/bin/sha256sum \
-              ${flightRumoca}/bin/rumoca)"
-            pinned_rumoca_sha256="''${pinned_rumoca_sha256%% *}"
-            export RDD2_RUMOCA_EXECUTABLE_SHA256="$pinned_rumoca_sha256"
+            if [ -n "''${RDD2_RUMOCA_EXECUTABLE:-}" ]; then
+              if [ -z "''${RDD2_RUMOCA_EXECUTABLE_SHA256:-}" ]; then
+                printf 'error: RDD2_RUMOCA_EXECUTABLE was supplied without RDD2_RUMOCA_EXECUTABLE_SHA256\n' >&2
+                printf '       supply the digest of the selected compiler, or unset both to use the pinned one\n' >&2
+                exit 1
+              fi
+              selected_rumoca_sha256="$(${pkgs.coreutils}/bin/sha256sum \
+                "$RDD2_RUMOCA_EXECUTABLE")"
+              selected_rumoca_sha256="''${selected_rumoca_sha256%% *}"
+              if [ "$selected_rumoca_sha256" != "$RDD2_RUMOCA_EXECUTABLE_SHA256" ]; then
+                printf 'error: RDD2_RUMOCA_EXECUTABLE_SHA256 does not match %s\n' \
+                  "$RDD2_RUMOCA_EXECUTABLE" >&2
+                printf '       declared %s\n       actual   %s\n' \
+                  "$RDD2_RUMOCA_EXECUTABLE_SHA256" "$selected_rumoca_sha256" >&2
+                exit 1
+              fi
+            else
+              export RDD2_RUMOCA_EXECUTABLE="${flightRumoca}/bin/rumoca"
+              pinned_rumoca_sha256="$(${pkgs.coreutils}/bin/sha256sum \
+                ${flightRumoca}/bin/rumoca)"
+              pinned_rumoca_sha256="''${pinned_rumoca_sha256%% *}"
+              export RDD2_RUMOCA_EXECUTABLE_SHA256="$pinned_rumoca_sha256"
+            fi
           '';
 
           mkWestApp =
@@ -1886,11 +1909,16 @@
                 export FASTDYN_EXECUTABLE="''${FASTDYN_EXECUTABLE:-$FASTDYN_STATE/venv/bin/fastdyn}"
                 export FASTDYN_QEMU_PATH="''${FASTDYN_QEMU_PATH:-$FASTDYN_STATE/qemu/build/qemu-system-arm}"
                 export FASTDYN_MONITOR_ELF="''${FASTDYN_MONITOR_ELF:-$FASTDYN_STATE/qemu/ws/monitor.elf}"
-                export RDD2_RUMOCA_EXECUTABLE="${rumoca.packages.${system}.default}/bin/rumoca"
-                pinned_rumoca_sha256="$(${pkgs.coreutils}/bin/sha256sum \
-                  ${rumoca.packages.${system}.default}/bin/rumoca)"
-                pinned_rumoca_sha256="''${pinned_rumoca_sha256%% *}"
-                export RDD2_RUMOCA_EXECUTABLE_SHA256="$pinned_rumoca_sha256"
+                # Default only, so a raw `west build` in this shell keeps a
+                # compiler the caller selected instead of silently reverting
+                # to the pinned one.
+                if [ -z "''${RDD2_RUMOCA_EXECUTABLE:-}" ]; then
+                  export RDD2_RUMOCA_EXECUTABLE="${rumoca.packages.${system}.default}/bin/rumoca"
+                  pinned_rumoca_sha256="$(${pkgs.coreutils}/bin/sha256sum \
+                    ${rumoca.packages.${system}.default}/bin/rumoca)"
+                  pinned_rumoca_sha256="''${pinned_rumoca_sha256%% *}"
+                  export RDD2_RUMOCA_EXECUTABLE_SHA256="$pinned_rumoca_sha256"
+                fi
                 if [ -d "$workspace/zephyr" ]; then
                   export ZEPHYR_BASE="$workspace/zephyr"
                 elif [ -z "''${ZEPHYR_BASE:-}" ]; then

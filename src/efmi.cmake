@@ -69,6 +69,21 @@ if(NOT _rdd2_rumoca_version_result EQUAL 0 OR
   )
 endif()
 
+# Resolved provenance: the providers this build actually consumed, recorded
+# where the build output lives so the selection can be checked afterwards
+# against the one that was intended. The digest and version above are already
+# verified, so this records established facts rather than declared intent.
+file(WRITE ${PROJECT_BINARY_DIR}/rdd2-resolved-providers.txt
+  "rumoca.executable=${RDD2_RUMOCA_EXECUTABLE}\n"
+  "rumoca.sha256=${_rdd2_rumoca_actual_sha256}\n"
+  "rumoca.version=${_rdd2_rumoca_version_output}\n"
+  "modelica_models.root=${RDD2_MODELICA_MODELS_ROOT}\n"
+  "cerebri_modules.root=${RDD2_CEREBRI_MODULES_ROOT}\n"
+  "zros.root=${RDD2_ZROS_ROOT}\n"
+  "csyn.root=${RDD2_CSYN_ROOT}\n"
+)
+message(STATUS "RDD2 Rumoca provider: ${RDD2_RUMOCA_EXECUTABLE}")
+
 add_custom_target(rdd2_rumoca_tool
   DEPENDS ${RDD2_RUMOCA_EXECUTABLE}
 )
