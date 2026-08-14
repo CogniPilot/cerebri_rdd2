@@ -404,6 +404,26 @@
                           ]
                         }:${jlinkCli}/opt/SEGGER/JLink''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+                        # A build directory is a function of its bindings, so
+                        # two callers with the same bindings share one
+                        # directory. Ninja does not lock, so the second writer
+                        # corrupts the first and the failure surfaces as object
+                        # files vanishing during archiving, far from the cause.
+                        # Hold an advisory lock for the life of the build and
+                        # name the conflict instead.
+                        rdd2_lock_build_dir() {
+                          local build_dir="$1"
+
+                          mkdir -p "$build_dir"
+                          exec 9>"$build_dir/.rdd2-build.lock"
+                          if ! flock --nonblock 9; then
+                            printf 'error: another build is already using %s\n' "$build_dir" >&2
+                            printf '       wait for it to finish, or build into a different directory\n' >&2
+                            printf '       (RDD2_BUILD_DIR or RDD2_NATIVE_SIM_BUILD_DIR)\n' >&2
+                            return 1
+                          fi
+                        }
+
                         rdd2_require_module_paths() {
                           local workspace="$1"
                           local missing=0
@@ -960,6 +980,8 @@
             board_slug="''${board//\//_}"
             build_dir="''${RDD2_BUILD_DIR:-$app/build-$board_slug}"
 
+            rdd2_lock_build_dir "$build_dir"
+
             cd "$workspace"
             west build --sysbuild -p always -b "$board" -d "$build_dir" "$app" "$@"
             rdd2_require_mcuboot_sysbuild "$build_dir" "$board"
@@ -979,6 +1001,8 @@
             board="''${RDD2_BOARD:-mr_vmu_tropic}"
             board_slug="''${board//\//_}"
             build_dir="''${RDD2_COMMS_STUB_BUILD_DIR:-$app/build-$board_slug-comms-stub}"
+
+            rdd2_lock_build_dir "$build_dir"
 
             cd "$workspace"
             west build --sysbuild -p always -b "$board" -d "$build_dir" "$app" "$@" -- \
@@ -1023,6 +1047,8 @@
             board="''${RDD2_NATIVE_SIM_BOARD:-native_sim/native/64}"
             build_dir="''${RDD2_NATIVE_SIM_BUILD_DIR:-$app/build-native_sim}"
 
+            rdd2_lock_build_dir "$build_dir"
+
             cd "$workspace"
             exec west build -p always -b "$board" -d "$build_dir" "$app" "$@"
           '';
@@ -1041,6 +1067,8 @@
 
             board="''${RDD2_NATIVE_SIM_BOARD:-native_sim/native/64}"
             build_dir="''${RDD2_GPS_LOCKSTEP_TEST_BUILD_DIR:-$app/build-native_sim-gps-lockstep}"
+
+            rdd2_lock_build_dir "$build_dir"
 
             cd "$RDD2_WORKSPACE_ROOT"
             west build -p always -b "$board" -d "$build_dir" "$app"
@@ -1290,6 +1318,8 @@
             board_slug="''${board//\//_}"
             build_dir="''${RDD2_BUILD_DIR:-$app/build-$board_slug}"
 
+            rdd2_lock_build_dir "$build_dir"
+
             cd "$workspace"
             exec west build -b "$board" -d "$build_dir" -t menuconfig "$app" "$@"
           '';
@@ -1518,6 +1548,9 @@
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-host}"
             board="''${RDD2_NATIVE_SIM_BOARD:-native_sim/native/64}"
             build_dir="''${RDD2_NATIVE_SIM_BUILD_DIR:-$app/build-native_sim}"
+
+            rdd2_lock_build_dir "$build_dir"
+
 
             cd "$RDD2_WORKSPACE_ROOT"
             west build -b "$board" -d "$build_dir" "$app"
