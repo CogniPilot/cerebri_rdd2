@@ -80,7 +80,7 @@ endif()
 # where the build output lives so the selection can be checked afterwards
 # against the one that was intended. The digest and version above are already
 # verified, so this records established facts rather than declared intent.
-file(WRITE ${PROJECT_BINARY_DIR}/rdd2-resolved-providers.txt
+set(_rdd2_provenance_content
   "rumoca.executable=${RDD2_RUMOCA_EXECUTABLE}\n"
   "rumoca.sha256=${_rdd2_rumoca_actual_sha256}\n"
   "rumoca.version=${_rdd2_rumoca_version_output}\n"
@@ -89,6 +89,19 @@ file(WRITE ${PROJECT_BINARY_DIR}/rdd2-resolved-providers.txt
   "zros.root=${RDD2_ZROS_ROOT}\n"
   "csyn.root=${RDD2_CSYN_ROOT}\n"
 )
+file(WRITE ${PROJECT_BINARY_DIR}/rdd2-resolved-providers.txt
+  ${_rdd2_provenance_content}
+)
+# Under sysbuild this project is one image among several, so the record above
+# lands in the image directory while anything inspecting the build looks at the
+# top level. Write it there too: the providers are a property of the build, and
+# a caller should not have to know whether sysbuild was involved to find them.
+if(SYSBUILD)
+  get_filename_component(_rdd2_sysbuild_topdir ${PROJECT_BINARY_DIR} DIRECTORY)
+  file(WRITE ${_rdd2_sysbuild_topdir}/rdd2-resolved-providers.txt
+    ${_rdd2_provenance_content}
+  )
+endif()
 message(STATUS "RDD2 Rumoca provider: ${RDD2_RUMOCA_EXECUTABLE}")
 
 add_custom_target(rdd2_rumoca_tool
