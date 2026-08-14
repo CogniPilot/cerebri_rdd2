@@ -237,7 +237,10 @@ int rdd2_rate_control_allocator_process_run(void)
 			imu_valid = rdd2_imu_stream_wait_next(
 				&process->gyro, &process->accel, &dt, &sample_ns);
 		} else {
-			k_usleep(625U);
+			/* No local IMU stream (e.g. mesh/bench image): pace the stub
+			 * loop slowly so the networking, PHY link-monitor, and shell
+			 * threads are not starved. */
+			k_msleep(20U);
 			process->gyro = (rdd2_vec3f_t){0};
 			process->accel = (rdd2_vec3f_t){0};
 			imu_valid = false;

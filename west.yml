@@ -72,5 +72,9 @@ manifest:
       path: modules/lib/zenoh-pico
     - name: zephyr_boards
       remote: cognipilot
-      revision: 2f38b1599721d9728fdf448a55b9aedb62d684f7 # 614eed3 + tropic RT1064 fork-dts fixes
+      revision: 1d7c17e875938082f024e80d114ac82c25aa53a9 # 614eed3 + tropic RT1064 mcuboot/sysbuild fork-compat fixes
       path: modules/lib/zephyr_boards
+    - name: mcuboot
+      remote: zephyrproject-rtos
+      revision: c38f7a10c14ae8b95c0296cd10320907c28e02c7 # matches the fleet zephyr import
+      path: bootloader/mcuboot
