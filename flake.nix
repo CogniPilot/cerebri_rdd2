@@ -1377,9 +1377,20 @@
           rdd2-fastdyn-ci = mkCargoApp "rdd2-fastdyn-ci" ''
             ${commonScript}
 
-            unset RDD2_MODELICA_MODELS_ROOT
-            unset RDD2_RUMOCA_EXECUTABLE
-            unset RDD2_RUMOCA_EXECUTABLE_SHA256
+            # Default to this repository's pinned providers, which is what an
+            # acceptance run must use, but honour a caller that named one. A
+            # developer iterating on models has to be able to reach this path;
+            # forcing the pin unconditionally made the workspace's central
+            # workflow unreachable through the only BIL entry point.
+            #
+            # The two cases are not equivalent and the run says which it is, so
+            # an edited-input pass is never mistaken for a qualifying one.
+            if [ -n "''${RDD2_MODELICA_MODELS_ROOT:-}" ] ||
+               [ -n "''${RDD2_RUMOCA_EXECUTABLE:-}" ]; then
+              printf '[deps] NON-QUALIFYING run: caller-selected providers\n' >&2
+            else
+              printf '[deps] qualifying run: repository-pinned providers\n' >&2
+            fi
             app="$(rdd2_find_app)"
             rdd2_ensure_workspace "$app" "${rdd2-west-update}/bin/rdd2-west-update"
             rdd2_export_common "$app"
