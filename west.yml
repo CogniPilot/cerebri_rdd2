@@ -52,7 +52,7 @@ manifest:
       path: modules/lib/zros
     - name: csyn
       remote: cognipilot
-      revision: c34dd35d7b81f33b1480fda07558f26617e85a26 # synapse_fbs 0.9.0, nanosecond time domain, contract matching fix
+      revision: 68d802aa00c727ff393ed9a282b16ad918b4a542 # synapse_fbs 0.9.0 plus optical-flow velocity ZROS bridge
       path: modules/lib/csyn
     - name: cerebri_modules
       remote: cognipilot

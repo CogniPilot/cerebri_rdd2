@@ -1,0 +1,64 @@
+config RDD2_OPTICAL_FLOW_SOURCE_CSYN
+	bool "Fuse range-compensated optical-flow velocity received over CSyn"
+	depends on CSYN_ZROS_BRIDGE
+	depends on !RDD2_LOCKSTEP
+	default n
+	help
+	  Subscribe to the fixed-layout Synapse flow_vel topic and feed validated
+	  planar body-frame velocity into the generated navigation estimator. The
+	  producer must have already applied camera mounting, range, and tilt
+	  compensation and must identify the sample as gPTP synchronized or in
+	  gPTP holdover. GPS remains enabled and provides the position anchor.
+
+if RDD2_OPTICAL_FLOW_SOURCE_CSYN
+
+config RDD2_OPTICAL_FLOW_SENSOR_ID
+	int "Accepted optical-flow sensor id"
+	default 0
+	range 0 255
+
+config RDD2_OPTICAL_FLOW_MIN_QUALITY
+	int "Minimum accepted optical-flow quality"
+	default 100
+	range 1 255
+
+config RDD2_OPTICAL_FLOW_MAX_AGE_MS
+	int "Maximum time since a valid flow sample arrived"
+	default 150
+	range 10 1000
+	help
+	  Age is measured in the VMU control clock from receipt, because the
+	  producer timestamp is in the gPTP domain while the IMU timestamp is in
+	  the local sensor-clock domain.
+
+config RDD2_OPTICAL_FLOW_MIN_DISTANCE_MM
+	int "Minimum trusted ground distance in millimeters"
+	default 50
+	range 1 10000
+
+config RDD2_OPTICAL_FLOW_MAX_DISTANCE_MM
+	int "Maximum trusted ground distance in millimeters"
+	default 5000
+	range 100 20000
+
+config RDD2_OPTICAL_FLOW_MAX_TILT_MRAD
+	int "Maximum accepted absolute roll or pitch in milliradians"
+	default 700
+	range 50 1570
+
+config RDD2_OPTICAL_FLOW_MAX_SPEED_MM_S
+	int "Maximum accepted planar speed component in millimeters per second"
+	default 10000
+	range 100 50000
+
+config RDD2_OPTICAL_FLOW_BEST_STDDEV_MM_S
+	int "Velocity standard deviation at quality 255 in millimeters per second"
+	default 100
+	range 1 5000
+
+config RDD2_OPTICAL_FLOW_WORST_STDDEV_MM_S
+	int "Velocity standard deviation at minimum quality in millimeters per second"
+	default 1000
+	range 1 10000
+
+endif

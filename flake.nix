@@ -597,6 +597,22 @@
                           fi
                         }
 
+                        rdd2_require_optical_flow_configuration() {
+                          local build_dir="$1"
+                          local domains="$build_dir/domains.yaml"
+                          local main_image
+                          local main_config
+
+                          rdd2_require_flight_configuration "$build_dir"
+                          main_image="$(sed -n 's/^default: //p' "$domains")"
+                          main_config="$build_dir/$main_image/zephyr/.config"
+                          if ! grep -qx 'CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN=y' \
+                              "$main_config"; then
+                            printf 'error: optical-flow firmware is missing its CSyn source\n' >&2
+                            return 1
+                          fi
+                        }
+
                         rdd2_require_comms_stub_configuration() {
                           local build_dir="$1"
                           local domains="$build_dir/domains.yaml"
@@ -948,6 +964,28 @@
             rdd2_require_comms_stub_configuration "$build_dir"
           '';
 
+          rdd2-build-optical-flow = mkWestApp "rdd2-build-optical-flow" ''
+            ${commonScript}
+            ${flightCompilerScript}
+
+            app="$(rdd2_find_app)"
+            rdd2_export_common "$app"
+            rdd2_require_workspace "$app"
+            workspace="$RDD2_WORKSPACE_ROOT"
+
+            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
+
+            board="''${RDD2_BOARD:-mr_vmu_tropic}"
+            board_slug="''${board//\//_}"
+            build_dir="''${RDD2_OPTICAL_FLOW_BUILD_DIR:-$app/build-$board_slug-optical-flow}"
+
+            cd "$workspace"
+            west build --sysbuild -p always -b "$board" -d "$build_dir" "$app" "$@" -- \
+              -DEXTRA_CONF_FILE="$app/optical_flow.conf"
+            rdd2_require_mcuboot_sysbuild "$build_dir" "$board"
+            rdd2_require_optical_flow_configuration "$build_dir"
+          '';
+
           rdd2-build-native-sim = mkWestApp "rdd2-build-native-sim" ''
             ${commonScript}
             ${flightCompilerScript}
@@ -1006,6 +1044,7 @@
               process_control_safety \
               generated_guidance_validity \
               generated_navigation_fault_injection \
+              navigation_optical_flow \
               gnss_m10_protocol \
               lockstep_transport \
               gnss_lockstep_source
@@ -1099,6 +1138,49 @@
             rdd2_require_mcuboot_sysbuild "$build_dir"
             rdd2_require_comms_stub_configuration "$build_dir"
 
+            mapfile -t flash_domains < <(
+              sed -n '/^flash_order:/,$s/^  - //p' "$build_dir/domains.yaml"
+            )
+            if [ "''${#flash_domains[@]}" -ne 2 ] ||
+              [ "''${flash_domains[0]}" != "mcuboot" ]; then
+              printf 'error: refusing unexpected sysbuild flash order\n' >&2
+              exit 1
+            fi
+
+            cd "$workspace"
+            for domain in "''${flash_domains[@]}"; do
+              west flash --no-rebuild -d "$build_dir" --domain "$domain" \
+                "''${runner_args[@]}" "$@"
+            done
+          '';
+
+          rdd2-flash-optical-flow = mkWestApp "rdd2-flash-optical-flow" ''
+            ${commonScript}
+            ${jlinkAccessScript}
+
+            app="$(rdd2_find_app)"
+            rdd2_export_common "$app"
+            rdd2_require_workspace "$app"
+            workspace="$RDD2_WORKSPACE_ROOT"
+
+            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
+
+            board="''${RDD2_BOARD:-mr_vmu_tropic}"
+            board_slug="''${board//\//_}"
+            build_dir="''${RDD2_OPTICAL_FLOW_BUILD_DIR:-$app/build-$board_slug-optical-flow}"
+            runner="''${RDD2_FLASH_RUNNER:-jlink}"
+            runner_args=()
+            flash_domains=()
+
+            if [ -n "$runner" ]; then
+              runner_args=(--runner "$runner")
+            fi
+            if [ "$runner" = "jlink" ]; then
+              rdd2_require_jlink_access
+            fi
+
+            rdd2_require_mcuboot_sysbuild "$build_dir" "$board"
+            rdd2_require_optical_flow_configuration "$build_dir"
             mapfile -t flash_domains < <(
               sed -n '/^flash_order:/,$s/^  - //p' "$build_dir/domains.yaml"
             )
@@ -1562,10 +1644,12 @@
             paths = baseTools ++ [
               rdd2-build
               rdd2-build-comms-stub
+              rdd2-build-optical-flow
               rdd2-build-native-sim
               rdd2-test-gps-lockstep
               rdd2-flash
               rdd2-flash-comms-stub
+              rdd2-flash-optical-flow
               rdd2-debug
               rdd2-menuconfig
               rdd2-console
@@ -1586,10 +1670,12 @@
             host-tools
             rdd2-build
             rdd2-build-comms-stub
+            rdd2-build-optical-flow
             rdd2-build-native-sim
             rdd2-test-gps-lockstep
             rdd2-flash
             rdd2-flash-comms-stub
+            rdd2-flash-optical-flow
             rdd2-debug
             rdd2-menuconfig
             rdd2-console
@@ -1624,6 +1710,12 @@
             meta.description = "Build the non-flyable RDD2 communications bench firmware";
           };
 
+          build-optical-flow = {
+            type = "app";
+            program = "${packages.rdd2-build-optical-flow}/bin/rdd2-build-optical-flow";
+            meta.description = "Build RDD2 GPS plus optical-flow flight firmware";
+          };
+
           build-native-sim = {
             type = "app";
             program = "${packages.rdd2-build-native-sim}/bin/rdd2-build-native-sim";
@@ -1646,6 +1738,12 @@
             type = "app";
             program = "${packages.rdd2-flash-comms-stub}/bin/rdd2-flash-comms-stub";
             meta.description = "Flash the non-flyable RDD2 communications bench firmware";
+          };
+
+          flash-optical-flow = {
+            type = "app";
+            program = "${packages.rdd2-flash-optical-flow}/bin/rdd2-flash-optical-flow";
+            meta.description = "Flash the RDD2 GPS plus optical-flow firmware build";
           };
 
           debug = {
@@ -1818,7 +1916,7 @@
               fi
 
               echo "cerebri_rdd2 Nix shell: clangd + Zephyr compile_commands configured"
-              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-native-sim, rdd2-test-gps-lockstep, rdd2-flash, rdd2-flash-comms-stub, rdd2-debug, rdd2-console, rdd2-systemview, rdd2-systemview-capture"
+              echo "cerebri_rdd2 Nix shell: rdd2-west-update, rdd2-build, rdd2-build-optical-flow, rdd2-build-native-sim, rdd2-test-gps-lockstep, rdd2-flash, rdd2-flash-optical-flow, rdd2-flash-comms-stub, rdd2-debug, rdd2-console, rdd2-systemview, rdd2-systemview-capture"
               echo "cerebri_rdd2 Nix shell: rdd2-fastdyn-setup, rdd2-fastdyn-ci, rdd2-fastdyn-mission"
             '';
           };

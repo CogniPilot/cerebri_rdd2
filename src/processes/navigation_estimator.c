@@ -5,6 +5,7 @@
 #include "control_safety.h"
 #include "interfaces/zros_topics.h"
 #include "navigation_gps.h"
+#include "navigation_optical_flow.h"
 #include "scheduling.h"
 
 #include <stdbool.h>
@@ -30,14 +31,23 @@ struct navigation_estimator_process {
   synapse_topic_InertialSampleData_t imu;
   synapse_topic_ExternalOdometryData_t external_odometry;
   synapse_topic_GnssFixData_t gnss;
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+  synapse_topic_OpticalFlowVelocityData_t optical_flow;
+#endif
   synapse_topic_VehicleHealthData_t health;
   synapse_topic_OdometryEstimateData_t odometry;
   synapse_topic_AttitudeEstimateData_t attitude;
   struct rdd2_navigation_gps_adapter gps_adapter;
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+  struct rdd2_navigation_optical_flow_adapter optical_flow_adapter;
+#endif
   struct zros_node node;
   struct zros_sub imu_sub;
   struct zros_sub external_odometry_sub;
   struct zros_sub gnss_sub;
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+  struct zros_sub optical_flow_sub;
+#endif
   struct zros_sub health_sub;
   struct zros_pub odometry_pub;
   struct zros_pub attitude_pub;
@@ -54,6 +64,29 @@ static struct navigation_estimator_process g_process;
 static atomic_t g_origin_valid;
 static struct k_thread g_thread;
 K_THREAD_STACK_DEFINE(g_navigation_stack, NAVIGATION_STACK_SIZE);
+
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+static const struct rdd2_navigation_optical_flow_config
+    g_optical_flow_config = {
+        .max_age_ns = (uint64_t)CONFIG_RDD2_OPTICAL_FLOW_MAX_AGE_MS *
+                      UINT64_C(1000000),
+        .min_distance_m =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_MIN_DISTANCE_MM * 1.0e-3f,
+        .max_distance_m =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_MAX_DISTANCE_MM * 1.0e-3f,
+        .max_tilt_rad =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_MAX_TILT_MRAD * 1.0e-3f,
+        .max_speed_m_s =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_MAX_SPEED_MM_S * 1.0e-3f,
+        .best_stddev_m_s =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_BEST_STDDEV_MM_S * 1.0e-3f,
+        .worst_stddev_m_s =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_WORST_STDDEV_MM_S * 1.0e-3f,
+        .sensor_id = CONFIG_RDD2_OPTICAL_FLOW_SENSOR_ID,
+        .min_quality = CONFIG_RDD2_OPTICAL_FLOW_MIN_QUALITY,
+        .require_gptp = true,
+};
+#endif
 
 static bool imu_valid(const synapse_topic_InertialSampleData_t *imu) {
   const uint8_t required = synapse_topic_InertialFieldFlags_Accel |
@@ -143,6 +176,29 @@ static void copy_gps_input_to_efmu(
     }
   }
 }
+
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+static void copy_optical_flow_input_to_efmu(
+    NavigationEstimatorState *efmu,
+    const struct rdd2_navigation_optical_flow_measurement *measurement) {
+  efmu->opticalFlow_valid = measurement->valid;
+  efmu->opticalFlow_fresh = measurement->fresh;
+  efmu->opticalFlow_timestamp_s = measurement->timestamp_s;
+  for (size_t axis = 0U; axis < 2U; ++axis) {
+    efmu->velocityBodyFlu_m_s[axis] =
+        measurement->velocity_body_flu_m_s[axis];
+    efmu->integratedLineOfSight_rad[axis] =
+        measurement->integrated_line_of_sight_rad[axis];
+    for (size_t column = 0U; column < 2U; ++column) {
+      efmu->velocityCovarianceBody_m2_s2[axis][column] =
+          measurement->velocity_covariance_body_m2_s2[axis][column];
+    }
+  }
+  efmu->integrationTime_s = measurement->integration_time_s;
+  efmu->groundDistance_m = measurement->ground_distance_m;
+  efmu->quality = measurement->quality;
+}
+#endif
 
 static void
 health_use_control_time(synapse_topic_VehicleHealthData_t *health,
@@ -299,9 +355,15 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
 
   while (true) {
     struct rdd2_navigation_gps_measurement gps_measurement;
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+    struct rdd2_navigation_optical_flow_measurement optical_flow_measurement;
+#endif
     bool external_fresh;
     bool gnss_fresh;
     bool health_fresh;
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+    bool optical_flow_fresh;
+#endif
     bool origin_captured;
     bool estimate_valid;
     bool outputs_finite;
@@ -320,6 +382,9 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     external_fresh = zros_sub_update(&process->external_odometry_sub) == 0;
     gnss_fresh = zros_sub_update(&process->gnss_sub) == 0;
     health_fresh = zros_sub_update(&process->health_sub) == 0;
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+    optical_flow_fresh = zros_sub_update(&process->optical_flow_sub) == 0;
+#endif
     health_use_control_time(&process->health, &process->imu, health_fresh);
     copy_imu_input_to_efmu(&process->efmu, &process->imu);
     if (external_odometry_source_allowed(
@@ -336,6 +401,17 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
         &process->health, health_fresh, process->imu.timestamp_ns);
     atomic_set(&g_origin_valid, process->gps_adapter.origin_valid ? 1 : 0);
     copy_gps_input_to_efmu(&process->efmu, &gps_measurement);
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+    rdd2_navigation_optical_flow_step(
+        &process->optical_flow_adapter, &optical_flow_measurement,
+        &process->optical_flow, optical_flow_fresh, process->imu.timestamp_ns,
+        &g_optical_flow_config);
+    copy_optical_flow_input_to_efmu(&process->efmu,
+                                    &optical_flow_measurement);
+#else
+    process->efmu.opticalFlow_valid = false;
+    process->efmu.opticalFlow_fresh = false;
+#endif
     if (origin_captured) {
       process->gps_origin_initialization_pending = true;
       process->gps_origin_initialization_started_ns = process->imu.timestamp_ns;
@@ -352,8 +428,6 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
       process->efmu.mocap_valid = false;
       process->efmu.mocap_fresh = false;
     }
-    process->efmu.opticalFlow_valid = false;
-    process->efmu.opticalFlow_fresh = false;
     process->efmu.reset =
         !process->initialized || process->gps_origin_initialization_pending;
     NavigationEstimator_dostep(&process->efmu);
@@ -393,6 +467,9 @@ int rdd2_navigation_estimator_process_start(void) {
 
   *process = (struct navigation_estimator_process){0};
   rdd2_navigation_gps_init(&process->gps_adapter);
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+  rdd2_navigation_optical_flow_init(&process->optical_flow_adapter);
+#endif
   NavigationEstimator_startup(&process->efmu);
   set_default_mocap_covariance(&process->efmu);
   NavigationEstimator_recalibrate(&process->efmu);
@@ -413,6 +490,13 @@ int rdd2_navigation_estimator_process_start(void) {
     rc = zros_sub_init(&process->health_sub, &process->node,
                        &topic_vehicle_health, &process->health, 0.0);
   }
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+  if (rc == 0) {
+    rc = zros_sub_init(&process->optical_flow_sub, &process->node,
+                       &topic_optical_flow_velocity, &process->optical_flow,
+                       0.0);
+  }
+#endif
   if (rc == 0) {
     rc = zros_pub_init(&process->odometry_pub, &process->node,
                        &topic_navigation_odometry, &process->odometry);

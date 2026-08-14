@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <synapse/control_reader.h>
+#include <synapse/optical_flow_reader.h>
 #include <synapse/sensors_reader.h>
 #include <synapse/state_reader.h>
 #include <synapse/types_reader.h>

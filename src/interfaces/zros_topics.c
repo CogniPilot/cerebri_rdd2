@@ -41,6 +41,10 @@ CSYN_TOPIC_DEFINE(imu, "imu", CSYN_DIR_RX,
                   sizeof(synapse_topic_InertialSampleData_t));
 CSYN_TOPIC_DEFINE(external_pose, "external_pose", CSYN_DIR_RX,
                   sizeof(synapse_topic_ExternalOdometryData_t));
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+CSYN_TOPIC_DEFINE(flow_vel, "flow_vel", CSYN_DIR_RX,
+                  sizeof(synapse_topic_OpticalFlowVelocityData_t));
+#endif
 CSYN_TOPIC_DEFINE(pwm, "pwm", CSYN_DIR_TX,
                   sizeof(synapse_topic_PwmSignalOutputsData_t));
 CSYN_TOPIC_DEFINE(health, "health", CSYN_DIR_TX,
@@ -56,6 +60,10 @@ CSYN_TOPIC_DEFINE(loop, "loop", CSYN_DIR_TX,
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(inertial_sample,
                                    synapse_topic_InertialSampleData_t);
 ZROS_TOPIC_DEFINE(external_odometry, synapse_topic_ExternalOdometryData_t);
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(optical_flow_velocity,
+                                   synapse_topic_OpticalFlowVelocityData_t);
+#endif
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(pwm_signal_outputs,
                                    synapse_topic_PwmSignalOutputsData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(vehicle_health,
@@ -95,6 +103,11 @@ static uint16_t topic_synapse_id(const struct zros_topic *topic) {
   if (topic == &topic_external_odometry) {
     return synapse_topic_TopicId_ExternalOdometry;
   }
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+  if (topic == &topic_optical_flow_velocity) {
+    return synapse_topic_TopicId_OpticalFlowVelocity;
+  }
+#endif
   if (topic == &topic_pwm_signal_outputs) {
     return synapse_topic_TopicId_PwmSignalOutputs;
   }
@@ -188,6 +201,9 @@ static struct zros_shell_topic_formatter g_topic_shell_formatters[] = {
     {.topic = &topic_navigation_odometry, .format = format_synapse_topic},
     {.topic = &topic_inertial_sample, .format = format_synapse_topic},
     {.topic = &topic_external_odometry, .format = format_synapse_topic},
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+    {.topic = &topic_optical_flow_velocity, .format = format_synapse_topic},
+#endif
     {.topic = &topic_pwm_signal_outputs, .format = format_synapse_topic},
     {.topic = &topic_vehicle_health, .format = format_synapse_topic},
     {.topic = &topic_attitude_estimate, .format = format_synapse_topic},

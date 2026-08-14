@@ -1,0 +1,9 @@
+tests:
+  rdd2.navigation_optical_flow:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - rdd2
+      - optical-flow
+      - safety
+      - navigation

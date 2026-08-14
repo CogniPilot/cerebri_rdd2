@@ -153,6 +153,12 @@ GNSS is the one topic that lives only on ZROS. The radio carries it in both
 directions, so nothing mirrors it onto CSyn and a fix does not appear on the
 Ethernet/Zenoh side.
 
+The optional shaped-node optical-flow path travels in the opposite direction:
+the node publishes the canonical CSyn `flow_vel` payload and the bridge places
+it on ZROS for the navigation estimator. See
+[`docs/optical_flow.md`](docs/optical_flow.md) for the fail-closed contract,
+profile commands, and prop-off bench gate.
+
 RDD2 uses the same pinned CSyn module as CUBS2. CSyn owns the `synapse_fbs`
 release, generated C headers, topic catalog, canonical Zenoh keys, payload
 sizes, and transport bridge; RDD2 does not carry a second schema-fetch or
@@ -213,6 +219,12 @@ source-pinned Rumoca executable and its SHA-256:
 cd /tmp/cerebri-ws/cerebri_rdd2
 nix run path:.#west-update
 nix run path:.#build
+```
+
+To build the separate GPS-plus-optical-flow image:
+
+```sh
+nix run path:.#build-optical-flow
 ```
 
 A bare `west build` outside the repository Nix environment is intentionally

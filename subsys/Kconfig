@@ -2,6 +2,7 @@ menu "Subsystems"
 
 rsource "zros_serial/Kconfig"
 rsource "gnss_source/Kconfig"
+rsource "optical_flow_source/Kconfig"
 rsource "lockstep/Kconfig"
 
 endmenu

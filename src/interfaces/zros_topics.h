@@ -34,6 +34,10 @@ ZROS_TOPIC_DECLARE(control_loop_metrics, synapse_topic_ControlLoopMetricsData_t)
 ZROS_TOPIC_DECLARE(pwm_signal_outputs, synapse_topic_PwmSignalOutputsData_t);
 ZROS_TOPIC_DECLARE(inertial_sample, synapse_topic_InertialSampleData_t);
 ZROS_TOPIC_DECLARE(external_odometry, synapse_topic_ExternalOdometryData_t);
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+ZROS_TOPIC_DECLARE(optical_flow_velocity,
+                   synapse_topic_OpticalFlowVelocityData_t);
+#endif
 /* The fix lives on the internal bus whatever produced it: the onboard reader
  * in subsys/gnss_source, or the serial transport when a ground station injects
  * it. Exactly one of those is compiled in, so the single-publisher backend
