@@ -17,11 +17,19 @@ else()
   get_filename_component(WORKSPACE_ROOT ${CMAKE_CURRENT_SOURCE_DIR} DIRECTORY)
 endif()
 
+# Precedence: an explicit -D wins, then the environment, then this project's
+# own default. The environment is how a standalone shell states its choice; it
+# must not override a caller that named the path on the command line, because
+# an inherited RDD2_* from an unrelated checkout would then silently win over
+# the build that was actually requested.
 function(rdd2_cache_path variable fallback description)
-  if(DEFINED ENV{${variable}})
+  if(${variable})
+    return()
+  endif()
+  if(DEFINED ENV{${variable}} AND NOT "$ENV{${variable}}" STREQUAL "")
     set(${variable} "$ENV{${variable}}" CACHE PATH "${description}" FORCE)
   else()
-    set(${variable} "${fallback}" CACHE PATH "${description}")
+    set(${variable} "${fallback}" CACHE PATH "${description}" FORCE)
   endif()
 endfunction()
 
