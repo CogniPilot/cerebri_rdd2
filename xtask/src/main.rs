@@ -53,6 +53,11 @@ struct Options {
 #[derive(Debug, Default, Serialize)]
 struct Report {
     passed: bool,
+    /// Which providers produced the firmware under test. A pass built from
+    /// caller-selected sources is not a qualifying result, and the report
+    /// outlives the log that said so. Absent the variable this records
+    /// `unknown` rather than implying the repository's pins were used.
+    provider_mode: String,
     simulated_seconds: f64,
     wall_seconds: f64,
     speedup_over_realtime: f64,
@@ -376,6 +381,8 @@ fn evaluate(report: &mut Report) {
             .push("vehicle had excessive vertical speed at completion".into());
     }
     report.passed = report.failures.is_empty();
+    report.provider_mode =
+        env::var("RDD2_PROVIDER_MODE").unwrap_or_else(|_| "unknown".to_string());
 }
 
 fn advance_square_corner(

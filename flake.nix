@@ -442,6 +442,31 @@
                         # name the conflict instead. The lock uses one
                         # descriptor, so a process holds one build directory at
                         # a time, which matches how these apps build.
+                        # Point the stable database at the build that just
+                        # produced one. The devShell hook does this on entry,
+                        # but the build applications do not enter that hook, so
+                        # editor completion kept describing whichever build ran
+                        # last in some other checkout. Refuse a target outside
+                        # this checkout rather than describe someone else's
+                        # tree.
+                        rdd2_update_compile_commands() {
+                          local app="$1"
+                          local database="$2"
+                          local resolved
+
+                          test -f "$database" || return 0
+                          resolved="$(realpath -m "$database")"
+                          case "$resolved" in
+                            "$(realpath -m "$app")"/*)
+                              ln -sfn "$resolved" "$app/compile_commands.json"
+                              ;;
+                            *)
+                              printf '[editor] not linking a database outside %s: %s\n' \
+                                "$app" "$resolved" >&2
+                              ;;
+                          esac
+                        }
+
                         rdd2_lock_build_dir() {
                           local build_dir="$1"
 
@@ -1013,8 +1038,25 @@
 
             rdd2_lock_build_dir "$build_dir"
 
+            # Under sysbuild a bare -D reaches the sysbuild project, not the
+            # application image, so provider selections landed in the outer
+            # cache and the application configured itself from its own
+            # defaults. Pass each binding twice: once for sysbuild and once
+            # prefixed with the image name, which is how sysbuild addresses a
+            # variable to one image.
+            rdd2_provider_cmake_args
+            image="$(basename "$app")"
+            sysbuild_args=()
+            for provider_arg in "''${RDD2_PROVIDER_CMAKE_ARGS[@]}"; do
+              sysbuild_args+=("$provider_arg" "-D''${image}_''${provider_arg#-D}")
+            done
+
             cd "$workspace"
-            west build --sysbuild -p always -b "$board" -d "$build_dir" "$app" "$@"
+            case " $* " in
+              *" -- "*) west build --sysbuild -p always -b "$board" -d "$build_dir" "$app" "$@" "''${sysbuild_args[@]}" ;;
+              *) west build --sysbuild -p always -b "$board" -d "$build_dir" "$app" "$@" -- "''${sysbuild_args[@]}" ;;
+            esac
+            rdd2_update_compile_commands "$app" "$build_dir/$image/compile_commands.json"
             rdd2_require_mcuboot_sysbuild "$build_dir" "$board"
             rdd2_require_flight_configuration "$build_dir"
           '';
@@ -1081,7 +1123,8 @@
             rdd2_lock_build_dir "$build_dir"
 
             cd "$workspace"
-            exec west build -p always -b "$board" -d "$build_dir" "$app" "$@"
+            west build -p always -b "$board" -d "$build_dir" "$app" "$@"
+            rdd2_update_compile_commands "$app" "$build_dir/compile_commands.json"
           '';
 
           rdd2-test-gps-lockstep = mkCargoApp "rdd2-test-gps-lockstep" ''
@@ -1591,6 +1634,7 @@
             rdd2_lock_build_dir "$build_dir"
             cd "$RDD2_WORKSPACE_ROOT"
             west build -b "$board" -d "$build_dir" "$app" -- "''${RDD2_PROVIDER_CMAKE_ARGS[@]}"
+            rdd2_update_compile_commands "$app" "$build_dir/compile_commands.json"
 
             # Plant packaging caches under the FastDyn build directory. SIL has
             # no FastDyn build, so give it one under this build rather than
