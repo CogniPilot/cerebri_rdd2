@@ -68,7 +68,7 @@ manifest:
       path: modules/sim/fastdyn
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git
-      revision: f16312bcb357481c94ae1a336ecdd08687d11c87 # spinali-1.9 (bench-validated line)
+      revision: d1880874de7a792f41f30f563ddc3ec4956fe3ea # spinali-1.9 + Zephyr UDP-multicast join + IPv6-only build fixes
       path: modules/lib/zenoh-pico
     - name: zephyr_boards
       remote: cognipilot
