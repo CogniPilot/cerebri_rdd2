@@ -196,6 +196,12 @@ pub fn run() -> Result<()> {
         .context("mission report root must be a JSON object")?;
     object.insert("overall_wall_seconds".into(), json!(wall));
     object.insert("overall_speedup_over_realtime".into(), json!(speedup));
+    // Which providers produced this result. A pass built from caller-selected
+    // sources is not a qualifying result, and the report is what gets pasted
+    // long after the log that said so has scrolled away.
+    let provider_mode =
+        env::var("RDD2_PROVIDER_MODE").unwrap_or_else(|_| "unknown".to_string());
+    object.insert("provider_mode".into(), json!(provider_mode));
     fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
 
     let passed = report["passed"]
@@ -204,7 +210,7 @@ pub fn run() -> Result<()> {
     let mission_speedup = report_number(&report, "speedup_over_realtime")?;
     let max_altitude = report_number(&report, "max_altitude_m")?;
     println!(
-        "[ci] RDD2 mission passed={passed} simulated={simulated:.3}s mission_speedup={mission_speedup:.2}x launch_wall={wall:.3}s overall_speedup={speedup:.2}x max_alt={max_altitude:.2}m"
+        "[ci] RDD2 mission passed={passed} provider_mode={provider_mode} simulated={simulated:.3}s mission_speedup={mission_speedup:.2}x launch_wall={wall:.3}s overall_speedup={speedup:.2}x max_alt={max_altitude:.2}m"
     );
 
     if let Some(summary_path) = env::var_os("GITHUB_STEP_SUMMARY") {
