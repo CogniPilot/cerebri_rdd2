@@ -88,6 +88,7 @@ set(_rdd2_provenance_content
   "cerebri_modules.root=${RDD2_CEREBRI_MODULES_ROOT}\n"
   "zros.root=${RDD2_ZROS_ROOT}\n"
   "csyn.root=${RDD2_CSYN_ROOT}\n"
+  "synapse_fbs_c.root=${FETCHCONTENT_SOURCE_DIR_SYNAPSE_FBS_C}\n"
 )
 file(WRITE ${PROJECT_BINARY_DIR}/rdd2-resolved-providers.txt
   ${_rdd2_provenance_content}

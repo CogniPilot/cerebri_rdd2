@@ -1493,6 +1493,43 @@
             exec "$app/target/release/xtask" fastdyn-mission "$@"
           '';
 
+          # The SIL mission is a project concern: it needs this repository's
+          # West workspace, its native build, its FMI plant packaging, and its
+          # xtask. Exposing it as an app keeps that sequence in one place, so a
+          # caller does not have to reproduce it and drift from it.
+          rdd2-sil-ci = mkCargoApp "rdd2-sil-ci" ''
+            ${commonScript}
+
+            if [ -n "''${RDD2_MODELICA_MODELS_ROOT:-}" ] ||
+               [ -n "''${RDD2_RUMOCA_EXECUTABLE:-}" ]; then
+              export RDD2_PROVIDER_MODE=caller-selected
+              printf '[deps] NON-QUALIFYING run: caller-selected providers\n' >&2
+            else
+              export RDD2_PROVIDER_MODE=repository-pinned
+              printf '[deps] qualifying run: repository-pinned providers\n' >&2
+            fi
+
+            app="$(rdd2_find_app)"
+            rdd2_ensure_workspace "$app" "${rdd2-west-update}/bin/rdd2-west-update"
+            rdd2_export_common "$app"
+            rdd2_require_workspace "$app"
+            ${flightCompilerScript}
+
+            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-host}"
+            board="''${RDD2_NATIVE_SIM_BOARD:-native_sim/native/64}"
+            build_dir="''${RDD2_NATIVE_SIM_BUILD_DIR:-$app/build-native_sim}"
+
+            cd "$RDD2_WORKSPACE_ROOT"
+            west build -b "$board" -d "$build_dir" "$app"
+
+            rdd2_prepare_fmi_plant
+            export RDD2_FASTDYN_FIRMWARE_ELF="''${RDD2_FASTDYN_FIRMWARE_ELF:-$build_dir/zephyr/zephyr.exe}"
+
+            cd "$app"
+            cargo build --release --locked --package cerebri-rdd2-xtask
+            exec "$app/target/release/xtask" fastdyn-mission "$@"
+          '';
+
           rdd2-console = pkgs.writeShellApplication {
             name = "rdd2-console";
             runtimeInputs = [
@@ -1713,6 +1750,7 @@
               rdd2-fastdyn-ci
               rdd2-fastdyn-setup
               rdd2-fastdyn-mission
+              rdd2-sil-ci
             ];
           };
         in
@@ -1739,6 +1777,7 @@
             rdd2-fastdyn-ci
             rdd2-fastdyn-setup
             rdd2-fastdyn-mission
+            rdd2-sil-ci
             ;
 
           default = host-tools;
@@ -1853,6 +1892,11 @@
             meta.description = "Prepare the pinned FastDyn and patched QEMU runtime";
           };
 
+          sil-ci = {
+            type = "app";
+            program = "${packages.rdd2-sil-ci}/bin/rdd2-sil-ci";
+            meta.description = "Build native_sim and run the RDD2 SIL lockstep mission";
+          };
           fastdyn-mission = {
             type = "app";
             program = "${packages.rdd2-fastdyn-mission}/bin/rdd2-fastdyn-mission";
