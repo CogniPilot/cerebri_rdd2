@@ -1549,14 +1549,39 @@
             board="''${RDD2_NATIVE_SIM_BOARD:-native_sim/native/64}"
             build_dir="''${RDD2_NATIVE_SIM_BUILD_DIR:-$app/build-native_sim}"
 
+            # Promote every boundary the caller actually set to an explicit -D.
+            # A value cached in a reused build directory otherwise outranks the
+            # environment, so a caller-selected provider would lose to whatever
+            # configured that directory first. An unset boundary passes nothing
+            # and the project default applies, which is what a standalone
+            # invocation needs.
+            cmake_args=()
+            for boundary in \
+              RDD2_WORKSPACE_ROOT RDD2_CEREBRI_MODULES_ROOT RDD2_CSYN_ROOT \
+              RDD2_MODELICA_MODELS_ROOT RDD2_ZROS_ROOT RDD2_RUMOCA_EXECUTABLE \
+              RDD2_RUMOCA_EXECUTABLE_SHA256 FETCHCONTENT_SOURCE_DIR_SYNAPSE_FBS_C
+            do
+              value="''${!boundary:-}"
+              if [ -n "$value" ]; then
+                cmake_args+=("-D$boundary=$value")
+              fi
+            done
+
             rdd2_lock_build_dir "$build_dir"
-
-
             cd "$RDD2_WORKSPACE_ROOT"
-            west build -b "$board" -d "$build_dir" "$app"
+            west build -b "$board" -d "$build_dir" "$app" -- "''${cmake_args[@]}"
 
+            # Plant packaging caches under the FastDyn build directory. SIL has
+            # no FastDyn build, so give it one under this build rather than
+            # borrowing a hardware session's path.
+            export RDD2_FASTDYN_BUILD_DIR="''${RDD2_FASTDYN_BUILD_DIR:-$build_dir}"
             rdd2_prepare_fmi_plant
-            export RDD2_FASTDYN_FIRMWARE_ELF="''${RDD2_FASTDYN_FIRMWARE_ELF:-$build_dir/zephyr/zephyr.exe}"
+
+            # xtask selects native or hardware mode by which of these is set,
+            # so a SIL run names the native executable and leaves the firmware
+            # ELF alone. Lockstep needs a shared-memory path even natively.
+            export RDD2_NATIVE_SIM_EXECUTABLE="''${RDD2_NATIVE_SIM_EXECUTABLE:-$build_dir/zephyr/zephyr.exe}"
+            export RDD2_FASTDYN_SHARED_MEMORY="''${RDD2_FASTDYN_SHARED_MEMORY:-$build_dir/rdd2-sil-lockstep.shm}"
 
             cd "$app"
             cargo build --release --locked --package cerebri-rdd2-xtask
