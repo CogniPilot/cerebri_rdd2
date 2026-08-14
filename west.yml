@@ -72,5 +72,5 @@ manifest:
       path: modules/lib/zenoh-pico
     - name: zephyr_boards
       remote: cognipilot
-      revision: 614eed3b6432e776f107e948ccb59fda76e034c5 # v4.4 + tropic gPTP slave, UUID MAC, enet PTP clock
+      revision: 2f38b1599721d9728fdf448a55b9aedb62d684f7 # 614eed3 + tropic RT1064 fork-dts fixes
       path: modules/lib/zephyr_boards
