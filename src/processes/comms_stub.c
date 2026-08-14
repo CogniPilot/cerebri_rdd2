@@ -223,6 +223,15 @@ int rdd2_rate_control_allocator_process_run(void)
 	process->imu_stream_ready = rdd2_imu_stream_init() == 0;
 	LOG_WRN("STUB-NAV running: navigation invalid, failsafe latched, arm denied");
 
+#if defined(CONFIG_RDD2_STUB_LOOP_DISABLE)
+	/* Bench bring-up: the stub control loop is killed so the networking, gPTP,
+	 * and csyn-zenoh threads get the CPU. The node still initialises and can be
+	 * probed over the shell / gPTP / zenoh. */
+	LOG_WRN("STUB loop disabled (RDD2_STUB_LOOP_DISABLE): idling for net/gPTP/zenoh bring-up");
+	k_sleep(K_FOREVER);
+	return 0;
+#endif
+
 	while (true) {
 		uint64_t sample_ns = 0U;
 		uint64_t completed_ns;
