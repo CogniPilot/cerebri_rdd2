@@ -1387,8 +1387,10 @@
             # an edited-input pass is never mistaken for a qualifying one.
             if [ -n "''${RDD2_MODELICA_MODELS_ROOT:-}" ] ||
                [ -n "''${RDD2_RUMOCA_EXECUTABLE:-}" ]; then
+              export RDD2_PROVIDER_MODE=caller-selected
               printf '[deps] NON-QUALIFYING run: caller-selected providers\n' >&2
             else
+              export RDD2_PROVIDER_MODE=repository-pinned
               printf '[deps] qualifying run: repository-pinned providers\n' >&2
             fi
             app="$(rdd2_find_app)"
