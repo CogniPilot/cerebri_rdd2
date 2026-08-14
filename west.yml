@@ -13,9 +13,9 @@ manifest:
   projects:
     - name: zephyr
       remote: cognipilot
-      # branch: spinali-main-next (fork: static time-receiver + ENET fixes; incl. crsf-diag + shell-ctrlC)
+      # branch: spinali-main-next (fork: static time-receiver + ENET fixes; incl. crsf-diag + shell-ctrlC + icm45686 stream fixes)
       # pinned: 2026-08-14
-      revision: dabd25d5cc61c3faa95070a989ec3452825df3d6
+      revision: 867975771b78c4180113f216bbc2f2a262093aa5
       path: zephyr
       west-commands: scripts/west-commands.yml
     - name: cmsis
