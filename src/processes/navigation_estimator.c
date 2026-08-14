@@ -40,6 +40,8 @@ struct navigation_estimator_process {
   struct rdd2_navigation_gps_adapter gps_adapter;
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
   struct rdd2_navigation_optical_flow_adapter optical_flow_adapter;
+  uint64_t optical_flow_last_fusion_control_timestamp_ns;
+  uint32_t optical_flow_fusion_accepted_count;
 #endif
   struct zros_node node;
   struct zros_sub imu_sub;
@@ -62,20 +64,24 @@ struct navigation_estimator_process {
 
 static struct navigation_estimator_process g_process;
 static atomic_t g_origin_valid;
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+static struct k_spinlock g_optical_flow_diagnostics_lock;
+static struct rdd2_navigation_optical_flow_diagnostics
+    g_optical_flow_diagnostics;
+#endif
 static struct k_thread g_thread;
 K_THREAD_STACK_DEFINE(g_navigation_stack, NAVIGATION_STACK_SIZE);
 
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
-static const struct rdd2_navigation_optical_flow_config
-    g_optical_flow_config = {
-        .max_age_ns = (uint64_t)CONFIG_RDD2_OPTICAL_FLOW_MAX_AGE_MS *
-                      UINT64_C(1000000),
+static const struct rdd2_navigation_optical_flow_config g_optical_flow_config =
+    {
+        .max_age_ns =
+            (uint64_t)CONFIG_RDD2_OPTICAL_FLOW_MAX_AGE_MS * UINT64_C(1000000),
         .min_distance_m =
             (float)CONFIG_RDD2_OPTICAL_FLOW_MIN_DISTANCE_MM * 1.0e-3f,
         .max_distance_m =
             (float)CONFIG_RDD2_OPTICAL_FLOW_MAX_DISTANCE_MM * 1.0e-3f,
-        .max_tilt_rad =
-            (float)CONFIG_RDD2_OPTICAL_FLOW_MAX_TILT_MRAD * 1.0e-3f,
+        .max_tilt_rad = (float)CONFIG_RDD2_OPTICAL_FLOW_MAX_TILT_MRAD * 1.0e-3f,
         .max_speed_m_s =
             (float)CONFIG_RDD2_OPTICAL_FLOW_MAX_SPEED_MM_S * 1.0e-3f,
         .best_stddev_m_s =
@@ -185,8 +191,7 @@ static void copy_optical_flow_input_to_efmu(
   efmu->opticalFlow_fresh = measurement->fresh;
   efmu->opticalFlow_timestamp_s = measurement->timestamp_s;
   for (size_t axis = 0U; axis < 2U; ++axis) {
-    efmu->velocityBodyFlu_m_s[axis] =
-        measurement->velocity_body_flu_m_s[axis];
+    efmu->velocityBodyFlu_m_s[axis] = measurement->velocity_body_flu_m_s[axis];
     efmu->integratedLineOfSight_rad[axis] =
         measurement->integrated_line_of_sight_rad[axis];
     for (size_t column = 0U; column < 2U; ++column) {
@@ -347,6 +352,53 @@ static void publish_efmu_estimate(struct navigation_estimator_process *process,
   (void)zros_pub_update(&process->attitude_pub);
 }
 
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+static void update_optical_flow_diagnostics(
+    const struct navigation_estimator_process *process,
+    const struct rdd2_navigation_optical_flow_measurement *measurement) {
+  const struct rdd2_navigation_optical_flow_adapter *adapter =
+      &process->optical_flow_adapter;
+  struct rdd2_navigation_optical_flow_diagnostics diagnostics = {
+      .control_timestamp_ns = process->imu.timestamp_ns,
+      .source_timestamp_ns = process->optical_flow.timestamp_ns,
+      .source_generation = rdd2_topic_generation(&topic_optical_flow_velocity),
+      .accepted_count = adapter->accepted_count,
+      .rejected_count = adapter->rejected_count,
+      .fusion_accepted_count = process->optical_flow_fusion_accepted_count,
+      .last_fusion_control_timestamp_ns =
+          process->optical_flow_last_fusion_control_timestamp_ns,
+      .consecutive_estimator_rejections =
+          process->efmu.opticalFlowConsecutiveRejections,
+      .velocity_body_flu_m_s =
+          {
+              process->optical_flow.velocity_flu_m_s.x,
+              process->optical_flow.velocity_flu_m_s.y,
+          },
+      .ground_distance_m = process->optical_flow.distance_m,
+      .quality = process->optical_flow.quality,
+      .flags = process->optical_flow.flags,
+      .time_status = process->optical_flow.time_status,
+      .correction_outcome = process->efmu.status_correctionOutcome,
+      .correction_source = process->efmu.status_correctionSource,
+      .recovery_stage = process->efmu.status_recoveryStage,
+      .adapter_status = adapter->status,
+      .measurement_valid = measurement->valid,
+      .measurement_fresh = measurement->fresh,
+      .correction_accepted = process->efmu.status_opticalFlowCorrectionAccepted,
+  };
+  k_spinlock_key_t key;
+
+  if (adapter->sample_valid &&
+      process->imu.timestamp_ns >= adapter->last_valid_control_timestamp_ns) {
+    diagnostics.accepted_age_ns =
+        process->imu.timestamp_ns - adapter->last_valid_control_timestamp_ns;
+  }
+  key = k_spin_lock(&g_optical_flow_diagnostics_lock);
+  g_optical_flow_diagnostics = diagnostics;
+  k_spin_unlock(&g_optical_flow_diagnostics_lock, key);
+}
+#endif
+
 static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
   struct navigation_estimator_process *process = arg1;
 
@@ -406,8 +458,7 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
         &process->optical_flow_adapter, &optical_flow_measurement,
         &process->optical_flow, optical_flow_fresh, process->imu.timestamp_ns,
         &g_optical_flow_config);
-    copy_optical_flow_input_to_efmu(&process->efmu,
-                                    &optical_flow_measurement);
+    copy_optical_flow_input_to_efmu(&process->efmu, &optical_flow_measurement);
 #else
     process->efmu.opticalFlow_valid = false;
     process->efmu.opticalFlow_fresh = false;
@@ -431,6 +482,14 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     process->efmu.reset =
         !process->initialized || process->gps_origin_initialization_pending;
     NavigationEstimator_dostep(&process->efmu);
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+    if (process->efmu.status_opticalFlowCorrectionAccepted) {
+      process->optical_flow_fusion_accepted_count++;
+      process->optical_flow_last_fusion_control_timestamp_ns =
+          process->imu.timestamp_ns;
+    }
+    update_optical_flow_diagnostics(process, &optical_flow_measurement);
+#endif
     step_ok =
         rdd2_generated_step_ok(process->efmu.rumoca_galec_error_signal_status);
     outputs_finite = efmu_estimate_is_finite(&process->efmu);
@@ -452,6 +511,24 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
 
 bool rdd2_navigation_origin_valid_get(void) {
   return atomic_get(&g_origin_valid) != 0;
+}
+
+bool rdd2_navigation_optical_flow_diagnostics_get(
+    struct rdd2_navigation_optical_flow_diagnostics *diagnostics) {
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+  k_spinlock_key_t key;
+
+  if (diagnostics == NULL) {
+    return false;
+  }
+  key = k_spin_lock(&g_optical_flow_diagnostics_lock);
+  *diagnostics = g_optical_flow_diagnostics;
+  k_spin_unlock(&g_optical_flow_diagnostics_lock, key);
+  return true;
+#else
+  ARG_UNUSED(diagnostics);
+  return false;
+#endif
 }
 
 static void set_default_mocap_covariance(NavigationEstimatorState *efmu) {

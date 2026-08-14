@@ -3,12 +3,13 @@
 #include "navigation_optical_flow.h"
 
 #include <math.h>
+#include <string.h>
 
 #include <zephyr/ztest.h>
 
-#define GOOD_FLAGS                                                            \
-  (RDD2_OPTICAL_FLOW_VELOCITY_VALID |                                         \
-   RDD2_OPTICAL_FLOW_TILT_COMPENSATED | RDD2_OPTICAL_FLOW_RANGE_TRUSTED)
+#define GOOD_FLAGS                                                             \
+  (RDD2_OPTICAL_FLOW_VELOCITY_VALID | RDD2_OPTICAL_FLOW_TILT_COMPENSATED |     \
+   RDD2_OPTICAL_FLOW_RANGE_TRUSTED)
 
 static const struct rdd2_navigation_optical_flow_config g_config = {
     .max_age_ns = UINT64_C(100000000),
@@ -24,7 +25,7 @@ static const struct rdd2_navigation_optical_flow_config g_config = {
 };
 
 static synapse_topic_OpticalFlowVelocityData_t good_sample(uint64_t timestamp,
-                                                            uint8_t quality) {
+                                                           uint8_t quality) {
   return (synapse_topic_OpticalFlowVelocityData_t){
       .timestamp_ns = timestamp,
       .velocity_flu_m_s = {.x = 1.25f, .y = -0.75f},
@@ -49,6 +50,9 @@ ZTEST(navigation_optical_flow, test_maps_good_sample_and_quality_covariance) {
 
   zassert_true(measurement.valid);
   zassert_true(measurement.fresh);
+  zassert_equal(adapter.status, RDD2_OPTICAL_FLOW_ACCEPTED);
+  zassert_equal(adapter.accepted_count, 1U);
+  zassert_equal(adapter.rejected_count, 0U);
   zassert_within(measurement.timestamp_s, 0.2f, 1.0e-6f);
   zassert_within(measurement.velocity_body_flu_m_s[0], 1.25f, 1.0e-6f);
   zassert_within(measurement.velocity_body_flu_m_s[1], -0.75f, 1.0e-6f);
@@ -78,15 +82,17 @@ ZTEST(navigation_optical_flow, test_holds_then_expires_without_refresh) {
                                     UINT64_C(1000000000), &g_config);
   zassert_true(measurement.valid);
 
-  rdd2_navigation_optical_flow_step(
-      &adapter, &measurement, &sample, false, UINT64_C(1100000000), &g_config);
+  rdd2_navigation_optical_flow_step(&adapter, &measurement, &sample, false,
+                                    UINT64_C(1100000000), &g_config);
   zassert_true(measurement.valid);
   zassert_false(measurement.fresh);
+  zassert_equal(adapter.status, RDD2_OPTICAL_FLOW_HELD);
 
-  rdd2_navigation_optical_flow_step(
-      &adapter, &measurement, &sample, false, UINT64_C(1100000001), &g_config);
+  rdd2_navigation_optical_flow_step(&adapter, &measurement, &sample, false,
+                                    UINT64_C(1100000001), &g_config);
   zassert_false(measurement.valid);
   zassert_false(measurement.fresh);
+  zassert_equal(adapter.status, RDD2_OPTICAL_FLOW_EXPIRED);
 }
 
 ZTEST(navigation_optical_flow, test_replay_does_not_refresh_age) {
@@ -97,16 +103,20 @@ ZTEST(navigation_optical_flow, test_replay_does_not_refresh_age) {
   rdd2_navigation_optical_flow_init(&adapter);
   rdd2_navigation_optical_flow_step(&adapter, &measurement, &sample, true,
                                     UINT64_C(1000000000), &g_config);
-  rdd2_navigation_optical_flow_step(
-      &adapter, &measurement, &sample, true, UINT64_C(1050000000), &g_config);
+  rdd2_navigation_optical_flow_step(&adapter, &measurement, &sample, true,
+                                    UINT64_C(1050000000), &g_config);
   zassert_true(measurement.valid);
   zassert_false(measurement.fresh);
-  rdd2_navigation_optical_flow_step(
-      &adapter, &measurement, &sample, true, UINT64_C(1100000001), &g_config);
+  zassert_equal(adapter.status, RDD2_OPTICAL_FLOW_REJECTED_REPLAY);
+  zassert_equal(adapter.rejected_count, 1U);
+  rdd2_navigation_optical_flow_step(&adapter, &measurement, &sample, true,
+                                    UINT64_C(1100000001), &g_config);
   zassert_false(measurement.valid);
 }
 
-static void expect_rejected(synapse_topic_OpticalFlowVelocityData_t sample) {
+static void
+expect_rejected(synapse_topic_OpticalFlowVelocityData_t sample,
+                enum rdd2_navigation_optical_flow_status expected_status) {
   struct rdd2_navigation_optical_flow_adapter adapter;
   struct rdd2_navigation_optical_flow_measurement measurement;
 
@@ -115,33 +125,38 @@ static void expect_rejected(synapse_topic_OpticalFlowVelocityData_t sample) {
                                     UINT64_C(1000000000), &g_config);
   zassert_false(measurement.valid);
   zassert_false(measurement.fresh);
+  zassert_equal(adapter.status, expected_status);
+  zassert_equal(adapter.accepted_count, 0U);
+  zassert_equal(adapter.rejected_count, 1U);
 }
 
 ZTEST(navigation_optical_flow, test_rejects_untrusted_payloads) {
   synapse_topic_OpticalFlowVelocityData_t sample = good_sample(1000U, 200U);
 
   sample.flags &= (uint8_t)~RDD2_OPTICAL_FLOW_RANGE_TRUSTED;
-  expect_rejected(sample);
+  expect_rejected(sample, RDD2_OPTICAL_FLOW_REJECTED_FLAGS);
   sample = good_sample(1000U, g_config.min_quality - 1U);
-  expect_rejected(sample);
+  expect_rejected(sample, RDD2_OPTICAL_FLOW_REJECTED_QUALITY);
   sample = good_sample(1000U, 200U);
   sample.time_status = synapse_types_TimeStatus_LocalFreerun;
-  expect_rejected(sample);
+  expect_rejected(sample, RDD2_OPTICAL_FLOW_REJECTED_TIME_STATUS);
   sample = good_sample(1000U, 200U);
   sample.velocity_flu_m_s.x = NAN;
-  expect_rejected(sample);
+  expect_rejected(sample, RDD2_OPTICAL_FLOW_REJECTED_NONFINITE);
   sample = good_sample(1000U, 200U);
   sample.distance_m = g_config.max_distance_m + 0.01f;
-  expect_rejected(sample);
+  expect_rejected(sample, RDD2_OPTICAL_FLOW_REJECTED_DISTANCE);
   sample = good_sample(1000U, 200U);
   sample.roll_rad = g_config.max_tilt_rad + 0.01f;
-  expect_rejected(sample);
+  expect_rejected(sample, RDD2_OPTICAL_FLOW_REJECTED_TILT);
   sample = good_sample(1000U, 200U);
   sample.velocity_flu_m_s.y = g_config.max_speed_m_s + 0.01f;
-  expect_rejected(sample);
+  expect_rejected(sample, RDD2_OPTICAL_FLOW_REJECTED_SPEED);
   sample = good_sample(1000U, 200U);
   sample.id = 1U;
-  expect_rejected(sample);
+  expect_rejected(sample, RDD2_OPTICAL_FLOW_REJECTED_SENSOR_ID);
+  sample = good_sample(0U, 200U);
+  expect_rejected(sample, RDD2_OPTICAL_FLOW_REJECTED_ZERO_TIMESTAMP);
 }
 
 ZTEST(navigation_optical_flow, test_new_invalid_sample_revokes_then_recovers) {
@@ -159,6 +174,7 @@ ZTEST(navigation_optical_flow, test_new_invalid_sample_revokes_then_recovers) {
   rdd2_navigation_optical_flow_step(&adapter, &measurement, &sample, true,
                                     UINT64_C(1010000000), &g_config);
   zassert_false(measurement.valid);
+  zassert_equal(adapter.status, RDD2_OPTICAL_FLOW_REJECTED_FLAGS);
 
   sample = good_sample(3000U, 200U);
   sample.time_status = synapse_types_TimeStatus_GptpHoldover;
@@ -166,6 +182,20 @@ ZTEST(navigation_optical_flow, test_new_invalid_sample_revokes_then_recovers) {
                                     UINT64_C(1020000000), &g_config);
   zassert_true(measurement.valid);
   zassert_true(measurement.fresh);
+  zassert_equal(adapter.status, RDD2_OPTICAL_FLOW_ACCEPTED);
+  zassert_equal(adapter.accepted_count, 2U);
+  zassert_equal(adapter.rejected_count, 1U);
+}
+
+ZTEST(navigation_optical_flow, test_status_names_are_operator_readable) {
+  zassert_equal(strcmp(rdd2_navigation_optical_flow_status_name(
+                           RDD2_OPTICAL_FLOW_REJECTED_TIME_STATUS),
+                       "time-status"),
+                0);
+  zassert_equal(strcmp(rdd2_navigation_optical_flow_status_name(
+                           (enum rdd2_navigation_optical_flow_status)255),
+                       "unknown"),
+                0);
 }
 
 ZTEST_SUITE(navigation_optical_flow, NULL, NULL, NULL, NULL, NULL);

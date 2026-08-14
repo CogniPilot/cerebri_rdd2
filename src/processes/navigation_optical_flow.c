@@ -5,8 +5,8 @@
 #include <math.h>
 #include <string.h>
 
-static bool config_valid(
-    const struct rdd2_navigation_optical_flow_config *config) {
+static bool
+config_valid(const struct rdd2_navigation_optical_flow_config *config) {
   return config != NULL && config->max_age_ns > 0U &&
          config->min_quality > 0U && config->min_distance_m > 0.0f &&
          config->max_distance_m >= config->min_distance_m &&
@@ -15,9 +15,9 @@ static bool config_valid(
          config->worst_stddev_m_s >= config->best_stddev_m_s;
 }
 
-static bool time_status_usable(
-    const synapse_topic_OpticalFlowVelocityData_t *sample,
-    const struct rdd2_navigation_optical_flow_config *config) {
+static bool
+time_status_usable(const synapse_topic_OpticalFlowVelocityData_t *sample,
+                   const struct rdd2_navigation_optical_flow_config *config) {
   if (!config->require_gptp) {
     return synapse_types_TimeStatus_is_known_value(sample->time_status);
   }
@@ -25,9 +25,9 @@ static bool time_status_usable(
          sample->time_status == synapse_types_TimeStatus_GptpHoldover;
 }
 
-static bool sample_usable(
-    const synapse_topic_OpticalFlowVelocityData_t *sample,
-    const struct rdd2_navigation_optical_flow_config *config) {
+static enum rdd2_navigation_optical_flow_status
+sample_status(const synapse_topic_OpticalFlowVelocityData_t *sample,
+              const struct rdd2_navigation_optical_flow_config *config) {
   const uint8_t required = RDD2_OPTICAL_FLOW_VELOCITY_VALID |
                            RDD2_OPTICAL_FLOW_TILT_COMPENSATED |
                            RDD2_OPTICAL_FLOW_RANGE_TRUSTED;
@@ -37,35 +37,52 @@ static bool sample_usable(
       sample->pitch_rad,
   };
 
-  if (sample->timestamp_ns == 0U || sample->id != config->sensor_id ||
-      (sample->flags & required) != required ||
-      sample->quality < config->min_quality || !time_status_usable(sample, config)) {
-    return false;
+  if (sample->timestamp_ns == 0U) {
+    return RDD2_OPTICAL_FLOW_REJECTED_ZERO_TIMESTAMP;
+  }
+  if (sample->id != config->sensor_id) {
+    return RDD2_OPTICAL_FLOW_REJECTED_SENSOR_ID;
+  }
+  if ((sample->flags & required) != required) {
+    return RDD2_OPTICAL_FLOW_REJECTED_FLAGS;
+  }
+  if (sample->quality < config->min_quality) {
+    return RDD2_OPTICAL_FLOW_REJECTED_QUALITY;
+  }
+  if (!time_status_usable(sample, config)) {
+    return RDD2_OPTICAL_FLOW_REJECTED_TIME_STATUS;
   }
   for (size_t i = 0U; i < sizeof(values) / sizeof(values[0]); ++i) {
     if (!isfinite(values[i])) {
-      return false;
+      return RDD2_OPTICAL_FLOW_REJECTED_NONFINITE;
     }
   }
-  return sample->distance_m >= config->min_distance_m &&
-         sample->distance_m <= config->max_distance_m &&
-         fabsf(sample->roll_rad) <= config->max_tilt_rad &&
-         fabsf(sample->pitch_rad) <= config->max_tilt_rad &&
-         fabsf(sample->velocity_flu_m_s.x) <= config->max_speed_m_s &&
-         fabsf(sample->velocity_flu_m_s.y) <= config->max_speed_m_s;
+  if (sample->distance_m < config->min_distance_m ||
+      sample->distance_m > config->max_distance_m) {
+    return RDD2_OPTICAL_FLOW_REJECTED_DISTANCE;
+  }
+  if (fabsf(sample->roll_rad) > config->max_tilt_rad ||
+      fabsf(sample->pitch_rad) > config->max_tilt_rad) {
+    return RDD2_OPTICAL_FLOW_REJECTED_TILT;
+  }
+  if (fabsf(sample->velocity_flu_m_s.x) > config->max_speed_m_s ||
+      fabsf(sample->velocity_flu_m_s.y) > config->max_speed_m_s) {
+    return RDD2_OPTICAL_FLOW_REJECTED_SPEED;
+  }
+  return RDD2_OPTICAL_FLOW_ACCEPTED;
 }
 
-static float velocity_variance(
-    uint8_t quality,
-    const struct rdd2_navigation_optical_flow_config *config) {
+static float
+velocity_variance(uint8_t quality,
+                  const struct rdd2_navigation_optical_flow_config *config) {
   float quality_span = (float)(UINT8_MAX - config->min_quality);
-  float normalized_quality = quality_span > 0.0f
-                                 ? (float)(quality - config->min_quality) /
-                                       quality_span
-                                 : 1.0f;
-  float sigma = config->worst_stddev_m_s -
-                normalized_quality *
-                    (config->worst_stddev_m_s - config->best_stddev_m_s);
+  float normalized_quality =
+      quality_span > 0.0f
+          ? (float)(quality - config->min_quality) / quality_span
+          : 1.0f;
+  float sigma =
+      config->worst_stddev_m_s -
+      normalized_quality * (config->worst_stddev_m_s - config->best_stddev_m_s);
 
   return sigma * sigma;
 }
@@ -73,6 +90,7 @@ static float velocity_variance(
 void rdd2_navigation_optical_flow_init(
     struct rdd2_navigation_optical_flow_adapter *adapter) {
   memset(adapter, 0, sizeof(*adapter));
+  adapter->status = RDD2_OPTICAL_FLOW_WAITING;
 }
 
 void rdd2_navigation_optical_flow_step(
@@ -88,29 +106,52 @@ void rdd2_navigation_optical_flow_step(
   }
   memset(measurement, 0, sizeof(*measurement));
   if (adapter == NULL || sample == NULL || !config_valid(config)) {
-    return;
-  }
-
-  if (sample_fresh && sample->timestamp_ns != 0U &&
-      (!adapter->source_timestamp_observed ||
-       sample->timestamp_ns > adapter->last_source_timestamp_ns)) {
-    adapter->last_source_timestamp_ns = sample->timestamp_ns;
-    adapter->source_timestamp_observed = true;
-    adapter->sample_valid = sample_usable(sample, config);
-    if (adapter->sample_valid) {
-      adapter->sample = *sample;
-      adapter->last_valid_control_timestamp_ns = control_timestamp_ns;
-      accepted = true;
+    if (adapter != NULL) {
+      adapter->status = RDD2_OPTICAL_FLOW_REJECTED_CONFIG;
     }
-  } else if (sample_fresh && sample->timestamp_ns == 0U) {
-    adapter->sample_valid = false;
+    return;
   }
 
-  if (!adapter->sample_valid ||
-      control_timestamp_ns < adapter->last_valid_control_timestamp_ns ||
-      control_timestamp_ns - adapter->last_valid_control_timestamp_ns >
-          config->max_age_ns) {
+  if (sample_fresh) {
+    if (sample->timestamp_ns == 0U) {
+      adapter->sample_valid = false;
+      adapter->status = RDD2_OPTICAL_FLOW_REJECTED_ZERO_TIMESTAMP;
+      adapter->rejected_count++;
+    } else if (adapter->source_timestamp_observed &&
+               sample->timestamp_ns <= adapter->last_source_timestamp_ns) {
+      adapter->status = RDD2_OPTICAL_FLOW_REJECTED_REPLAY;
+      adapter->rejected_count++;
+    } else {
+      adapter->last_source_timestamp_ns = sample->timestamp_ns;
+      adapter->source_timestamp_observed = true;
+      adapter->status = sample_status(sample, config);
+      adapter->sample_valid = adapter->status == RDD2_OPTICAL_FLOW_ACCEPTED;
+      if (adapter->sample_valid) {
+        adapter->sample = *sample;
+        adapter->last_valid_control_timestamp_ns = control_timestamp_ns;
+        adapter->accepted_count++;
+        accepted = true;
+      } else {
+        adapter->rejected_count++;
+      }
+    }
+  }
+
+  if (!adapter->sample_valid) {
     return;
+  }
+  if (control_timestamp_ns < adapter->last_valid_control_timestamp_ns) {
+    adapter->status = RDD2_OPTICAL_FLOW_REJECTED_CLOCK_ROLLBACK;
+    return;
+  }
+  if (control_timestamp_ns - adapter->last_valid_control_timestamp_ns >
+      config->max_age_ns) {
+    adapter->status = RDD2_OPTICAL_FLOW_EXPIRED;
+    return;
+  }
+
+  if (!accepted && !sample_fresh) {
+    adapter->status = RDD2_OPTICAL_FLOW_HELD;
   }
 
   measurement->valid = true;
@@ -127,4 +168,17 @@ void rdd2_navigation_optical_flow_step(
       measurement->velocity_covariance_body_m2_s2[0][0];
   measurement->ground_distance_m = adapter->sample.distance_m;
   measurement->quality = (float)adapter->sample.quality / (float)UINT8_MAX;
+}
+
+const char *rdd2_navigation_optical_flow_status_name(
+    enum rdd2_navigation_optical_flow_status status) {
+  static const char *const names[] = {
+      "waiting",        "accepted",  "held",           "bad-config",
+      "zero-timestamp", "sensor-id", "flags",          "quality",
+      "time-status",    "nonfinite", "distance",       "tilt",
+      "speed",          "replay",    "clock-rollback", "expired",
+  };
+
+  return (unsigned int)status < sizeof(names) / sizeof(names[0]) ? names[status]
+                                                                 : "unknown";
 }

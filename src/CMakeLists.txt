@@ -33,6 +33,12 @@ target_sources_ifdef(CONFIG_SHELL app PRIVATE
   interfaces/mission_shell.c
 )
 
+if(CONFIG_SHELL AND CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
+  target_sources(app PRIVATE
+    interfaces/optical_flow_shell.c
+  )
+endif()
+
 target_sources_ifdef(CONFIG_TOP_SHELL app PRIVATE
   diagnostics/top_shell.c
 )
