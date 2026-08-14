@@ -36,9 +36,11 @@ ZROS_TOPIC_DECLARE(inertial_sample, synapse_topic_InertialSampleData_t);
 ZROS_TOPIC_DECLARE(external_odometry, synapse_topic_ExternalOdometryData_t);
 ZROS_TOPIC_DECLARE(local_position_command, synapse_topic_LocalPositionCommandData_t);
 /* The fix lives on the internal bus whatever produced it: the onboard reader
- * in subsys/gnss_source, or the serial transport when a ground station injects
- * it. Exactly one of those is compiled in, so the single-publisher backend
- * holds and the producer owns the publisher. */
+ * in subsys/gnss_source, the deterministic lockstep source, the serial
+ * transport when a ground station injects it, or the mesh backend that
+ * identity-copies an externally received fix off the CSyn "gnss" topic.
+ * Exactly one of those is compiled in, so the single-publisher backend holds
+ * and the producer owns the publisher. */
 ZROS_TOPIC_DECLARE(gnss_fix, synapse_topic_GnssFixData_t);
 
 uint32_t rdd2_topic_generation(const struct zros_topic *topic);

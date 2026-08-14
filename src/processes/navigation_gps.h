@@ -13,7 +13,7 @@ struct rdd2_navigation_gps_measurement {
   bool fresh;
   bool position_valid;
   bool velocity_valid;
-  float timestamp_s;
+  uint64_t timestamp_ns;
   float geodetic_deg_m[3];
   float position_enu_m[3];
   float velocity_enu_m_s[3];

@@ -3,11 +3,16 @@
 #include "processes.h"
 
 #include "interfaces/drivers.h"
+#include "interfaces/synapse_time_status.h"
 #include "interfaces/zros_topics.h"
 #include "scheduling.h"
 
 #if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
 #include "gnss_onboard.h"
+#endif
+
+#if defined(CONFIG_RDD2_GNSS_SOURCE_MESH)
+#include "gnss_mesh.h"
 #endif
 
 #include <stdint.h>
@@ -47,13 +52,16 @@ struct comms_stub_process {
 	uint64_t last_sample_ns;
 	uint32_t nav_countdown;
 	uint32_t status_countdown;
+	bool time_ever_synced;
+	synapse_types_TimeStatus_enum_t tx_time_status;
+	int64_t tx_offset_ns;
 };
 
 static struct comms_stub_process g_process;
 
 static uint64_t now_ns(void)
 {
-	return (uint64_t)k_uptime_get() * UINT64_C(1000000);
+	return synapse_time_boot_ns();
 }
 
 static bool divider_expired(uint32_t *countdown, uint32_t divisor)
@@ -70,6 +78,8 @@ static bool gnss_ready(void)
 {
 #if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
 	return rdd2_gnss_onboard_ready_get();
+#elif defined(CONFIG_RDD2_GNSS_SOURCE_MESH)
+	return rdd2_gnss_mesh_ready_get();
 #else
 	return false;
 #endif
@@ -105,13 +115,14 @@ static void publish_imu(struct comms_stub_process *process, bool sample_valid,
 			uint64_t sample_ns)
 {
 	process->imu = (synapse_topic_InertialSampleData_t){
-		.timestamp_ns = sample_ns,
+		.timestamp_ns =
+			synapse_time_apply_offset(sample_ns, process->tx_offset_ns),
 		.accel_flu_m_s2 = process->accel,
 		.gyro_flu_rad_s = process->gyro,
 		.flags = sample_valid ? synapse_topic_InertialFieldFlags_Accel |
 					      synapse_topic_InertialFieldFlags_Gyro
 				      : 0U,
-		.time_status = synapse_types_TimeStatus_LocalFreerun,
+		.time_status = process->tx_time_status,
 	};
 	(void)zros_pub_update(&process->imu_pub);
 }
@@ -120,16 +131,18 @@ static void publish_invalid_navigation(struct comms_stub_process *process,
 				       uint64_t sample_ns)
 {
 	process->attitude = (synapse_topic_AttitudeEstimateData_t){
-		.timestamp_ns = sample_ns,
+		.timestamp_ns =
+			synapse_time_apply_offset(sample_ns, process->tx_offset_ns),
 		.attitude = {.w = 1.0f},
 		.flags = 0U,
-		.time_status = synapse_types_TimeStatus_LocalFreerun,
+		.time_status = process->tx_time_status,
 	};
 	process->odometry = (synapse_topic_OdometryEstimateData_t){
-		.timestamp_ns = sample_ns,
+		.timestamp_ns =
+			synapse_time_apply_offset(sample_ns, process->tx_offset_ns),
 		.attitude = {.w = 1.0f},
 		.quality_pct = 0,
-		.time_status = synapse_types_TimeStatus_LocalFreerun,
+		.time_status = process->tx_time_status,
 	};
 	(void)zros_pub_update(&process->attitude_pub);
 	(void)zros_pub_update(&process->odometry_pub);
@@ -160,20 +173,21 @@ static void publish_fail_closed_status(struct comms_stub_process *process,
 		healthy |= synapse_topic_SensorComponentFlags_Gnss;
 	}
 	process->health = (synapse_topic_VehicleHealthData_t){
-		.timestamp_ns = now_ns(),
+		.timestamp_ns =
+			synapse_time_apply_offset(now_ns(), process->tx_offset_ns),
 		.sensors_present = present,
 		.sensors_enabled = present,
 		.sensors_health = healthy,
 		.flight_mode = rdd2_rc_flight_mode(&process->rc),
 		.link_quality_pct = link_quality,
 		.flags = synapse_topic_VehicleHealthFlags_Failsafe,
-		.time_status = synapse_types_TimeStatus_LocalFreerun,
+		.time_status = process->tx_time_status,
 	};
 	process->metrics = (synapse_topic_ControlLoopMetricsData_t){
 		.timestamp_ns = process->health.timestamp_ns,
 		.period_us = period_us,
 		.latency_us = latency_us,
-		.time_status = synapse_types_TimeStatus_LocalFreerun,
+		.time_status = process->tx_time_status,
 	};
 	(void)zros_pub_update(&process->health_pub);
 	(void)zros_pub_update(&process->metrics_pub);
@@ -265,6 +279,8 @@ int rdd2_rate_control_allocator_process_run(void)
 			link_quality = rdd2_rc_input_link_quality_get();
 		}
 		ARG_UNUSED(rc_stamp_ms);
+		process->tx_time_status = synapse_time_status_resolve(
+			&process->time_ever_synced, &process->tx_offset_ns);
 		publish_imu(process, imu_valid, sample_ns);
 		completed_ns = rdd2_motor_output_write_all(
 			&(rdd2_motor_values_t){0}, false, false);

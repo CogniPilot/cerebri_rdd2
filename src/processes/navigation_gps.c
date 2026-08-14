@@ -280,7 +280,7 @@ static bool consume_pending(struct rdd2_navigation_gps_adapter *adapter,
   measurement->fresh = true;
   measurement->position_valid = true;
   measurement->velocity_valid = velocity_usable(pending);
-  measurement->timestamp_s = (float)pending->timestamp_ns * 1.0e-9f;
+  measurement->timestamp_ns = pending->timestamp_ns;
   measurement->geodetic_deg_m[0] = (float)pending->latitude_deg_e7 * 1.0e-7f;
   measurement->geodetic_deg_m[1] = (float)pending->longitude_deg_e7 * 1.0e-7f;
   measurement->geodetic_deg_m[2] = (float)pending->altitude_msl_mm * 1.0e-3f;

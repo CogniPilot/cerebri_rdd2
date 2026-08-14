@@ -37,9 +37,27 @@ static bool fix_type_usable(uint8_t fix_type) {
          fix_type == synapse_types_GnssFixType_RtkFixed;
 }
 
+/*
+ * Which clock domain an injected fix must carry to be trusted. This tracks the
+ * same CONFIG_NET_GPTP switch the local producers resolve against, so the gate
+ * and the upstream stamps always name one domain. Without the gPTP stack a fix
+ * is taken in the boot-time domain and is stamped LocalFreerun, which is the
+ * native_sim SITL case. With the gPTP stack up a fix is only accepted once it
+ * is carried on the shared grandmaster timescale: GptpSynced while a
+ * grandmaster is present, or GptpHoldover while a previously locked PHC coasts.
+ */
+static bool fix_time_status_usable(uint8_t time_status) {
+#if defined(CONFIG_NET_GPTP)
+  return time_status == synapse_types_TimeStatus_GptpSynced ||
+         time_status == synapse_types_TimeStatus_GptpHoldover;
+#else
+  return time_status == synapse_types_TimeStatus_LocalFreerun;
+#endif
+}
+
 static bool fix_usable(const synapse_topic_GnssFixData_t *fix) {
   return fix != NULL && fix->timestamp_ns != 0U &&
-         fix->time_status == synapse_types_TimeStatus_LocalFreerun &&
+         fix_time_status_usable(fix->time_status) &&
          fix_type_usable(fix->fix_type) &&
          fix->latitude_deg_e7 >= -INT32_C(900000000) &&
          fix->latitude_deg_e7 <= INT32_C(900000000) &&

@@ -46,6 +46,8 @@ struct navigation_estimator_process {
   bool gps_origin_initialization_pending;
   uint64_t gps_origin_initialization_started_ns;
   uint8_t reset_counter;
+  uint64_t filter_epoch_ns;
+  bool filter_epoch_valid;
 };
 
 static struct navigation_estimator_process g_process;
@@ -85,12 +87,33 @@ static bool gps_origin_initialization_timed_out(bool gps_origin_source,
          now_ns - started_ns > GPS_ORIGIN_INITIALIZATION_TIMEOUT_NS;
 }
 
+/*
+ * Filter-relative sample time in seconds. Once this node is gPTP-disciplined a
+ * wire timestamp_ns is a full TAI epoch (about 1.76e18 ns in 2026), a value a
+ * single-precision float cannot resolve to better than roughly two minutes. The
+ * estimator needs only the spacing between samples, so every stream is expressed
+ * against one reference epoch captured from the first sample seen. Subtracting
+ * it in 64-bit before the float cast keeps nanosecond spacing intact, and a
+ * shared reference keeps the streams mutually consistent. In freerun the
+ * subtraction only removes a constant boot offset the filter differences away,
+ * so behavior there is unchanged.
+ */
+static float filter_relative_time_s(struct navigation_estimator_process *process,
+                                    uint64_t timestamp_ns) {
+  if (!process->filter_epoch_valid) {
+    process->filter_epoch_ns = timestamp_ns;
+    process->filter_epoch_valid = true;
+  }
+  return (float)((int64_t)(timestamp_ns - process->filter_epoch_ns)) * 1.0e-9f;
+}
+
 static void
-copy_imu_input_to_efmu(NavigationEstimatorState *efmu,
+copy_imu_input_to_efmu(struct navigation_estimator_process *process,
                        const synapse_topic_InertialSampleData_t *imu) {
+  NavigationEstimatorState *efmu = &process->efmu;
   efmu->imu_valid = imu_valid(imu);
   efmu->imu_fresh = true;
-  efmu->imu_timestamp_s = (float)imu->timestamp_ns * 1.0e-9f;
+  efmu->imu_timestamp_s = filter_relative_time_s(process, imu->timestamp_ns);
   efmu->imu_angularVelocityBodyFlu_rad_s[0] = imu->gyro_flu_rad_s.x;
   efmu->imu_angularVelocityBodyFlu_rad_s[1] = imu->gyro_flu_rad_s.y;
   efmu->imu_angularVelocityBodyFlu_rad_s[2] = imu->gyro_flu_rad_s.z;
@@ -100,11 +123,12 @@ copy_imu_input_to_efmu(NavigationEstimatorState *efmu,
 }
 
 static void copy_external_odometry_input_to_efmu(
-    NavigationEstimatorState *efmu,
+    struct navigation_estimator_process *process,
     const synapse_topic_ExternalOdometryData_t *odometry, bool fresh) {
+  NavigationEstimatorState *efmu = &process->efmu;
   efmu->mocap_valid = external_odometry_valid(odometry);
   efmu->mocap_fresh = fresh;
-  efmu->mocap_timestamp_s = (float)odometry->timestamp_ns * 1.0e-9f;
+  efmu->mocap_timestamp_s = filter_relative_time_s(process, odometry->timestamp_ns);
   efmu->mocap_positionWorldEnu_m[0] = odometry->position_enu_m.x;
   efmu->mocap_positionWorldEnu_m[1] = odometry->position_enu_m.y;
   efmu->mocap_positionWorldEnu_m[2] = odometry->position_enu_m.z;
@@ -115,13 +139,14 @@ static void copy_external_odometry_input_to_efmu(
 }
 
 static void copy_gps_input_to_efmu(
-    NavigationEstimatorState *efmu,
+    struct navigation_estimator_process *process,
     const struct rdd2_navigation_gps_measurement *measurement) {
+  NavigationEstimatorState *efmu = &process->efmu;
   efmu->gps_valid = measurement->valid;
   efmu->gps_fresh = measurement->fresh;
   efmu->positionValid = measurement->position_valid;
   efmu->velocityValid = measurement->velocity_valid;
-  efmu->gps_timestamp_s = measurement->timestamp_s;
+  efmu->gps_timestamp_s = filter_relative_time_s(process, measurement->timestamp_ns);
   for (size_t axis = 0U; axis < 3U; ++axis) {
     efmu->geodetic_deg_m[axis] = measurement->geodetic_deg_m[axis];
     efmu->gps_positionWorldEnu_m[axis] = measurement->position_enu_m[axis];
@@ -300,12 +325,12 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     gnss_fresh = zros_sub_update(&process->gnss_sub) == 0;
     health_fresh = zros_sub_update(&process->health_sub) == 0;
     health_use_control_time(&process->health, &process->imu, health_fresh);
-    copy_imu_input_to_efmu(&process->efmu, &process->imu);
+    copy_imu_input_to_efmu(process, &process->imu);
     if (external_odometry_source_allowed(
             IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_ONBOARD) ||
             IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_LOCKSTEP))) {
       copy_external_odometry_input_to_efmu(
-          &process->efmu, &process->external_odometry, external_fresh);
+          process, &process->external_odometry, external_fresh);
     } else {
       process->efmu.mocap_valid = false;
       process->efmu.mocap_fresh = false;
@@ -314,7 +339,7 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
         &process->gps_adapter, &gps_measurement, &process->gnss, gnss_fresh,
         &process->health, health_fresh, process->imu.timestamp_ns);
     atomic_set(&g_origin_valid, process->gps_adapter.origin_valid ? 1 : 0);
-    copy_gps_input_to_efmu(&process->efmu, &gps_measurement);
+    copy_gps_input_to_efmu(process, &gps_measurement);
     if (origin_captured) {
       process->gps_origin_initialization_pending = true;
       process->gps_origin_initialization_started_ns = process->imu.timestamp_ns;
