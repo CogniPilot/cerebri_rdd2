@@ -50,22 +50,32 @@ manifest:
       remote: cognipilot
       revision: 20ab07983224ca078f17e2e851b4fe8cb92eb517 # Zephyr main module schema
       path: modules/lib/zros
+      groups:
+        - workspace-overridable
     - name: csyn
       remote: cognipilot
       revision: 68d802aa00c727ff393ed9a282b16ad918b4a542 # synapse_fbs 0.9.0 plus optical-flow velocity ZROS bridge
       path: modules/lib/csyn
+      groups:
+        - workspace-overridable
     - name: cerebri_modules
       remote: cognipilot
       revision: ef73a4f8adeb4385c34af4344c9af27e43e02033
       path: modules/lib/cerebri_lockstep
+      groups:
+        - workspace-overridable
     - name: modelica_models
       remote: cognipilot
       revision: a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f
       path: models/modelica_models
+      groups:
+        - workspace-overridable
     - name: fastdyn
       url: https://github.com/jgoppert/FastDyn.git
       revision: 94c85f3e47be410e8d760b7f8207eb1580d7cd4c
       path: modules/sim/fastdyn
+      groups:
+        - workspace-overridable
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git
       revision: f16312bcb357481c94ae1a336ecdd08687d11c87 # spinali-1.9 bench-validated line

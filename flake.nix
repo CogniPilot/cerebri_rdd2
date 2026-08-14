@@ -1302,11 +1302,27 @@
             source_workspace="$(rdd2_source_workspace "$app")"
             expected_manifest="$(realpath "$app/west.yml")"
 
+            # The group filter is a property of the invocation, never of the
+            # workspace. Write it every time, and delete it when none is
+            # selected, so a workspace previously updated with a filter cannot
+            # keep omitting projects that the current invocation needs.
+            rdd2_apply_group_filter() {
+              if [ -n "''${RDD2_WEST_GROUP_FILTER:-}" ]; then
+                # `--` is required: a filter that disables a group starts with
+                # `-`, which west's argument parser would otherwise read as an
+                # option.
+                west config -- manifest.group-filter "$RDD2_WEST_GROUP_FILTER"
+              else
+                west config -d manifest.group-filter 2>/dev/null || true
+              fi
+            }
+
             if [ "$workspace" != "$source_workspace" ]; then
               printf 'using managed cerebri_rdd2 west workspace: %s\n' "$workspace" >&2
               export WEST_TOPDIR="$workspace"
               rdd2_prepare_managed_workspace "$app" "$workspace"
               cd "$workspace"
+              rdd2_apply_group_filter
               exec west update "$@"
             fi
 
@@ -1329,6 +1345,7 @@
             fi
 
             cd "$source_workspace"
+            rdd2_apply_group_filter
             exec west update "$@"
           '';
 
