@@ -23,7 +23,14 @@ elseif(NOT DEFINED RDD2_RUMOCA_EXECUTABLE_SHA256)
 endif()
 if(NOT RDD2_RUMOCA_EXECUTABLE)
   message(FATAL_ERROR
-    "RDD2_RUMOCA_EXECUTABLE is required; use a repository Nix command"
+    "RDD2_RUMOCA_EXECUTABLE is required.\n"
+    "With Nix, the repository commands supply the pinned compiler:\n"
+    "  nix run .#build-native-sim\n"
+    "Without Nix, build or obtain Rumoca at the revision this repository pins "
+    "and pass it explicitly:\n"
+    "  west build ... -- -DRDD2_RUMOCA_EXECUTABLE=/path/to/rumoca "
+    "-DRDD2_RUMOCA_EXECUTABLE_SHA256=<sha256 of that file>\n"
+    "Any executable is accepted; the digest is what fixes which one was used."
   )
 endif()
 if(NOT EXISTS "${RDD2_RUMOCA_EXECUTABLE}" OR
