@@ -411,6 +411,35 @@
                         # files vanishing during archiving, far from the cause.
                         # Hold an advisory lock for the life of the build and
                         # name the conflict instead.
+                        # Every provider boundary the caller actually set,
+                        # promoted to an explicit -D. A value cached in a
+                        # reused build directory otherwise outranks the
+                        # environment, so a caller-selected provider would lose
+                        # to whatever configured that directory first. An unset
+                        # boundary contributes nothing and the project default
+                        # applies, which is what a standalone build needs.
+                        rdd2_provider_cmake_args() {
+                          local boundary
+                          local value
+
+                          RDD2_PROVIDER_CMAKE_ARGS=()
+                          for boundary in \
+                            RDD2_WORKSPACE_ROOT \
+                            RDD2_CEREBRI_MODULES_ROOT \
+                            RDD2_CSYN_ROOT \
+                            RDD2_MODELICA_MODELS_ROOT \
+                            RDD2_ZROS_ROOT \
+                            RDD2_RUMOCA_EXECUTABLE \
+                            RDD2_RUMOCA_EXECUTABLE_SHA256 \
+                            FETCHCONTENT_SOURCE_DIR_SYNAPSE_FBS_C
+                          do
+                            value="''${!boundary:-}"
+                            if [ -n "$value" ]; then
+                              RDD2_PROVIDER_CMAKE_ARGS+=("-D$boundary=$value")
+                            fi
+                          done
+                        }
+
                         rdd2_lock_build_dir() {
                           local build_dir="$1"
 
@@ -819,14 +848,13 @@
                           rdd2_require_fastdyn_model_sources
 
                           printf '[deps] building the FastDyn firmware image incrementally\n'
+                          rdd2_provider_cmake_args
                           (
                             cd "$RDD2_WORKSPACE_ROOT"
                             west build -p always -b "$board" -d "$RDD2_FASTDYN_BUILD_DIR" "$app" -- \
                               -DCONF_FILE="$conf_file" \
                               -DDTC_OVERLAY_FILE="$overlay" \
-                              -DRDD2_MODELICA_MODELS_ROOT="$RDD2_MODELICA_MODELS_ROOT" \
-                              -DRDD2_RUMOCA_EXECUTABLE="$RDD2_RUMOCA_EXECUTABLE" \
-                              -DRDD2_RUMOCA_EXECUTABLE_SHA256="$RDD2_RUMOCA_EXECUTABLE_SHA256" \
+                              "''${RDD2_PROVIDER_CMAKE_ARGS[@]}"
                           )
 
                           if [ ! -f "$RDD2_FASTDYN_BUILD_DIR/zephyr/zephyr.elf" ]; then
@@ -1555,21 +1583,11 @@
             # configured that directory first. An unset boundary passes nothing
             # and the project default applies, which is what a standalone
             # invocation needs.
-            cmake_args=()
-            for boundary in \
-              RDD2_WORKSPACE_ROOT RDD2_CEREBRI_MODULES_ROOT RDD2_CSYN_ROOT \
-              RDD2_MODELICA_MODELS_ROOT RDD2_ZROS_ROOT RDD2_RUMOCA_EXECUTABLE \
-              RDD2_RUMOCA_EXECUTABLE_SHA256 FETCHCONTENT_SOURCE_DIR_SYNAPSE_FBS_C
-            do
-              value="''${!boundary:-}"
-              if [ -n "$value" ]; then
-                cmake_args+=("-D$boundary=$value")
-              fi
-            done
+            rdd2_provider_cmake_args
 
             rdd2_lock_build_dir "$build_dir"
             cd "$RDD2_WORKSPACE_ROOT"
-            west build -b "$board" -d "$build_dir" "$app" -- "''${cmake_args[@]}"
+            west build -b "$board" -d "$build_dir" "$app" -- "''${RDD2_PROVIDER_CMAKE_ARGS[@]}"
 
             # Plant packaging caches under the FastDyn build directory. SIL has
             # no FastDyn build, so give it one under this build rather than
