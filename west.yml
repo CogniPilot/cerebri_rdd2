@@ -13,9 +13,9 @@ manifest:
   projects:
     - name: zephyr
       remote: cognipilot
-      # branch: rdd2-upstream-main
-      # pinned: 2026-08-05
-      revision: bf19ff6eb2cff5aac91242af56b514273cdf9a94
+      # branch: spinali-main-next (fork: static time-receiver + ENET fixes; incl. crsf-diag + shell-ctrlC)
+      # pinned: 2026-08-14
+      revision: dabd25d5cc61c3faa95070a989ec3452825df3d6
       path: zephyr
       west-commands: scripts/west-commands.yml
     - name: cmsis
@@ -68,9 +68,9 @@ manifest:
       path: modules/sim/fastdyn
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git
-      revision: cb9d8391c8e3c394fd288f2299c2b6758523b1c6 # cerebri2 4/27/26
+      revision: f16312bcb357481c94ae1a336ecdd08687d11c87 # spinali-1.9 (bench-validated line)
       path: modules/lib/zenoh-pico
     - name: zephyr_boards
       remote: cognipilot
-      revision: a21d0040d455e3520816e1a64335ae4a9b740cab # Zephyr main devicetree migration
+      revision: 614eed3b6432e776f107e948ccb59fda76e034c5 # v4.4 + tropic gPTP slave, UUID MAC, enet PTP clock
       path: modules/lib/zephyr_boards
