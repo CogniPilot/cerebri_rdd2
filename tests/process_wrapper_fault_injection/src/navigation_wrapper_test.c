@@ -57,6 +57,11 @@ enum navigation_cycle {
   NAV_CYCLE_RECOVERY_STAGE_2,
   NAV_CYCLE_RECOVERY_MISCONFIGURED,
   NAV_CYCLE_RECOVERY_NOMINAL,
+  NAV_CYCLE_IMU_HOLD_START,
+  NAV_CYCLE_IMU_HOLD_LAST =
+      NAV_CYCLE_IMU_HOLD_START + RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES - 1U,
+  NAV_CYCLE_IMU_HOLD_EXCEEDED,
+  NAV_CYCLE_IMU_HOLD_RECOVERY,
   NAV_CYCLE_COUNT,
 };
 
@@ -81,6 +86,7 @@ struct navigation_generated_observation {
   int32_t output_correction_outcome;
   int32_t output_correction_source;
   int32_t output_recovery_stage;
+  bool output_imu_payload_held;
   uint32_t error_signal_status;
 };
 
@@ -89,6 +95,8 @@ struct navigation_publication_observation {
   size_t attitude_publish_count;
   synapse_topic_OdometryEstimateData_t odometry;
   synapse_topic_AttitudeEstimateData_t attitude;
+  uint16_t imu_payload_hold_count;
+  bool imu_payload_usable_observed;
 };
 
 static jmp_buf navigation_loop_escape;
@@ -133,6 +141,7 @@ static void navigation_fill_valid_estimate(NavigationEstimatorState *self) {
   self->status_correctionOutcome = 0;
   self->status_correctionSource = 0;
   self->status_recoveryStage = 0;
+  self->status_imuPayloadHeld = false;
   self->status_anchorSource = 0;
 }
 
@@ -168,6 +177,12 @@ void NavigationEstimator_dostep(NavigationEstimatorState *self) {
          sizeof(observation->mocap_quaternion));
 
   navigation_fill_valid_estimate(self);
+  if (navigation_active_cycle == NAV_CYCLE_NONFINITE_IMU_RESET ||
+      navigation_active_cycle == NAV_CYCLE_INVALID_IMU ||
+      (navigation_active_cycle >= NAV_CYCLE_IMU_HOLD_START &&
+       navigation_active_cycle <= NAV_CYCLE_IMU_HOLD_EXCEEDED)) {
+    self->status_imuPayloadHeld = true;
+  }
   switch (navigation_active_cycle) {
   case NAV_CYCLE_GENERATED_ERROR:
     self->rumoca_galec_error_signal_status = UINT32_C(0x80);
@@ -211,6 +226,7 @@ void NavigationEstimator_dostep(NavigationEstimatorState *self) {
   observation->output_correction_outcome = self->status_correctionOutcome;
   observation->output_correction_source = self->status_correctionSource;
   observation->output_recovery_stage = self->status_recoveryStage;
+  observation->output_imu_payload_held = self->status_imuPayloadHeld;
   observation->error_signal_status = self->rumoca_galec_error_signal_status;
   navigation_step_count++;
 }
@@ -258,7 +274,9 @@ int navigation_fake_zros_sub_update(struct zros_sub *sub) {
         .flags = synapse_topic_InertialFieldFlags_Accel |
                  synapse_topic_InertialFieldFlags_Gyro,
     };
-    if (navigation_active_cycle == NAV_CYCLE_INVALID_IMU) {
+    if (navigation_active_cycle == NAV_CYCLE_INVALID_IMU ||
+        (navigation_active_cycle >= NAV_CYCLE_IMU_HOLD_START &&
+         navigation_active_cycle <= NAV_CYCLE_IMU_HOLD_EXCEEDED)) {
       g_process.imu.flags = synapse_topic_InertialFieldFlags_Accel;
     } else if (navigation_active_cycle == NAV_CYCLE_NONFINITE_IMU_RESET) {
       g_process.imu.accel_flu_m_s2.z = NAN;
@@ -294,6 +312,9 @@ int navigation_fake_zros_pub_update(struct zros_pub *pub) {
   if (pub == &g_process.odometry_pub) {
     observation->odometry_publish_count++;
     observation->odometry = g_process.odometry;
+    observation->imu_payload_hold_count = g_process.imu_payload_hold_count;
+    observation->imu_payload_usable_observed =
+        g_process.imu_payload_usable_observed;
     return 0;
   }
   if (pub == &g_process.attitude_pub) {
@@ -403,7 +424,7 @@ ZTEST(process_wrapper_fault_injection,
   navigation_expect_valid_publication(NAV_CYCLE_ESTIMATE_RECOVERY);
   navigation_expect_safe_publication(NAV_CYCLE_NEGATIVE_TIMESTAMP);
   navigation_expect_valid_publication(NAV_CYCLE_TIMESTAMP_RECOVERY);
-  navigation_expect_safe_publication(NAV_CYCLE_INVALID_IMU);
+  navigation_expect_valid_publication(NAV_CYCLE_INVALID_IMU);
   navigation_expect_valid_publication(NAV_CYCLE_IMU_RECOVERY_NO_MOCAP);
   navigation_expect_valid_publication(NAV_CYCLE_NONFINITE_MOCAP);
   navigation_expect_valid_publication(NAV_CYCLE_LARGE_CORRECTION_REJECTED);
@@ -414,6 +435,12 @@ ZTEST(process_wrapper_fault_injection,
   navigation_expect_valid_publication_with_quality(
       NAV_CYCLE_RECOVERY_MISCONFIGURED, 1);
   navigation_expect_valid_publication(NAV_CYCLE_RECOVERY_NOMINAL);
+  for (size_t cycle = NAV_CYCLE_IMU_HOLD_START;
+       cycle <= NAV_CYCLE_IMU_HOLD_LAST; ++cycle) {
+    navigation_expect_valid_publication(cycle);
+  }
+  navigation_expect_safe_publication(NAV_CYCLE_IMU_HOLD_EXCEEDED);
+  navigation_expect_valid_publication(NAV_CYCLE_IMU_HOLD_RECOVERY);
 
   zexpect_true(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].reset);
   zexpect_false(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].imu_valid);
@@ -452,6 +479,11 @@ ZTEST(process_wrapper_fault_injection,
   zexpect_true(navigation_generated[NAV_CYCLE_TIMESTAMP_RECOVERY].reset);
   zexpect_false(navigation_generated[NAV_CYCLE_INVALID_IMU].imu_valid);
   zexpect_true(navigation_generated[NAV_CYCLE_INVALID_IMU].imu_fresh);
+  zexpect_true(
+      navigation_generated[NAV_CYCLE_INVALID_IMU].output_imu_payload_held);
+  zexpect_equal(
+      navigation_publications[NAV_CYCLE_INVALID_IMU].imu_payload_hold_count,
+      1U);
   zexpect_true(navigation_generated[NAV_CYCLE_IMU_RECOVERY_NO_MOCAP].imu_valid);
   zexpect_false(navigation_generated[NAV_CYCLE_IMU_RECOVERY_NO_MOCAP].reset);
   zexpect_false(
@@ -502,6 +534,21 @@ ZTEST(process_wrapper_fault_injection,
   zexpect_true(rdd2_navigation_position_quality_is_usable(
       navigation_publications[NAV_CYCLE_RECOVERY_STAGE_1]
           .odometry.quality_pct));
+  zexpect_equal(
+      navigation_publications[NAV_CYCLE_IMU_HOLD_LAST].imu_payload_hold_count,
+      RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES);
+  zexpect_true(navigation_publications[NAV_CYCLE_IMU_HOLD_LAST]
+                   .imu_payload_usable_observed);
+  zexpect_equal(navigation_publications[NAV_CYCLE_IMU_HOLD_EXCEEDED]
+                    .imu_payload_hold_count,
+                RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES + 1U);
+  zexpect_true(navigation_generated[NAV_CYCLE_IMU_HOLD_EXCEEDED]
+                   .output_imu_payload_held);
+  zexpect_equal(navigation_publications[NAV_CYCLE_IMU_HOLD_RECOVERY]
+                    .imu_payload_hold_count,
+                0U);
+  zexpect_true(navigation_publications[NAV_CYCLE_IMU_HOLD_RECOVERY]
+                   .imu_payload_usable_observed);
   zexpect_equal(navigation_publications[NAV_CYCLE_RECOVERY_NOMINAL]
                     .odometry.reset_counter,
                 0U);

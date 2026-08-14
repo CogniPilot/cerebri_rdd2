@@ -40,6 +40,8 @@ enum navigation_scenario {
   NAV_SCENARIO_BASELINE,
   NAV_SCENARIO_STARTUP_NAN,
   NAV_SCENARIO_POST_INITIALIZATION_NAN,
+  NAV_SCENARIO_POST_INITIALIZATION_INVALID,
+  NAV_SCENARIO_BOUNDED_IMU_HOLD,
   NAV_SCENARIO_ZERO_MOCAP_QUATERNION,
   NAV_SCENARIO_GPS_POSITION_ONLY,
   NAV_SCENARIO_GPS_FIX2D_REJECTED,
@@ -67,6 +69,7 @@ struct generated_observation {
   bool gps_origin_initialization_pending;
   bool status_gps_position_correction_accepted;
   bool status_gps_velocity_correction_accepted;
+  bool status_imu_payload_held;
   int32_t status_consecutive_rejected_corrections;
   int32_t status_gps_consecutive_rejections;
   int32_t status_correction_outcome;
@@ -78,6 +81,8 @@ struct generated_observation {
   float covariance_x;
   float position[3];
   float quaternion[4];
+  float acceleration[3];
+  float angular_velocity[3];
 };
 
 struct publication_observation {
@@ -87,7 +92,7 @@ struct publication_observation {
   synapse_topic_AttitudeEstimateData_t attitude;
 };
 
-#define MAX_SCRIPT_CYCLES 9U
+#define MAX_SCRIPT_CYCLES (RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES + 3U)
 
 static jmp_buf loop_escape;
 static enum navigation_scenario active_scenario;
@@ -164,8 +169,20 @@ static void fill_imu_sample(void) {
       (active_scenario == NAV_SCENARIO_GPS_ORIGIN_RETRY &&
        active_cycle == 0U) ||
       (active_scenario == NAV_SCENARIO_POST_INITIALIZATION_NAN &&
-       active_cycle == 1U)) {
+       active_cycle == 1U) ||
+      (active_scenario == NAV_SCENARIO_BOUNDED_IMU_HOLD && active_cycle > 0U &&
+       active_cycle <= RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES + 1U)) {
     g_process.imu.accel_flu_m_s2.x = NAN;
+  }
+  if (active_scenario == NAV_SCENARIO_POST_INITIALIZATION_INVALID &&
+      active_cycle == 1U) {
+    g_process.imu.flags = synapse_topic_InertialFieldFlags_Accel;
+    g_process.imu.accel_flu_m_s2.x = 999.0f;
+    g_process.imu.accel_flu_m_s2.y = 998.0f;
+    g_process.imu.accel_flu_m_s2.z = 997.0f;
+    g_process.imu.gyro_flu_rad_s.x = 996.0f;
+    g_process.imu.gyro_flu_rad_s.y = 995.0f;
+    g_process.imu.gyro_flu_rad_s.z = 994.0f;
   }
 }
 
@@ -318,6 +335,7 @@ static void capture_generated_observation(void) {
       g_process.efmu.status_gpsPositionCorrectionAccepted;
   observation->status_gps_velocity_correction_accepted =
       g_process.efmu.status_gpsVelocityCorrectionAccepted;
+  observation->status_imu_payload_held = g_process.efmu.status_imuPayloadHeld;
   observation->status_consecutive_rejected_corrections =
       g_process.efmu.status_consecutiveRejectedCorrections;
   observation->status_gps_consecutive_rejections =
@@ -337,6 +355,11 @@ static void capture_generated_observation(void) {
          sizeof(observation->position));
   memcpy(observation->quaternion, g_process.efmu.estimate_quaternionWorldBody,
          sizeof(observation->quaternion));
+  memcpy(observation->acceleration, g_process.efmu.accelerationWorldEnu_m_s2,
+         sizeof(observation->acceleration));
+  memcpy(observation->angular_velocity,
+         g_process.efmu.estimate_angularVelocityBodyFlu_rad_s,
+         sizeof(observation->angular_velocity));
 }
 
 int navigation_fake_zros_pub_update(struct zros_pub *pub) {
@@ -502,11 +525,12 @@ ZTEST(generated_navigation_fault_injection, test_startup_nan_imu_is_invalid) {
   zexpect_equal(generated[0].error_signal_status, 0U);
   zexpect_true(generated[0].estimate_valid);
   zexpect_true(generated[0].status_initialized);
+  zexpect_true(generated[0].status_imu_payload_held);
   expect_safe_publication(0U);
 }
 
 ZTEST(generated_navigation_fault_injection,
-      test_post_initialization_nan_imu_is_invalid) {
+      test_post_initialization_nan_imu_holds_last_finite_payload) {
   run_scenario(NAV_SCENARIO_POST_INITIALIZATION_NAN, 2U);
 
   expect_valid_publication(0U);
@@ -516,25 +540,87 @@ ZTEST(generated_navigation_fault_injection,
   zexpect_true(generated[1].estimate_valid);
   zexpect_true(generated[1].status_initialized);
   zexpect_false(generated[1].status_prediction_accepted);
+  zexpect_true(generated[1].status_imu_payload_held);
   zexpect_true(floats_are_finite(generated[1].position, 3U));
   zexpect_true(floats_are_finite(generated[1].quaternion, 4U));
-  expect_safe_publication(1U);
+  zexpect_mem_equal(generated[1].acceleration, generated[0].acceleration,
+                    sizeof(generated[0].acceleration));
+  zexpect_mem_equal(generated[1].angular_velocity,
+                    generated[0].angular_velocity,
+                    sizeof(generated[0].angular_velocity));
+  expect_valid_publication(1U);
 }
 
 ZTEST(generated_navigation_fault_injection,
-      test_zero_mocap_quaternion_is_invalid) {
+      test_invalid_imu_flag_holds_instead_of_consuming_finite_garbage) {
+  run_scenario(NAV_SCENARIO_POST_INITIALIZATION_INVALID, 2U);
+
+  expect_valid_publication(0U);
+  zexpect_false(generated[1].imu_valid);
+  zexpect_true(generated[1].status_imu_payload_held);
+  zexpect_true(generated[1].estimate_valid);
+  zexpect_mem_equal(generated[1].acceleration, generated[0].acceleration,
+                    sizeof(generated[0].acceleration));
+  zexpect_mem_equal(generated[1].angular_velocity,
+                    generated[0].angular_velocity,
+                    sizeof(generated[0].angular_velocity));
+  expect_valid_publication(1U);
+}
+
+ZTEST(generated_navigation_fault_injection,
+      test_imu_hold_is_bounded_before_rate_validity_is_withdrawn) {
+  const size_t exceeded = RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES + 1U;
+  const size_t recovered = exceeded + 1U;
+
+  run_scenario(NAV_SCENARIO_BOUNDED_IMU_HOLD, recovered + 1U);
+
+  expect_valid_publication(0U);
+  zexpect_false(generated[0].status_imu_payload_held);
+  for (size_t cycle = 1U; cycle <= RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES;
+       ++cycle) {
+    zexpect_false(generated[cycle].imu_valid);
+    zexpect_true(generated[cycle].status_imu_payload_held);
+    zexpect_true(generated[cycle].estimate_valid);
+    zexpect_true(floats_are_finite(generated[cycle].acceleration, 3U));
+    zexpect_true(floats_are_finite(generated[cycle].angular_velocity, 3U));
+    zexpect_mem_equal(generated[cycle].acceleration, generated[0].acceleration,
+                      sizeof(generated[0].acceleration));
+    zexpect_mem_equal(generated[cycle].angular_velocity,
+                      generated[0].angular_velocity,
+                      sizeof(generated[0].angular_velocity));
+    expect_powered_publication(cycle, 100);
+  }
+  zexpect_true(generated[exceeded].status_imu_payload_held);
+  zexpect_true(generated[exceeded].estimate_valid);
+  zexpect_true(floats_are_finite(generated[exceeded].acceleration, 3U));
+  zexpect_true(floats_are_finite(generated[exceeded].angular_velocity, 3U));
+  expect_safe_publication(exceeded);
+  zexpect_true(generated[recovered].imu_valid);
+  zexpect_false(generated[recovered].status_imu_payload_held);
+  expect_powered_publication(recovered, 100);
+}
+
+ZTEST(generated_navigation_fault_injection,
+      test_zero_mocap_quaternion_falls_back_to_finite_initial_state) {
   run_scenario(NAV_SCENARIO_ZERO_MOCAP_QUATERNION, 1U);
 
   zexpect_true(generated[0].imu_valid);
-  zexpect_true((generated[0].error_signal_status & UINT32_C(1)) != 0U);
-  zexpect_false(generated[0].estimate_valid);
+  zexpect_equal(generated[0].error_signal_status, 0U);
+  zexpect_true(generated[0].estimate_valid);
   zexpect_true(generated[0].status_initialized);
-  zexpect_false(floats_are_finite(generated[0].quaternion, 4U));
-  expect_safe_publication(0U);
+  zexpect_true(floats_are_finite(generated[0].quaternion, 4U));
+  zexpect_within(generated[0].position[0], 0.0f, 1.0e-6f);
+  zexpect_within(generated[0].position[1], 0.0f, 1.0e-6f);
+  zexpect_within(generated[0].position[2], 0.0f, 1.0e-6f);
+  zexpect_within(generated[0].quaternion[0], 1.0f, 1.0e-6f);
+  zexpect_within(generated[0].quaternion[1], 0.0f, 1.0e-6f);
+  zexpect_within(generated[0].quaternion[2], 0.0f, 1.0e-6f);
+  zexpect_within(generated[0].quaternion[3], 0.0f, 1.0e-6f);
+  expect_powered_publication(0U, 100);
 }
 
 ZTEST(generated_navigation_fault_injection,
-      test_gps_position_only_aids_actual_v3) {
+      test_gps_position_only_aids_generated_estimator) {
   run_scenario(NAV_SCENARIO_GPS_POSITION_ONLY, 2U);
 
   zexpect_true(generated[0].reset);
@@ -562,7 +648,7 @@ ZTEST(generated_navigation_fault_injection,
 }
 
 ZTEST(generated_navigation_fault_injection,
-      test_fix2d_never_reaches_actual_v3_gps_gate) {
+      test_fix2d_never_reaches_generated_gps_gate) {
   run_scenario(NAV_SCENARIO_GPS_FIX2D_REJECTED, 2U);
 
   zexpect_true(generated[0].gps_valid);
@@ -581,7 +667,7 @@ ZTEST(generated_navigation_fault_injection,
 }
 
 ZTEST(generated_navigation_fault_injection,
-      test_gps_velocity_aids_actual_generated_bundle) {
+      test_gps_velocity_aids_generated_estimator) {
   run_scenario(NAV_SCENARIO_GPS_VELOCITY, 2U);
 
   zexpect_true(generated[0].gps_velocity_valid);
@@ -608,7 +694,7 @@ ZTEST(generated_navigation_fault_injection,
 }
 
 ZTEST(generated_navigation_fault_injection,
-      test_origin_reset_ownership_survives_failed_initialization_actual_v3) {
+      test_origin_reset_ownership_survives_failed_initialization) {
   run_scenario(NAV_SCENARIO_GPS_ORIGIN_RETRY, 3U);
 
   zexpect_true(generated[0].reset);
@@ -636,7 +722,7 @@ ZTEST(generated_navigation_fault_injection,
 }
 
 ZTEST(generated_navigation_fault_injection,
-      test_radio_mocap_recovers_from_origin_initialization_timeout_actual_v3) {
+      test_radio_mocap_recovers_from_origin_initialization_timeout) {
   run_scenario(NAV_SCENARIO_GPS_ORIGIN_RADIO_TIMEOUT, 3U);
 
   zexpect_true(generated[0].reset);

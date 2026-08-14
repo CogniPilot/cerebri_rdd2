@@ -45,7 +45,9 @@ struct navigation_estimator_process {
   bool initialized;
   bool gps_origin_initialization_pending;
   uint64_t gps_origin_initialization_started_ns;
+  uint16_t imu_payload_hold_count;
   uint8_t reset_counter;
+  bool imu_payload_usable_observed;
 };
 
 static struct navigation_estimator_process g_process;
@@ -202,6 +204,29 @@ static bool efmu_estimate_is_finite(const NavigationEstimatorState *efmu) {
          rdd2_control_values_are_finite(values, ARRAY_SIZE(values));
 }
 
+static bool
+navigation_imu_payload_is_usable(struct navigation_estimator_process *process,
+                                 bool state_usable) {
+  if (!state_usable) {
+    process->imu_payload_hold_count = 0U;
+    process->imu_payload_usable_observed = false;
+    return false;
+  }
+  if (!process->efmu.status_imuPayloadHeld) {
+    process->imu_payload_hold_count = 0U;
+    if (!process->efmu.imu_valid) {
+      return false;
+    }
+    process->imu_payload_usable_observed = true;
+    return true;
+  }
+  if (process->imu_payload_hold_count < UINT16_MAX) {
+    process->imu_payload_hold_count++;
+  }
+  return rdd2_navigation_imu_hold_is_usable(
+      process->imu_payload_usable_observed, process->imu_payload_hold_count);
+}
+
 static void publish_efmu_estimate(struct navigation_estimator_process *process,
                                   bool estimate_valid) {
   NavigationEstimatorState *efmu = &process->efmu;
@@ -337,9 +362,10 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     outputs_finite = efmu_estimate_is_finite(&process->efmu);
     state_usable = step_ok && outputs_finite && process->efmu.estimate_valid &&
                    process->efmu.status_initialized;
-    estimate_valid = process->efmu.imu_valid && state_usable;
-    /* A rejected non-finite IMU sample holds a usable generated state. Do not
-     * turn that one-cycle publication fault into an estimator reset. */
+    estimate_valid = navigation_imu_payload_is_usable(process, state_usable);
+    /* Keep a bounded held-IMU publication from resetting the estimator. If
+     * the hold exceeds its deadline, invalid publication makes Rate latch its
+     * existing motors-zero fault until the pilot acknowledges it. */
     process->initialized = process->gps_origin_initialization_pending
                                ? estimate_valid
                                : state_usable;

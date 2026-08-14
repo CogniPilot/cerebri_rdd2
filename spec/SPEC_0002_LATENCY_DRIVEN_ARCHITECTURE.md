@@ -79,6 +79,13 @@ thread boundary actually exists.
   nonfinite value at a publication or actuator boundary must fail closed:
   Navigation publishes a finite estimate marked invalid, Guidance withholds
   its command publication, and Rate disarms and commands zero motor output.
+- Navigation may publish the generated estimator's last finite IMU-derived
+  payload while `status.imuPayloadHeld` is true only after observing a usable
+  unheld payload and for at most 20 consecutive Navigation releases (nominally
+  `20 ms` at `1 kHz`). Startup holds and release 21 fail closed by withdrawing
+  attitude/rate validity; the latter invokes Rate's existing latched,
+  motors-zero fault and pilot-acknowledgement path. A usable unheld generated
+  state resets the consecutive-hold count.
 - These checks run inline in the existing process threads and may not add a
   queue, worker thread, blocking call, heap allocation, or extra control-cycle
   delay.

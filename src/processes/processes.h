@@ -24,9 +24,20 @@ uint8_t rdd2_waypoint_mission_state_get(void);
  * recovery, while quality 1 explicitly withdraws POSITION capability. */
 #define RDD2_NAVIGATION_POSITION_QUALITY_MIN_PCT INT8_C(2)
 
+/* Keep a previously verified finite IMU payload through at most 20
+ * consecutive Navigation releases (nominally 20 ms at 1 kHz). */
+#define RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES UINT16_C(20)
+
 static inline bool
 rdd2_navigation_position_quality_is_usable(int8_t quality_pct) {
   return quality_pct >= RDD2_NAVIGATION_POSITION_QUALITY_MIN_PCT;
+}
+
+static inline bool
+rdd2_navigation_imu_hold_is_usable(bool usable_payload_observed,
+                                   uint16_t consecutive_held_releases) {
+  return usable_payload_observed && consecutive_held_releases > 0U &&
+         consecutive_held_releases <= RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES;
 }
 
 #endif /* RDD2_PROCESSES_H_ */

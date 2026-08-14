@@ -11,6 +11,11 @@ enum {
   CYCLE_INITIAL_UNOBSERVED = 0,
   CYCLE_INITIAL_ACK,
   CYCLE_INITIAL_RECOVERY,
+  CYCLE_IMU_HOLD_LAST_USABLE,
+  CYCLE_IMU_HOLD_EXCEEDED,
+  CYCLE_IMU_HOLD_RECOVERED_LATCHED,
+  CYCLE_IMU_HOLD_ACK,
+  CYCLE_IMU_HOLD_REARM,
   CYCLE_FUTURE_COMMAND,
   CYCLE_LATCHED_AFTER_FUTURE,
   CYCLE_FUTURE_ACK,
@@ -89,6 +94,7 @@ static bool arm_switch_high(size_t cycle) {
   switch (cycle) {
   case CYCLE_INITIAL_UNOBSERVED:
   case CYCLE_INITIAL_ACK:
+  case CYCLE_IMU_HOLD_ACK:
   case CYCLE_FUTURE_ACK:
   case CYCLE_MASK_ACK:
   case CYCLE_COMMAND_ACK:
@@ -195,6 +201,18 @@ int zros_sub_update(struct zros_sub *sub) {
     };
     if (g_cycle == CYCLE_INVALID_NAV_FLAGS) {
       g_process.navigation.flags = 0U;
+    } else if (g_cycle == CYCLE_IMU_HOLD_LAST_USABLE) {
+      g_process.navigation.flags =
+          rdd2_navigation_imu_hold_is_usable(
+              true, RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES)
+              ? synapse_topic_AttitudeEstimateFlags_RatesValid
+              : 0U;
+    } else if (g_cycle == CYCLE_IMU_HOLD_EXCEEDED) {
+      g_process.navigation.flags =
+          rdd2_navigation_imu_hold_is_usable(
+              true, RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES + 1U)
+              ? synapse_topic_AttitudeEstimateFlags_RatesValid
+              : 0U;
     } else if (g_cycle == CYCLE_NONFINITE_NAV_RATE) {
       g_process.navigation.angular_velocity_flu_rad_s.yaw = INFINITY;
     }
@@ -374,6 +392,11 @@ ZTEST(process_wrapper_fault_injection,
   expect_zero_and_disarmed(CYCLE_INITIAL_UNOBSERVED);
   expect_zero_and_disarmed(CYCLE_INITIAL_ACK);
   expect_armed_finite_output(CYCLE_INITIAL_RECOVERY);
+  expect_armed_finite_output(CYCLE_IMU_HOLD_LAST_USABLE);
+  expect_zero_and_disarmed(CYCLE_IMU_HOLD_EXCEEDED);
+  expect_zero_and_disarmed(CYCLE_IMU_HOLD_RECOVERED_LATCHED);
+  expect_zero_and_disarmed(CYCLE_IMU_HOLD_ACK);
+  expect_armed_finite_output(CYCLE_IMU_HOLD_REARM);
   expect_zero_and_disarmed(CYCLE_FUTURE_COMMAND);
   expect_zero_and_disarmed(CYCLE_LATCHED_AFTER_FUTURE);
   expect_zero_and_disarmed(CYCLE_FUTURE_ACK);
@@ -411,6 +434,7 @@ ZTEST(process_wrapper_fault_injection,
 
   const size_t unusable_input_cycles[] = {
       CYCLE_INITIAL_UNOBSERVED,
+      CYCLE_IMU_HOLD_EXCEEDED,
       CYCLE_FUTURE_COMMAND,
       CYCLE_MASKED_COMMAND,
       CYCLE_NONFINITE_COMMAND,
@@ -426,12 +450,21 @@ ZTEST(process_wrapper_fault_injection,
   }
 
   expect_generated_inputs_forwarded(CYCLE_LATCHED_AFTER_FUTURE, false);
+  expect_generated_inputs_forwarded(CYCLE_IMU_HOLD_LAST_USABLE, true);
+  expect_generated_inputs_forwarded(CYCLE_IMU_HOLD_RECOVERED_LATCHED, false);
+  expect_generated_inputs_forwarded(CYCLE_IMU_HOLD_ACK, false);
+  expect_generated_inputs_forwarded(CYCLE_IMU_HOLD_REARM, true);
   expect_generated_inputs_forwarded(CYCLE_STALE_FRESH_ACK, false);
   expect_generated_inputs_forwarded(CYCLE_STALE_RECOVERY, true);
   expect_failsafe(CYCLE_FUTURE_COMMAND, true);
   expect_failsafe(CYCLE_LATCHED_AFTER_FUTURE, true);
   expect_failsafe(CYCLE_FUTURE_ACK, false);
   expect_failsafe(CYCLE_FUTURE_RECOVERY, false);
+  expect_failsafe(CYCLE_IMU_HOLD_LAST_USABLE, false);
+  expect_failsafe(CYCLE_IMU_HOLD_EXCEEDED, true);
+  expect_failsafe(CYCLE_IMU_HOLD_RECOVERED_LATCHED, true);
+  expect_failsafe(CYCLE_IMU_HOLD_ACK, false);
+  expect_failsafe(CYCLE_IMU_HOLD_REARM, false);
   expect_failsafe(CYCLE_STALE_COMMAND, true);
   expect_failsafe(CYCLE_STALE_LOW_WHILE_STALLED, false);
   expect_failsafe(CYCLE_STALE_HIGH_REARM_WHILE_STALLED, true);
