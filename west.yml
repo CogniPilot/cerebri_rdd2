@@ -13,9 +13,7 @@ manifest:
   projects:
     - name: zephyr
       remote: cognipilot
-      # branch: spinali-main-next (fork: static time-receiver + ENET fixes; incl. crsf-diag + shell-ctrlC + icm45686 stream fixes)
-      # pinned: 2026-08-14
-      revision: 867975771b78c4180113f216bbc2f2a262093aa5
+      revision: golden # fleet unified: enet_qos pass-all-multicast + icm45686 stream + shell/crsf
       path: zephyr
       west-commands: scripts/west-commands.yml
     - name: cmsis
@@ -52,7 +50,7 @@ manifest:
       path: modules/lib/zros
     - name: csyn
       remote: cognipilot
-      revision: 173d1989915ac67433153c305e07158cf8f50c49 # synapse_fbs 0.9.0 + configurable zenoh TCP-client posture
+      revision: golden # synapse_fbs 0.10.0 + NET_SOCKETS gate + configurable zenoh posture
       path: modules/lib/csyn
     - name: cerebri_modules
       remote: cognipilot
@@ -68,11 +66,11 @@ manifest:
       path: modules/sim/fastdyn
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git
-      revision: d1880874de7a792f41f30f563ddc3ec4956fe3ea # spinali-1.9 + Zephyr UDP-multicast join + IPv6-only build fixes
+      revision: golden # native Zephyr threads/clocks/zsock (POSIX-free) + UDP-multicast/IPv6 fixes
       path: modules/lib/zenoh-pico
     - name: zephyr_boards
       remote: cognipilot
-      revision: 1d7c17e875938082f024e80d114ac82c25aa53a9 # 614eed3 + tropic RT1064 mcuboot/sysbuild fork-compat fixes
+      revision: golden # 614eed3 (main) + tropic RT1064 board fixes
       path: modules/lib/zephyr_boards
     - name: mcuboot
       remote: zephyrproject-rtos
