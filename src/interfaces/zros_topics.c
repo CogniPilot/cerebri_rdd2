@@ -17,6 +17,7 @@
 #include <zros/private/zros_topic_struct.h>
 #include <zros/zros_shell.h>
 
+#include <synapse/optical_flow_reader.h>
 #include <synapse/topic_print.h>
 #include <synapse/types_reader.h>
 
@@ -47,6 +48,12 @@ CSYN_TOPIC_DEFINE(att_sp, "att_sp", CSYN_DIR_TX,
                   sizeof(synapse_topic_AttitudeCommandData_t));
 CSYN_TOPIC_DEFINE(loop, "loop", CSYN_DIR_TX,
                   sizeof(synapse_topic_ControlLoopMetricsData_t));
+/* Inbound optical-flow velocity from the mesh optical_flow node under the
+ * "flow_vel" catalog key (OpticalFlowVelocityData, 32-byte fixed layout). The
+ * shared csyn zros bridge copies each newly received sample onto the
+ * optical_flow_vel topic below for the estimator to fuse. */
+CSYN_TOPIC_DEFINE(flow_vel_rx, "flow_vel", CSYN_DIR_RX,
+                  sizeof(synapse_topic_OpticalFlowVelocityData_t));
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(inertial_sample,
                                    synapse_topic_InertialSampleData_t);
 ZROS_TOPIC_DEFINE(external_odometry, synapse_topic_ExternalOdometryData_t);
@@ -62,6 +69,11 @@ ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(attitude_command,
                                    synapse_topic_AttitudeCommandData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(control_loop_metrics,
                                    synapse_topic_ControlLoopMetricsData_t);
+/* Inbound mesh optical-flow velocity. The shared csyn zros bridge is the sole
+ * publisher: it copies the "flow_vel" RX store onto this topic, so a consumer
+ * (the estimator) subscribes here for optical-flow velocity aiding. */
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(optical_flow_vel,
+                                   synapse_topic_OpticalFlowVelocityData_t);
 /* The gnss_fix topic is the single-publisher home of the latest fix on the
  * internal bus. Its producer is selected by the RDD2_GNSS_SOURCE choice: the
  * onboard UBX reader, the deterministic lockstep source, a serial-injected

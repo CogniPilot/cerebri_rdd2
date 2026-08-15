@@ -31,6 +31,7 @@ ZROS_TOPIC_DECLARE(vehicle_health, synapse_topic_VehicleHealthData_t);
 ZROS_TOPIC_DECLARE(attitude_estimate, synapse_topic_AttitudeEstimateData_t);
 ZROS_TOPIC_DECLARE(attitude_command, synapse_topic_AttitudeCommandData_t);
 ZROS_TOPIC_DECLARE(control_loop_metrics, synapse_topic_ControlLoopMetricsData_t);
+ZROS_TOPIC_DECLARE(optical_flow_vel, synapse_topic_OpticalFlowVelocityData_t);
 ZROS_TOPIC_DECLARE(pwm_signal_outputs, synapse_topic_PwmSignalOutputsData_t);
 ZROS_TOPIC_DECLARE(inertial_sample, synapse_topic_InertialSampleData_t);
 ZROS_TOPIC_DECLARE(external_odometry, synapse_topic_ExternalOdometryData_t);
