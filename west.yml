@@ -44,6 +44,10 @@ manifest:
       remote: zephyrproject-rtos
       revision: 50892fdbcf2f570e67baa72b8894a66b16946f72
       path: modules/debug/segger
+    - name: zcbor
+      remote: zephyrproject-rtos
+      revision: 9164bd18dcd88ff9d9ef98279501fc1093571017
+      path: modules/lib/zcbor
     - name: zros
       remote: cognipilot
       revision: 20ab07983224ca078f17e2e851b4fe8cb92eb517 # Zephyr main module schema
