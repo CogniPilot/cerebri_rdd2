@@ -66,7 +66,7 @@ manifest:
       path: modules/sim/fastdyn
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git
-      revision: 4125a0437ad52adfe0d43e92c4ec3dcbe0e5fca8
+      revision: f02b07c642ef671addc97a40624c4d5776b104f6
       path: modules/lib/zenoh-pico
     - name: zephyr_boards
       remote: cognipilot

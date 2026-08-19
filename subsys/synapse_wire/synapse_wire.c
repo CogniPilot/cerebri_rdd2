@@ -71,8 +71,12 @@ struct stream_stats {
 	uint32_t sequence_gaps;
 	uint32_t rejected[SYNAPSE_WIRE_REJECTION_PEER_COMPATIBILITY + 1U];
 	uint64_t session_id;
+	uint64_t last_capture_timestamp_ns;
+	uint64_t last_receive_gptp_ns;
 	uint32_t last_sequence;
 	int64_t last_accepted_ms;
+	uint16_t last_header_flags;
+	uint8_t last_receiver_time_status;
 };
 
 struct stream_context {
@@ -278,6 +282,19 @@ static void received_record(struct stream_context *stream)
 	k_spinlock_key_t key = k_spin_lock(&g_receiver.lock);
 
 	stream->stats.received++;
+	k_spin_unlock(&g_receiver.lock, key);
+}
+
+static void timing_record(struct stream_context *stream, const synapse_wire_header_t *header,
+			  uint64_t receive_gptp_ns,
+			  synapse_types_TimeStatus_enum_t receiver_time_status)
+{
+	k_spinlock_key_t key = k_spin_lock(&g_receiver.lock);
+
+	stream->stats.last_capture_timestamp_ns = header->capture_timestamp_ns;
+	stream->stats.last_receive_gptp_ns = receive_gptp_ns;
+	stream->stats.last_header_flags = header->flags;
+	stream->stats.last_receiver_time_status = (uint8_t)receiver_time_status;
 	k_spin_unlock(&g_receiver.lock, key);
 }
 
@@ -533,6 +550,7 @@ static void datagram_process(struct stream_context *stream, const uint8_t *datag
 	if (receiver_time_status == synapse_types_TimeStatus_GptpSynced) {
 		receive_gptp_ns = synapse_time_apply_offset(receive_monotonic_ns, offset_ns);
 	}
+	timing_record(stream, &view.header, receive_gptp_ns, receiver_time_status);
 
 	policy = (synapse_wire_validation_policy_t){
 		.topic_id = stream->topic_id,
@@ -777,6 +795,13 @@ static int status_print(const struct shell *shell, const struct stream_context *
 		    stats.last_accepted_ms < 0
 			    ? -1LL
 			    : (long long)(k_uptime_get() - stats.last_accepted_ms));
+	shell_print(shell,
+		    "  time flags=0x%04x receiver_status=%u capture=%llu receive=%llu delta=%lld ns",
+		    stats.last_header_flags, stats.last_receiver_time_status,
+		    (unsigned long long)stats.last_capture_timestamp_ns,
+		    (unsigned long long)stats.last_receive_gptp_ns,
+		    (long long)((int64_t)stats.last_receive_gptp_ns -
+				(int64_t)stats.last_capture_timestamp_ns));
 	for (size_t index = 1U; index < ARRAY_SIZE(stats.rejected); ++index) {
 		if (stats.rejected[index] != 0U) {
 			shell_print(shell, "  reject %s=%u",
