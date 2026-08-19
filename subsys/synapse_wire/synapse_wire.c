@@ -344,6 +344,12 @@ static struct net_if *application_iface_get(void)
 	if (vlan != NULL && !net_if_is_up(vlan) && net_if_up(vlan) != 0) {
 		return NULL;
 	}
+	if (vlan == NULL ||
+	    (net_if_ipv6_addr_lookup_by_iface(vlan, &g_receiver.local_address) == NULL &&
+	     net_if_ipv6_addr_add(vlan, &g_receiver.local_address, NET_ADDR_MANUAL, 0) == NULL)) {
+		LOG_ERR("VLAN %d IPv6 address setup failed", CONFIG_RDD2_SYNAPSE_WIRE_VLAN_ID);
+		return NULL;
+	}
 	return vlan;
 }
 
