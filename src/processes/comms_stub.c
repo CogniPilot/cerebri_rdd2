@@ -2,18 +2,11 @@
 
 #include "processes.h"
 
+#include "gnss_source.h"
 #include "interfaces/drivers.h"
 #include "interfaces/synapse_time_status.h"
 #include "interfaces/zros_topics.h"
 #include "scheduling.h"
-
-#if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
-#include "gnss_onboard.h"
-#endif
-
-#if defined(CONFIG_RDD2_GNSS_SOURCE_MESH)
-#include "gnss_mesh.h"
-#endif
 
 #include <stdint.h>
 
@@ -76,13 +69,7 @@ static bool divider_expired(uint32_t *countdown, uint32_t divisor)
 
 static bool gnss_ready(void)
 {
-#if defined(CONFIG_RDD2_GNSS_SOURCE_ONBOARD)
-	return rdd2_gnss_onboard_ready_get();
-#elif defined(CONFIG_RDD2_GNSS_SOURCE_MESH)
-	return rdd2_gnss_mesh_ready_get();
-#else
-	return false;
-#endif
+	return rdd2_position_source_ready_get();
 }
 
 static int publishers_init(struct comms_stub_process *process)
@@ -238,10 +225,10 @@ int rdd2_rate_control_allocator_process_run(void)
 	LOG_WRN("STUB-NAV running: navigation invalid, failsafe latched, arm denied");
 
 #if defined(CONFIG_RDD2_STUB_LOOP_DISABLE)
-	/* Bench bring-up: the stub control loop is killed so the networking, gPTP,
-	 * and csyn-zenoh threads get the CPU. The node still initialises and can be
-	 * probed over the shell / gPTP / zenoh. */
-	LOG_WRN("STUB loop disabled (RDD2_STUB_LOOP_DISABLE): idling for net/gPTP/zenoh bring-up");
+	/* Bench bring-up: the stub control loop is disabled so the networking and
+	 * gPTP threads get the CPU. The node remains observable through its shell. */
+	LOG_WRN("STUB loop disabled (RDD2_STUB_LOOP_DISABLE): idling for "
+		"network/gPTP bring-up");
 	k_sleep(K_FOREVER);
 	return 0;
 #endif

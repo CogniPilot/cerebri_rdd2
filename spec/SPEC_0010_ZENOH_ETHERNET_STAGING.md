@@ -1,41 +1,57 @@
-# SPEC_0010: Zenoh Ethernet Staging
+# SPEC_0010: Ethernet Direct Wire and CDR Mirrors
 
 ## Status
 DRAFT
 
 ## Summary
-Zenoh over Ethernet is provided by the same CSyn module and generated Synapse
-topic catalog used by CUBS2.
+Selected bounded sensor and control topics use direct Synapse UDP/IPv6
+datagrams. Any topic with a generated bounded ROS projection may also be
+published as a ROS 2 CDRv1 mirror through `rmw_zenoh_cpp`.
 
 ## Specification
 
 **REQUIRED:**
-- Zenoh-over-Ethernet uses the standard Zephyr IPv4/UDP networking stack on `mr_vmu_tropic`.
-- The Zenoh integration uses CSyn over `zenoh-pico`, not a custom wire parser.
-- Session bring-up and reconnect run in a dedicated low-priority thread.
-- Received data is retained in CSyn's bounded latest-sample topic store.
-- Topic identity, key expressions, payload size, and generated decoding come
-  from CSyn's pinned `synapse_fbs` catalog.
-- Shell inspection uses the CSyn shell and stored state.
+- Embedded direct wire uses the standard Zephyr UDP/IPv6 stack and VLAN
+  support on `mr_vmu_tropic`.
+- Header encoding, decoding, and validation use the generated
+  `synapse_fbs` C library.
+- Socket receive and reconnect run in a dedicated preemptible thread outside
+  the 1600 Hz controller.
+- The receiver validates source and destination addresses, ports, interface,
+  hop limit, schema, topic, source identity, session, sequence, timestamp, and
+  payload before publishing onto ZROS.
+- ROS 2 CDR mirrors use generated IDL, exact ROS and DDS names, RIHS01 identity,
+  fixed serialized size, and allocation-free generated codecs where available.
+- `rmw_zenoh_cpp` owns its native 33-byte publication attachment. Application
+  code does not synthesize a competing attachment format.
+- Mirror selection is deployment policy. Adding a CDR mirror does not require
+  adding a topic to the strict direct-wire set.
+- Shell inspection reports stored counters and state without driving the live
+  receive path.
 
 **CURRENT DIRECTION:**
-- Default bench configuration uses static IPv4 settings to simplify bring-up.
-- Offboard inputs must first be added to the standard Synapse catalog and CSyn;
-  RDD2 must not add local raw-payload mirrors.
-- The first target is reliable Ethernet and subscription bring-up without
-  blocking the control loop.
-- Board-level Zephyr bring-up shells such as `net ping`, `net stats`, and `mdio` are allowed for Ethernet diagnostics, but subsystem-specific transport shells should continue to read stored state rather than driving the live path directly.
+- The bench uses static IPv6 link-local addresses on VLAN 58.
+- Optical flow and GNSS are the first direct-wire receive topics.
+- Optical flow, GNSS, and bootstrap health are the first ROS 2 CDR mirrors.
+- Additional bounded topics can gain CDR projections without changing the
+  direct-wire carrier.
+- Board-level Zephyr network shells are allowed for diagnostics.
 
 **PROHIBITED:**
 - Blocking the 1600 Hz control loop on Ethernet or Zenoh traffic.
-- Handwritten message decoders or RDD2-local topic keys.
+- Handwritten schema decoders or RDD2-local topic keys.
 - Unbounded payload buffering or per-sample heap ownership in shell/debug code.
+- Treating a CDR mirror as authoritative control, estimation, readiness, or
+  arming input.
+- A second embedded transport bridge, registry, or latest-sample store.
 
 ## Motivation
 
-- Offboard inputs are useful, but bring-up should not destabilize manual flight.
-- Zenoh transport debugging is easier when network and subscription state can be inspected independently from controller behavior.
-- A bounded latest-sample store is enough for initial integration and shell diagnostics.
+- Direct wire gives selected embedded paths a small bounded carrier.
+- CDR mirrors provide normal ROS 2 interoperability without forcing every
+  topic into the strict embedded carrier.
+- Keeping transport policy outside the schema package lets one generated
+  payload support serial, direct wire, logging, and ROS 2 mirrors.
 
 ## References
 

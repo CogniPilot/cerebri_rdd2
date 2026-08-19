@@ -135,38 +135,28 @@ See `docs/ground_station_telemetry.md` for the serial wire contract.
 
 ## Which bus carries what
 
-ZROS is the internal bus. Every producer on the vehicle publishes there, every
-consumer reads there, and it is the only bus a subsystem needs to know about.
+ZROS is the internal bus. Every producer publishes there, every local consumer
+reads there, and application subsystems do not depend on a network transport.
 
-CSyn is the external face for Ethernet: it carries the same topics to Zenoh
-over the network stack, and `csyn_zros_bridge` in the CSyn module mirrors them
-between the two buses. Nothing on the vehicle publishes into CSyn directly.
+`synapse_fbs` owns generated topic IDs, keys, fixed payload layouts, C
+headers, and bounded codecs. RDD2 consumes one explicit generated C package.
 
-The SiK telemetry radio is served by `subsys/zros_serial`, which reads and
-publishes ZROS topics and does not link CSyn at all. What it does share with
-CSyn is the `synapse_fbs` catalog: the `topic_id` in each frame is a catalog
-TopicId, because the ground-side peer decodes by that id. That is schema, not
-transport, so both links can carry the same topics without either depending on
-the other.
+`subsys/synapse_wire` receives the strict embedded UDP/IPv6 topic subset,
+validates carrier and payload state, and publishes accepted samples onto the
+existing ZROS topics. The current receive set is optical flow and GNSS.
 
-GNSS is the one topic that lives only on ZROS. The radio carries it in both
-directions, so nothing mirrors it onto CSyn and a fix does not appear on the
-Ethernet/Zenoh side.
+The SiK telemetry radio remains a separate bounded carrier implemented by
+`subsys/zros_serial`. It uses the same generated topic IDs without depending
+on the Ethernet carrier.
 
-RDD2 uses the same pinned CSyn module as CUBS2. CSyn owns the `synapse_fbs`
-release, generated C headers, topic catalog, canonical Zenoh keys, payload
-sizes, and transport bridge; RDD2 does not carry a second schema-fetch or
-decoder path.
+ROS 2 CDR mirrors are observational transport projections. A deployment can
+enable a generated CDR projection for any supported topic without adding that
+topic to the strict direct-wire set.
 
-Deterministic lockstep never uses CSyn, ZROS bridging, Zenoh, or Ethernet for
-pacing. `native_sim` and FastDyn select direct shared-memory backends in the
-same `subsys/lockstep` module and exchange only generated `synapse_fbs`
-payloads. FastDyn resolves the shared block from the ELF instead of relying on
-a fixed firmware address. The normal Ethernet stack remains available, and a
-lockstep communications build may enable CSyn/ZROS plus Zenoh as an
-asynchronous side-channel without changing the direct lockstep coordinator.
-Performance builds may omit the unused network stack; communications builds
-retain ENET and enable CSyn/Zenoh independently of lockstep pacing.
+Deterministic lockstep uses direct shared memory for pacing. `native_sim` and
+FastDyn exchange generated `synapse_fbs` payloads through
+`subsys/lockstep`. Host-side network mirrors may run concurrently, but never
+coordinate or pace the control loop.
 
 CMake installs the Rumoca release pinned by `cmake/RumocaLock.cmake` into the
 build tree, verifies the installer, executable version, and platform binary
@@ -309,7 +299,7 @@ nix run .#flash
 
 ### Non-flyable communications bench image
 
-Build the dedicated M10/ZROS/CSyn communications image with one command:
+Build the dedicated ZROS/direct-wire communications image with one command:
 
 ```sh
 nix run .#build-comms-stub
@@ -318,7 +308,8 @@ nix run .#build-comms-stub
 The command always performs a pristine Zephyr configure in
 `build-mr_vmu_tropic-comms-stub` using `comms_stub.conf`. This profile bypasses
 `src/efmi.cmake`; it does not invoke Rumoca or compile generated flight-control
-containers. It keeps the real GNSS, IMU, RC, ZROS, CSyn, serial telemetry, and
+containers. It keeps the real GNSS, IMU, RC, ZROS, direct-wire, serial
+telemetry, and
 shell paths, while publishing invalid navigation, permanently asserting
 failsafe/disarmed health, and replacing motor output with a hard-zero publisher.
 It is a bench image and must not be flown.
@@ -340,7 +331,7 @@ The minimum bench capture is:
 stub
 gnss status
 zros_serial status
-csyn status
+wire status
 zros topic list
 zros topic echo gnss_fix
 zros topic hz gnss_fix 10000
@@ -348,16 +339,12 @@ zros topic hz control_imu 2000
 zros topic echo vehicle_health
 zros topic echo pwm_signal_outputs
 zros topic echo control_loop_metrics
-csyn topic list live
-csyn topic hz pwm 2000
-csyn topic hz health 2000
-csyn topic hz loop 2000
 top once
 kernel thread stacks
 ```
 
-Only one asynchronous `zros topic hz` or `csyn topic hz` measurement runs at a
-time; use `zros topic stop` or `csyn topic stop` before starting the next one.
+Only one asynchronous `zros topic hz` measurement runs at a time; use
+`zros topic stop` before starting the next one.
 
 `rdd2-console` opens a serial console at 115200 baud using stable
 `/dev/serial/by-id` names. When multiple adapters are connected, it asks which

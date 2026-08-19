@@ -33,9 +33,9 @@ rdd2_cache_path(RDD2_ZROS_ROOT
   "${WORKSPACE_ROOT}/modules/lib/zros"
   "ZROS Zephyr module source"
 )
-rdd2_cache_path(RDD2_CSYN_ROOT
-  "${WORKSPACE_ROOT}/modules/lib/csyn"
-  "CSyn Zephyr module source"
+rdd2_cache_path(RDD2_SYNAPSE_FBS_ROOT
+  ""
+  "Generated Synapse C package source"
 )
 rdd2_cache_path(RDD2_MODELICA_MODELS_ROOT
   "${WORKSPACE_ROOT}/models/modelica_models"
@@ -70,8 +70,14 @@ endif()
 set(ZEPHYR_EXTRA_MODULES
   ${RDD2_CEREBRI_MODULES_ROOT}
   ${RDD2_ZROS_ROOT}
-  ${RDD2_CSYN_ROOT}
 )
+
+if(NOT RDD2_SYNAPSE_FBS_ROOT)
+  message(FATAL_ERROR
+    "RDD2_SYNAPSE_FBS_ROOT must identify the generated Synapse C package"
+  )
+endif()
+list(APPEND ZEPHYR_EXTRA_MODULES ${RDD2_SYNAPSE_FBS_ROOT})
 
 # Zephyr main resolves snippets only from SNIPPET_ROOT and no longer implies
 # the application directory, so this repo's own snippets/ has to be named for
@@ -96,6 +102,11 @@ target_include_directories(app PRIVATE
   include
   ${CMAKE_CURRENT_BINARY_DIR}/generated
   ${ZEPHYR_BASE}/../modules/hal/nxp/mcux/mcux-sdk-ng/drivers/flexio
+)
+
+target_link_libraries(app PRIVATE
+  synapse_fbs::c
+  synapse_fbs::print
 )
 
 add_subdirectory(src)

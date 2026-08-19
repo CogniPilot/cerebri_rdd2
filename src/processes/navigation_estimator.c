@@ -328,7 +328,8 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     copy_imu_input_to_efmu(process, &process->imu);
     if (external_odometry_source_allowed(
             IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_ONBOARD) ||
-            IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_LOCKSTEP))) {
+            IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_LOCKSTEP) ||
+            IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_WIRE))) {
       copy_external_odometry_input_to_efmu(
           process, &process->external_odometry, external_fresh);
     } else {
@@ -347,7 +348,8 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     if (process->gps_origin_initialization_pending &&
         gps_origin_initialization_timed_out(
             IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_ONBOARD) ||
-                IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_LOCKSTEP),
+                IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_LOCKSTEP) ||
+                IS_ENABLED(CONFIG_RDD2_GNSS_SOURCE_WIRE),
             process->gps_origin_initialization_started_ns,
             process->imu.timestamp_ns)) {
       process->gps_origin_initialization_pending = false;

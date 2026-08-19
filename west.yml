@@ -52,10 +52,6 @@ manifest:
       remote: cognipilot
       revision: 20ab07983224ca078f17e2e851b4fe8cb92eb517 # Zephyr main module schema
       path: modules/lib/zros
-    - name: csyn
-      remote: cognipilot
-      revision: golden # synapse_fbs 0.10.0 + NET_SOCKETS gate + configurable zenoh posture
-      path: modules/lib/csyn
     - name: cerebri_modules
       remote: cognipilot
       revision: ef73a4f8adeb4385c34af4344c9af27e43e02033

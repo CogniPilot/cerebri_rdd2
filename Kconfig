@@ -16,7 +16,7 @@ config RDD2_COMMS_STUB
 	bool "Build the non-flyable communications bench image"
 	default n
 	help
-	  Build only the real sensor, GNSS, ZROS, CSyn, serial telemetry, and
+	  Build only the real sensor, GNSS, ZROS, network, serial telemetry, and
 	  shell paths. Generated flight-control containers are not compiled.
 	  Navigation publications are explicitly invalid, vehicle health is
 	  permanently disarmed/failsafe, and the motor driver is replaced by a
@@ -29,8 +29,8 @@ config RDD2_STUB_LOOP_DISABLE
 	default n
 	help
 	  Skip the stub rate/allocator loop and idle after init, so the
-	  networking, gPTP, and csyn-zenoh threads run without contention. For
-	  isolating ENET/gPTP/zenoh bring-up on the bench.
+	  networking and gPTP threads run without contention. This isolates
+	  ENET, gPTP, and direct sensor transport bring-up on the bench.
 
 rsource "subsys/Kconfig"
 rsource "drivers/Kconfig"

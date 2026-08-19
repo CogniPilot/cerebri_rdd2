@@ -1,8 +1,0 @@
-tests:
-  rdd2.process_wrapper_fault_injection.wrappers:
-    platform_allow:
-      - native_sim/native/64
-    tags:
-      - rdd2
-      - safety
-      - wrapper

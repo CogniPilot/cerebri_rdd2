@@ -425,7 +425,6 @@
                           for path in \
                             "$RDD2_CEREBRI_MODULES_ROOT" \
                             "$RDD2_ZROS_ROOT" \
-                            "$RDD2_CSYN_ROOT" \
                             "$RDD2_MODELICA_MODELS_ROOT"
                           do
                             if [ ! -d "$path" ]; then
@@ -448,7 +447,6 @@
                           export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
                           export RDD2_CEREBRI_MODULES_ROOT="''${RDD2_CEREBRI_MODULES_ROOT:-$workspace/modules/lib/cerebri_lockstep}"
                           export RDD2_ZROS_ROOT="''${RDD2_ZROS_ROOT:-$workspace/modules/lib/zros}"
-                          export RDD2_CSYN_ROOT="''${RDD2_CSYN_ROOT:-$workspace/modules/lib/csyn}"
                           export RDD2_MODELICA_MODELS_ROOT="''${RDD2_MODELICA_MODELS_ROOT:-$workspace/models/modelica_models}"
                           export ZEPHYR_SDK_INSTALL_DIR="''${ZEPHYR_SDK_INSTALL_DIR:-${zephyrSdk}}"
                           export RDD2_WORKSPACE_ROOT="$workspace"
@@ -1520,7 +1518,6 @@
                 export RDD2_WORKSPACE_ROOT="$workspace"
                 export RDD2_CEREBRI_MODULES_ROOT="''${RDD2_CEREBRI_MODULES_ROOT:-$workspace/modules/lib/cerebri_lockstep}"
                 export RDD2_ZROS_ROOT="''${RDD2_ZROS_ROOT:-$workspace/modules/lib/zros}"
-                export RDD2_CSYN_ROOT="''${RDD2_CSYN_ROOT:-$workspace/modules/lib/csyn}"
                 export RDD2_MODELICA_MODELS_ROOT="''${RDD2_MODELICA_MODELS_ROOT:-$workspace/models/modelica_models}"
                 export WEST_TOPDIR="$workspace"
                 export FASTDYN_ROOT="''${FASTDYN_ROOT:-$workspace/modules/sim/fastdyn}"

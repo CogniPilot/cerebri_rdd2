@@ -17,10 +17,8 @@ config RDD2_ZROS_SERIAL
 	  topics are read from ZROS and rate limited to fit the air rate.
 	  Requires a "zros-serial" devicetree alias naming the UART.
 
-	  CSyn is not involved. The wire ids are synapse catalog TopicIds,
-	  which is schema shared with the ground-side peer, not a dependency
-	  on the CSyn transport: that one carries the same topics over
-	  Ethernet and Zenoh independently of this link.
+	  Wire ids are Synapse catalog TopicIds shared with the ground-side peer.
+	  This carrier is independent of direct UDP/IPv6 and ROS 2 CDR mirrors.
 
 if RDD2_ZROS_SERIAL
 

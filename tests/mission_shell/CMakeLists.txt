@@ -7,6 +7,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/../rdd2_test_environment.cmake")
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(mission_shell)
 
+target_link_libraries(app PRIVATE synapse_fbs::c)
+
 target_include_directories(app PRIVATE
   "${RDD2_TEST_APP_ROOT}/src"
   "${RDD2_TEST_APP_ROOT}/subsys/gnss_source"

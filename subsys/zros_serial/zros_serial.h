@@ -19,11 +19,9 @@
  *    8     N   payload   bare fixed-layout struct, exactly as stored on the bus
  *   8+N    2   crc16     CRC-16/CCITT-FALSE over bytes [2, 8+N)
  *
- * The payload is the same byte image the Zenoh transport publishes, so a
- * frame carries no schema of its own: topic_id resolves through the pinned
- * synapse_fbs catalog and the payload size is checked against it. The catalog
- * is the only thing this transport shares with CSyn; the topics themselves are
- * read from and published to ZROS.
+ * A frame carries no schema of its own: topic_id resolves through the
+ * generated synapse_fbs catalog and the payload size is checked against it.
+ * Topics are read from and published to ZROS.
  */
 #define RDD2_ZROS_SERIAL_SYNC0        0x53U
 #define RDD2_ZROS_SERIAL_SYNC1        0x59U

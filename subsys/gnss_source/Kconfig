@@ -55,18 +55,12 @@ config RDD2_GNSS_SOURCE_LOCKSTEP
 	  disables external odometry like the onboard receiver; it is not a radio
 	  or motion-capture compatibility profile.
 
-config RDD2_GNSS_SOURCE_MESH
-	bool "Received over the mesh from the rtk_gnss grandmaster"
-	depends on CSYN
+config RDD2_GNSS_SOURCE_WIRE
+	bool "Received over direct Synapse wire"
+	depends on RDD2_SYNAPSE_WIRE
 	help
-	  The system GNSS fix arrives over the network. The rtk_gnss grandmaster
-	  publishes GnssFixData on the shared "gnss" key, CSyn delivers it into
-	  its lock-free latest-sample store, and this backend identity-copies each
-	  newly received sample onto the gnss_fix topic as its single publisher.
-
-	  This is the right choice for a mesh node with no local sky view that
-	  takes position, corrections, and time from the fleet. The serial
-	  transport still streams gnss_fix outbound as telemetry.
+	  The direct UDP/IPv6 receiver validates a fixed-layout GnssFixData
+	  datagram and publishes it onto gnss_fix as the sole publisher.
 
 endchoice
 
@@ -109,33 +103,6 @@ config RDD2_GNSS_UBX_THREAD_PRIORITY
 
 config RDD2_GNSS_UBX_THREAD_STACK_SIZE
 	int "Reader thread stack size"
-	default 1536
-	range 1024 8192
-
-endif
-
-if RDD2_GNSS_SOURCE_MESH
-
-config RDD2_GNSS_MESH_POLL_MS
-	int "Mesh GNSS poll period in milliseconds"
-	default 50
-	range 1 1000
-	help
-	  Cadence at which the backend checks the CSyn "gnss" store for a newly
-	  received producer generation. The grandmaster publishes at a low rate,
-	  so a poll well under the publish period bounds end-to-end latency
-	  without busy-waiting.
-
-config RDD2_GNSS_MESH_THREAD_PRIORITY
-	int "Mesh GNSS thread priority"
-	default 7
-	help
-	  Must stay preemptible and below the control loop. A cooperative
-	  (negative) priority here would let the copy block the 1600 Hz loop,
-	  which SPEC_0002 and SPEC_0005 forbid.
-
-config RDD2_GNSS_MESH_THREAD_STACK_SIZE
-	int "Mesh GNSS thread stack size"
 	default 1536
 	range 1024 8192
 

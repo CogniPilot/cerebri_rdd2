@@ -49,20 +49,20 @@ struct scan_port {
 };
 
 #define SCAN_ENTRY(idx)                                                                            \
-	{DEVICE_DT_GET(DT_ALIAS(csyn_scan##idx)), DT_NODE_FULL_NAME(DT_ALIAS(csyn_scan##idx))},
+	{DEVICE_DT_GET(DT_ALIAS(zros_scan##idx)), DT_NODE_FULL_NAME(DT_ALIAS(zros_scan##idx))},
 
 /* NULL-terminated, so the table is never a zero-length array. */
 static const struct scan_port g_scan_ports[] = {
-#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(csyn_scan0))
+#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(zros_scan0))
 	SCAN_ENTRY(0)
 #endif
-#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(csyn_scan1))
+#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(zros_scan1))
 	SCAN_ENTRY(1)
 #endif
-#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(csyn_scan2))
+#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(zros_scan2))
 	SCAN_ENTRY(2)
 #endif
-#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(csyn_scan3))
+#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(zros_scan3))
 	SCAN_ENTRY(3)
 #endif
 	{NULL, NULL},

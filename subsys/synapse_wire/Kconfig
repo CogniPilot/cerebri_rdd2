@@ -1,0 +1,97 @@
+config RDD2_SYNAPSE_WIRE
+	bool "Direct Synapse UDP/IPv6 receiver"
+	default n
+	depends on ZROS
+	depends on NETWORKING
+	depends on NET_IPV6
+	depends on NET_UDP
+	depends on NET_SOCKETS
+	depends on NET_VLAN
+	help
+	  Receive fixed-layout Synapse sensor samples directly over UDP/IPv6,
+	  validate their transport and payload fields, and publish accepted values
+	  onto the local ZROS bus. This path is independent of ROS 2 CDR mirrors.
+
+if RDD2_SYNAPSE_WIRE
+
+config RDD2_SYNAPSE_WIRE_LOCAL_ADDRESS
+	string "Local receiver IPv6 address"
+	default "fe80::4:9fff:fe00:150"
+
+config RDD2_SYNAPSE_WIRE_VLAN_ID
+	int "Application VLAN ID"
+	range 1 4094
+	default 58
+
+config RDD2_SYNAPSE_WIRE_OPTICAL_SOURCE_ADDRESS
+	string "Optical-flow source IPv6 address"
+	default "fe80::ac9a:22ff:fee6:165d"
+
+config RDD2_SYNAPSE_WIRE_OPTICAL_SOURCE_NODE_ID
+	int "Optical-flow source node ID"
+	range 1 4294967295
+	default 12
+
+config RDD2_SYNAPSE_WIRE_OPTICAL_PORT
+	int "Optical-flow UDP port"
+	range 1 65535
+	default 46010
+
+config RDD2_SYNAPSE_WIRE_GNSS_SOURCE_ADDRESS
+	string "GNSS source IPv6 address"
+	default "fe80::ac9a:22ff:fed3:13fc"
+
+config RDD2_SYNAPSE_WIRE_GNSS_SOURCE_NODE_ID
+	int "GNSS source node ID"
+	range 1 4294967295
+	default 11
+
+config RDD2_SYNAPSE_WIRE_GNSS_PORT
+	int "GNSS UDP port"
+	range 1 65535
+	default 46008
+
+config RDD2_SYNAPSE_WIRE_SEQUENCE_WINDOW
+	int "Forward sequence window"
+	range 1 2147483647
+	default 4096
+
+config RDD2_SYNAPSE_WIRE_RESYNC_RUN_LENGTH
+	int "Consecutive packets required for sequence resynchronization"
+	range 2 32
+	default 3
+
+config RDD2_SYNAPSE_WIRE_SESSION_ROLLOVER_SILENCE_MS
+	int "Silence before accepting a new producer session"
+	range 100 60000
+	default 1000
+
+config RDD2_SYNAPSE_WIRE_OPTICAL_MAX_AGE_MS
+	int "Maximum optical-flow age"
+	range 1 1000
+	default 100
+
+config RDD2_SYNAPSE_WIRE_GNSS_MAX_AGE_MS
+	int "Maximum GNSS age"
+	range 10 5000
+	default 500
+
+config RDD2_SYNAPSE_WIRE_FUTURE_SKEW_MS
+	int "Allowed synchronized timestamp future skew"
+	range 0 1000
+	default 20
+
+config RDD2_SYNAPSE_WIRE_THREAD_STACK_SIZE
+	int "Direct-wire receiver stack size"
+	range 2048 8192
+	default 4096
+
+config RDD2_SYNAPSE_WIRE_THREAD_PRIORITY
+	int "Direct-wire receiver priority"
+	default 7
+
+module = RDD2_SYNAPSE_WIRE
+module-str = synapse_wire
+source "subsys/logging/Kconfig.template.log_config"
+
+endif

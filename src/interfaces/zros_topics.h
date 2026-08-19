@@ -15,10 +15,8 @@ BUILD_ASSERT(sizeof(rdd2_topic_motor_output_blob_t) == 48U);
 
 /*
  * RDD2's internal bus, declared here because zros_topics.c defines it.
- * CSyn's bridge references these weakly to mirror them onto Ethernet, and
- * csyn_zros.h declares them too for that purpose, but the declarations a
- * subsystem of this application compiles against are these: reading the bus
- * must not require a transport's header.
+ * Transport adapters publish and subscribe through this application-owned
+ * interface, so local consumers do not depend on a network transport header.
  */
 ZROS_TOPIC_DECLARE(manual_input, synapse_topic_ManualControlData_t);
 /* Driver-decoded IMU sample handed from the rate process to the estimator. */
@@ -38,8 +36,7 @@ ZROS_TOPIC_DECLARE(external_odometry, synapse_topic_ExternalOdometryData_t);
 ZROS_TOPIC_DECLARE(local_position_command, synapse_topic_LocalPositionCommandData_t);
 /* The fix lives on the internal bus whatever produced it: the onboard reader
  * in subsys/gnss_source, the deterministic lockstep source, the serial
- * transport when a ground station injects it, or the mesh backend that
- * identity-copies an externally received fix off the CSyn "gnss" topic.
+ * transport when a ground station injects it, or the direct-wire receiver.
  * Exactly one of those is compiled in, so the single-publisher backend holds
  * and the producer owns the publisher. */
 ZROS_TOPIC_DECLARE(gnss_fix, synapse_topic_GnssFixData_t);

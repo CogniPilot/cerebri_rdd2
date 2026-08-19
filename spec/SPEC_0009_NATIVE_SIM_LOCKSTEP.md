@@ -8,8 +8,8 @@ ACCEPTED
 simulator IO terminates in lockstep RC, IMU, GNSS/mission, and DSHOT
 interfaces using the same
 generated `synapse_fbs` messages and shared direct sequencing
-module as CUBS2. CSyn/Zenoh may run as a communications side-channel, but never
-paces lockstep.
+module as other Cerebri targets. Host-side ROS 2 CDR mirrors may run
+concurrently, but never pace lockstep.
 
 ## Specification
 
@@ -38,8 +38,8 @@ paces lockstep.
 - Outbound data uses generated `PwmSignalOutputsData`, `VehicleHealthData`,
   `AttitudeEstimateData`, `AttitudeCommandData`, and `ControlLoopMetricsData`
   fixed-layout payloads.
-- CSyn owns the `synapse_fbs` release, topic catalog, canonical Zenoh keys,
-  payload sizes, and generated codecs; RDD2 must not duplicate them.
+- `synapse_fbs` owns topic identities, payload sizes, and generated codecs;
+  RDD2 must not duplicate them.
 - The transport stages only the latest inbound inertial payload instead of
   queueing per-sample work into the controller.
 - Schema-shaped values must use generated FlatCC structs and accessors. Manual
@@ -51,13 +51,14 @@ paces lockstep.
 - Request/response sequencing uses the transport- and payload-independent
   `cerebri_lockstep` west module. ZROS must not own or depend on simulation
   sequencing.
-- CSyn/ZROS bridging and Ethernet/Zenoh must not be a lockstep coordinator.
-  They may be enabled concurrently for realtime communications testing.
+- Network mirrors must not be a lockstep coordinator. They may run
+  concurrently for realtime observation.
 
 **PROHIBITED:**
 - Blocking socket IO in the 1600 Hz control loop.
 - A simulation-only control loop separate from `src/main.c`.
-- Incompatible simulation messages that bypass CSyn's pinned `synapse_fbs`.
+- Incompatible simulation messages that bypass generated `synapse_fbs`
+  payloads.
 - External-odometry or direct local-position-command lockstep ingress.
 - Per-packet heap allocation in the hot path.
 - Custom topic keys, payload-size tables, or FlatBuffer decoders in RDD2.

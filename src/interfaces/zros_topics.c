@@ -4,11 +4,6 @@
 
 #include "zros_topics.h"
 
-/* Only this file bridges the two buses: it declares the CSyn side of the
- * Ethernet path and defines the zros storage its bridge mirrors into. */
-#include <csyn/csyn.h>
-#include <csyn/csyn_zros.h>
-
 #include <string.h>
 
 #include <zephyr/shell/shell.h>
@@ -32,28 +27,6 @@ ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(navigation_odometry,
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(rate_command,
                                    synapse_topic_RateCommandData_t);
 
-/* RDD2 owns its synapse_fbs 0.9 topic contract. CSyn resolves these compact
- * keys through the generated catalog and rejects mismatched payload sizes at
- * initialization. The lockstep transport remains direct shared memory; these
- * registrations support independent realtime Ethernet communication. */
-CSYN_TOPIC_DEFINE(manual, "manual", CSYN_DIR_RX,
-                  sizeof(synapse_topic_ManualControlData_t));
-CSYN_TOPIC_DEFINE(pwm, "pwm", CSYN_DIR_TX,
-                  sizeof(synapse_topic_PwmSignalOutputsData_t));
-CSYN_TOPIC_DEFINE(health, "health", CSYN_DIR_TX,
-                  sizeof(synapse_topic_VehicleHealthData_t));
-CSYN_TOPIC_DEFINE(att, "att", CSYN_DIR_TX,
-                  sizeof(synapse_topic_AttitudeEstimateData_t));
-CSYN_TOPIC_DEFINE(att_sp, "att_sp", CSYN_DIR_TX,
-                  sizeof(synapse_topic_AttitudeCommandData_t));
-CSYN_TOPIC_DEFINE(loop, "loop", CSYN_DIR_TX,
-                  sizeof(synapse_topic_ControlLoopMetricsData_t));
-/* Inbound optical-flow velocity from the mesh optical_flow node under the
- * "flow_vel" catalog key (OpticalFlowVelocityData, 32-byte fixed layout). The
- * shared csyn zros bridge copies each newly received sample onto the
- * optical_flow_vel topic below for the estimator to fuse. */
-CSYN_TOPIC_DEFINE(flow_vel_rx, "flow_vel", CSYN_DIR_RX,
-                  sizeof(synapse_topic_OpticalFlowVelocityData_t));
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(inertial_sample,
                                    synapse_topic_InertialSampleData_t);
 ZROS_TOPIC_DEFINE(external_odometry, synapse_topic_ExternalOdometryData_t);
@@ -69,30 +42,11 @@ ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(attitude_command,
                                    synapse_topic_AttitudeCommandData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(control_loop_metrics,
                                    synapse_topic_ControlLoopMetricsData_t);
-/* Inbound mesh optical-flow velocity. The shared csyn zros bridge is the sole
- * publisher: it copies the "flow_vel" RX store onto this topic, so a consumer
- * (the estimator) subscribes here for optical-flow velocity aiding. */
+/* Direct-wire optical-flow input. */
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(optical_flow_vel,
                                    synapse_topic_OpticalFlowVelocityData_t);
-/* The gnss_fix topic is the single-publisher home of the latest fix on the
- * internal bus. Its producer is selected by the RDD2_GNSS_SOURCE choice: the
- * onboard UBX reader, the deterministic lockstep source, a serial-injected
- * fix, or the mesh backend. On the mesh node the fix is externally received:
- * the rtk_gnss grandmaster publishes GnssFixData under the catalog "gnss" key
- * and the CSyn RX topic below delivers it to the mesh backend, which
- * identity-copies it into gnss_fix. The serial transport still streams
- * gnss_fix outbound as telemetry off this same topic. */
+/* Single-publisher home of the selected GNSS source. */
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(gnss_fix, synapse_topic_GnssFixData_t);
-
-#if defined(CONFIG_RDD2_GNSS_SOURCE_MESH)
-/* Inbound mesh fix. The bare "gnss" key (no namespace) matches the rtk_gnss
- * grandmaster and resolves through the pinned synapse_fbs catalog to
- * GnssFixData, a 64-byte fixed-layout struct, so CSyn validates the producer's
- * value contract and rejects a mismatched payload at the wire boundary. The
- * mesh backend locates this RX store by the "gnss" key string. */
-CSYN_TOPIC_DEFINE(gnss_rx, "gnss", CSYN_DIR_RX,
-                  sizeof(synapse_topic_GnssFixData_t));
-#endif
 
 #if defined(CONFIG_ZROS_SHELL)
 static char g_topic_shell_field[128];

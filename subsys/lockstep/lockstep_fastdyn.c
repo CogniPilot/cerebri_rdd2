@@ -100,7 +100,7 @@ static int fastdyn_init(void) {
   rc = cerebri_lockstep_sequence_init(
       &g_lockstep, &rdd2_fastdyn_lockstep_shared.input_sequence,
       &rdd2_fastdyn_lockstep_shared.response_sequence,
-      &rdd2_fastdyn_lockstep_shared.terminate, IS_ENABLED(CONFIG_CSYN_ZENOH));
+      &rdd2_fastdyn_lockstep_shared.terminate, false);
   if (rc != 0) {
     return rc;
   }

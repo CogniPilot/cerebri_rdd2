@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-foreach(_module_variable IN ITEMS RDD2_ZROS_ROOT RDD2_CSYN_ROOT)
+foreach(_module_variable IN ITEMS RDD2_ZROS_ROOT RDD2_SYNAPSE_FBS_ROOT)
   if(NOT DEFINED ENV{${_module_variable}} OR "$ENV{${_module_variable}}" STREQUAL "")
     message(FATAL_ERROR "${_module_variable} is required")
   endif()
@@ -20,5 +20,5 @@ get_filename_component(RDD2_TEST_APP_ROOT
 )
 set(ZEPHYR_EXTRA_MODULES
   "${RDD2_ZROS_ROOT}"
-  "${RDD2_CSYN_ROOT}"
+  "${RDD2_SYNAPSE_FBS_ROOT}"
 )

@@ -17,11 +17,11 @@ bool rdd2_gnss_lockstep_ready_get(void);
 static inline bool rdd2_position_source_ready_get(void) {
   return rdd2_gnss_lockstep_ready_get();
 }
-#elif defined(CONFIG_RDD2_GNSS_SOURCE_MESH)
-bool rdd2_gnss_mesh_ready_get(void);
+#elif defined(CONFIG_RDD2_GNSS_SOURCE_WIRE)
+bool rdd2_synapse_wire_gnss_ready_get(void);
 
 static inline bool rdd2_position_source_ready_get(void) {
-  return rdd2_gnss_mesh_ready_get();
+  return rdd2_synapse_wire_gnss_ready_get();
 }
 #else
 static inline bool rdd2_position_source_ready_get(void) { return true; }

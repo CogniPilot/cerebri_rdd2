@@ -294,9 +294,8 @@ build `GnssFix` is outbound and an injected fix is rejected.
 
 `ManualControlCommand` (id 4) and `InertialSample` (id 5) were once accepted
 here and no longer are. Nothing on the vehicle consumed either, and pilot
-input comes from the CRSF receiver, not this link. Both are still carried over
-Ethernet by the CSyn transport, which is where an injected IMU sample or a
-simulated pilot belongs.
+input comes from the CRSF receiver, not this link. Network sensor input uses
+the bounded direct-wire receiver instead of the radio carrier.
 
 Payload length must exactly match the catalog size for fixed-layout topics;
 short frames are rejected rather than zero-extended.

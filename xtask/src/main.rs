@@ -735,7 +735,7 @@ fn run_native_sim(options: &Options, memory_path: &Path, executable: &Path) -> R
 fn run_fastdyn_mission(args: impl IntoIterator<Item = String>) -> Result<()> {
     let options = options(args)?;
     let memory_path = options.shared_memory.as_ref().ok_or_else(|| {
-        anyhow!("--shared-memory or RDD2_FASTDYN_SHARED_MEMORY is required; lockstep does not use CSyn/ZROS transport")
+        anyhow!("--shared-memory or RDD2_FASTDYN_SHARED_MEMORY is required; lockstep does not use the network transport")
     })?;
     if let Some(executable) = &options.native_sim {
         run_native_sim(&options, memory_path, executable)
