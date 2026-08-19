@@ -13,7 +13,7 @@ manifest:
   projects:
     - name: zephyr
       remote: cognipilot
-      revision: golden # fleet unified: enet_qos pass-all-multicast + icm45686 stream + shell/crsf
+      revision: a9def9dfbf41fb53311b72c0ef0e1c7a1f1ce04b
       path: zephyr
       west-commands: scripts/west-commands.yml
     - name: cmsis
@@ -66,7 +66,7 @@ manifest:
       path: modules/sim/fastdyn
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git
-      revision: golden # native Zephyr threads/clocks/zsock (POSIX-free) + UDP-multicast/IPv6 fixes
+      revision: 4125a0437ad52adfe0d43e92c4ec3dcbe0e5fca8
       path: modules/lib/zenoh-pico
     - name: zephyr_boards
       remote: cognipilot
