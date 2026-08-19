@@ -9,9 +9,13 @@ LOG_MODULE_REGISTER(rdd2, LOG_LEVEL_INF);
 
 int main(void)
 {
-	int rc;
-
 	rdd2_topic_shell_formatters_init();
+
+#if defined(CONFIG_RDD2_COMMS_STUB)
+	LOG_INF("PASSIVE COMMS ENDPOINT: FLIGHT CONTROL AND OUTPUTS ARE NOT BUILT");
+	return rdd2_comms_stub_process_run();
+#else
+	int rc;
 
 	/* Start consumers before the IMU-paced rate process begins publishing. */
 	rc = rdd2_navigation_estimator_process_start();
@@ -31,11 +35,7 @@ int main(void)
 		LOG_ERR("GuidanceController process failed to start: %d", rc);
 		return rc;
 	}
-
-#if defined(CONFIG_RDD2_COMMS_STUB)
-	LOG_WRN("STUB-NAV COMMS BENCH IMAGE: NON-FLYABLE, ARM DENIED, MOTORS ZERO");
-#else
 	LOG_INF("RDD2 eFMU deployment starting");
-#endif
 	return rdd2_rate_control_allocator_process_run();
+#endif
 }

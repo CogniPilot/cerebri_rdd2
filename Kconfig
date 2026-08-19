@@ -13,24 +13,14 @@ config PWM_FREQUENCY
 menu "RDD2"
 
 config RDD2_COMMS_STUB
-	bool "Build the non-flyable communications bench image"
+	bool "Build the passive communications endpoint"
 	default n
 	help
-	  Build only the real sensor, GNSS, ZROS, network, serial telemetry, and
-	  shell paths. Generated flight-control containers are not compiled.
-	  Navigation publications are explicitly invalid, vehicle health is
-	  permanently disarmed/failsafe, and the motor driver is replaced by a
-	  publisher that can only emit zero/disarmed output. This image is for
-	  communications and timing bench work and must never be used for flight.
-
-config RDD2_STUB_LOOP_DISABLE
-	bool "Kill the comms-stub control loop (bring-up idle)"
-	depends on RDD2_COMMS_STUB
-	default n
-	help
-	  Skip the stub rate/allocator loop and idle after init, so the
-	  networking and gPTP threads run without contention. This isolates
-	  ENET, gPTP, and direct sensor transport bring-up on the bench.
+	  Build only ZROS storage, network receivers, timing, diagnostics, and
+	  shell access. Flight-control containers, local sensor polling, RC input,
+	  motor output, and periodic stub publications are not compiled. The main
+	  thread sleeps forever while the event-driven communications endpoints
+	  receive data.
 
 rsource "subsys/Kconfig"
 rsource "drivers/Kconfig"
