@@ -22,6 +22,35 @@ config RDD2_COMMS_STUB
 	  thread sleeps forever while the event-driven communications endpoints
 	  receive data.
 
+choice RDD2_CONTROL_BACKEND
+	prompt "Flight control backend"
+	depends on !RDD2_COMMS_STUB
+	default RDD2_CONTROL_EFMI
+	help
+	  Select the compute cores behind the estimator, guidance, allocator, and
+	  planner processes. The ZROS topic surface, arming state machine, safety
+	  gates, and driver bindings are identical for both selections.
+
+config RDD2_CONTROL_EFMI
+	bool "Generated eFMI control models"
+	help
+	  Use the eFMI control models generated from the shared Modelica library.
+	  This is the default flight configuration and requires the
+	  modelica_models west project to be checked out.
+
+config RDD2_CONTROL_SIMPLE
+	bool "Hand-written stand-in control backend"
+	help
+	  Use hand-written stand-in compute cores in place of the generated eFMI
+	  models. The estimator runs a complementary attitude filter with GNSS and
+	  optical-flow passthrough, guidance runs an attitude-P loop, and the
+	  allocator runs a rate-P loop with fixed X-quad mixing. Gains are
+	  deliberately conservative bench placeholders. This lets the complete
+	  flight image link without the generated models for bench verification of
+	  sign conventions and data flow.
+
+endchoice
+
 rsource "subsys/Kconfig"
 rsource "drivers/Kconfig"
 

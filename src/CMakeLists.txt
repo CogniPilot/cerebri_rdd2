@@ -1,5 +1,6 @@
 target_include_directories(app PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}
+  ${CMAKE_CURRENT_LIST_DIR}/processes
   ${WORKSPACE_ROOT}/modules/lib/zenoh-pico/src/system/zephyr
 )
 
@@ -12,6 +13,17 @@ target_sources(app PRIVATE
 if(CONFIG_RDD2_COMMS_STUB)
   target_sources(app PRIVATE
     processes/comms_stub.c
+  )
+elseif(CONFIG_RDD2_CONTROL_SIMPLE)
+  target_sources(app PRIVATE
+    interfaces/imu.c
+    interfaces/rc.c
+    interfaces/motors.c
+    processes/navigation_gps.c
+    processes/simple/simple_navigation_estimator.c
+    processes/simple/simple_guidance_controller.c
+    processes/simple/simple_rate_control_allocator.c
+    processes/simple/simple_waypoint_trajectory_planner.c
   )
 else()
   include(${CMAKE_CURRENT_LIST_DIR}/efmi.cmake)
@@ -58,6 +70,19 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
     zephyr_code_relocate(
       FILES
         processes/comms_stub.c
+      LOCATION ITCM_TEXT_RODATA
+    )
+  elseif(CONFIG_RDD2_CONTROL_SIMPLE)
+    zephyr_code_relocate(
+      FILES
+        interfaces/imu.c
+        interfaces/rc.c
+        interfaces/motors.c
+        processes/navigation_gps.c
+        processes/simple/simple_navigation_estimator.c
+        processes/simple/simple_guidance_controller.c
+        processes/simple/simple_rate_control_allocator.c
+        processes/simple/simple_waypoint_trajectory_planner.c
       LOCATION ITCM_TEXT_RODATA
     )
   else()
