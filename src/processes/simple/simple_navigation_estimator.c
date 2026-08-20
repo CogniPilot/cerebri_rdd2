@@ -43,6 +43,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include <synapse/optical_flow_reader.h>
+
 #include <zros/private/zros_node_struct.h>
 #include <zros/private/zros_pub_struct.h>
 #include <zros/private/zros_sub_struct.h>
@@ -53,6 +55,7 @@
 LOG_MODULE_DECLARE(rdd2, LOG_LEVEL_INF);
 
 #define NAVIGATION_STACK_SIZE 32768
+#define SIMPLE_PI 3.14159265358979323846f
 
 struct simple_navigation_estimator_process {
   synapse_topic_InertialSampleData_t imu;
@@ -155,10 +158,10 @@ static void update_attitude(struct simple_navigation_estimator_process *process,
   }
 
   /* Keep yaw wrapped to avoid unbounded growth in the float. */
-  if (process->yaw_rad > (float)M_PI) {
-    process->yaw_rad -= 2.0f * (float)M_PI;
-  } else if (process->yaw_rad < -(float)M_PI) {
-    process->yaw_rad += 2.0f * (float)M_PI;
+  if (process->yaw_rad > SIMPLE_PI) {
+    process->yaw_rad -= 2.0f * SIMPLE_PI;
+  } else if (process->yaw_rad < -SIMPLE_PI) {
+    process->yaw_rad += 2.0f * SIMPLE_PI;
   }
 }
 
