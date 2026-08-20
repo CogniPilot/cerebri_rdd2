@@ -4,6 +4,10 @@
 
 #include "synapse_time_status.h"
 
+#if defined(CONFIG_RDD2_FLIGHT_LOG)
+#include "flight_log.h"
+#endif
+
 #include <string.h>
 
 #include <zephyr/kernel.h>
@@ -44,6 +48,16 @@ void rdd2_topic_make_vehicle_health(synapse_topic_VehicleHealthData_t *output,
   if (status->failsafe) {
     flags |= synapse_topic_VehicleHealthFlags_Failsafe;
   }
+
+#if defined(CONFIG_RDD2_FLIGHT_LOG)
+  /* The logger is a present, enabled component whenever it is compiled in,
+   * and reports healthy only while a session is open on a mounted card and
+   * the last flush synced. */
+  sensors |= synapse_topic_SensorComponentFlags_Logging;
+  if (rdd2_flight_log_healthy()) {
+    healthy |= synapse_topic_SensorComponentFlags_Logging;
+  }
+#endif
 
   *output = (synapse_topic_VehicleHealthData_t){
       .timestamp_ns = now_ns,
