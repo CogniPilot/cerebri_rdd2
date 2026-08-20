@@ -468,8 +468,12 @@ static int start_session(void)
 		}
 	}
 
+	/* From here a failure most likely means the card was pulled between the
+	 * mount and the scan. Unmount so the next attempt remounts cleanly and
+	 * the low-rate retry can pick up a reinserted card. */
 	rc = rdd2_flight_log_fs_next_index(&index);
 	if (rc != 0) {
+		(void)rdd2_flight_log_fs_unmount();
 		return rc;
 	}
 	rc = rdd2_flight_log_fs_session_path(index, path, sizeof(path));
@@ -481,6 +485,7 @@ static int start_session(void)
 	rc = mcap_stream_open_file(&g_stream, path);
 	if (rc != 0) {
 		LOG_WRN("open %s failed: %d", path, rc);
+		(void)rdd2_flight_log_fs_unmount();
 		return rc;
 	}
 
@@ -589,6 +594,9 @@ static void writer_thread(void *a, void *b, void *c)
 		if (g_stream.write_failed || synapse_mcap_error(&g_writer) != SYNAPSE_MCAP_OK) {
 			LOG_WRN("writer error, closing session");
 			stop_session();
+			/* A write failure usually means the card was removed. Drop
+			 * the mount so a reinserted card is picked up fresh. */
+			(void)rdd2_flight_log_fs_unmount();
 			k_sleep(K_MSEC(CONFIG_RDD2_FLIGHT_LOG_RETRY_MS));
 			continue;
 		}

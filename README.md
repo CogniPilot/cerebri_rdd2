@@ -169,6 +169,38 @@ parameters, task composition, and model-level qualification mission all remain i
 that common project. Generated C and `.efmu` containers are build outputs, not
 committed source.
 
+## SD flight logging
+
+`subsys/flight_log` records the internal ZROS flight bus to the onboard microSD
+card as a self-contained `synapse/1` MCAP file, one session file per boot named
+`flightNNNN.mcap`. It is off by default and is enabled with
+`CONFIG_RDD2_FLIGHT_LOG=y`, which pulls in the usdhc block device, the FAT
+filesystem, and the card-detect disk driver. The passive communications image
+leaves it disabled so it stays lean.
+
+Two threads and one bounded ring separate the flight bus from the card. A
+capture thread (priority 4, between navigation and planning) subscribes to the
+logged topics with per-topic rate limits and copies each accepted sample into a
+64 KiB ring, never blocking the bus: when the ring is full it drops the frame
+and counts it. A writer thread (priority 10, below every control thread) drains
+the ring into the constant-memory MCAP writer, emits a `TimeReference` record
+at 10 Hz plus logger-status and direct-wire-stats records at 1 Hz, and flushes
+and syncs on a fixed cadence so a power loss costs at most one flush window.
+
+The card is mounted on first use with its existing FAT volume. An absent or
+unformatted card is a clean no-op that never blocks bring-up and never formats
+the card: logging simply stays off, the `Logging` health bit stays clear, and a
+low-rate retry starts a session if a card is inserted after boot. Size-based
+rotation opens the next index at `CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES`
+(256 MiB default).
+
+Bench operators use two shell command groups. `sd` mounts, unmounts, lists, and
+reports free space on the card. `flightlog` shows logger state and counters
+(`flightlog status`) and controls sessions (`flightlog start`, `flightlog stop`,
+`flightlog rotate`). The `flightlog` name avoids the Zephyr logging subsystem's
+own `log` command. Session files are retrieved over the network with the mcumgr
+filesystem group, restricted by a file-access hook to the `/SD:` mount point.
+
 ## Raw Zephyr Build 
 
 To bootstrap a fresh minimal workspace from this repo's manifest, you must first
