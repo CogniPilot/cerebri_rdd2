@@ -13,6 +13,9 @@ config RDD2_FLIGHT_LOG
 	select SYNAPSE_FBS_MCAP
 	select RING_BUFFER
 	select RING_BUFFER_LARGE
+	select MCUMGR_GRP_FS if MCUMGR
+	select MCUMGR_MGMT_NOTIFICATION_HOOKS if MCUMGR
+	select MCUMGR_GRP_FS_FILE_ACCESS_HOOK if MCUMGR
 	help
 	  Record the internal ZROS flight bus to the microSD card as a
 	  self-contained synapse/1 MCAP file, one session file per boot. The
