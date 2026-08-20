@@ -4,6 +4,7 @@
 
 #include "drivers.h"
 
+#include "synapse_time_status.h"
 #include "zros_topics.h"
 
 #include <errno.h>
@@ -111,7 +112,7 @@ static void manual_message_from_rc(synapse_topic_ManualControlData_t *manual,
 		flags |= synapse_topic_ManualControlFlags_ArmSwitch;
 	}
 	*manual = (synapse_topic_ManualControlData_t){
-		.timestamp_ns = (uint64_t)k_uptime_get() * 1000000ULL,
+		.timestamp_ns = synapse_time_boot_ns(),
 		.active_axes = synapse_topic_ManualControlAxes_Roll |
 			       synapse_topic_ManualControlAxes_Pitch |
 			       synapse_topic_ManualControlAxes_Throttle |

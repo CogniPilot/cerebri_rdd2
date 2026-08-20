@@ -5,6 +5,7 @@
 #include "control_safety.h"
 #include "hotpath_memory.h"
 #include "interfaces/drivers.h"
+#include "interfaces/synapse_time_status.h"
 #include "interfaces/zros_topics.h"
 #include "scheduling.h"
 
@@ -83,7 +84,7 @@ static uint64_t sample_timestamp_ns(uint64_t interrupt_timestamp_ns) {
   if (interrupt_timestamp_ns != 0U) {
     return interrupt_timestamp_ns;
   }
-  return (uint64_t)k_uptime_get() * 1000000ULL;
+  return synapse_time_boot_ns();
 }
 
 static void publish_imu(struct rate_control_allocator_process *process,

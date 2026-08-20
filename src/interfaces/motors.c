@@ -4,6 +4,7 @@
 
 #include "drivers.h"
 
+#include "synapse_time_status.h"
 #include "zros_topics.h"
 
 #include <errno.h>
@@ -77,7 +78,7 @@ static uint64_t motor_output_trigger_and_timestamp(void) {
   nxp_flexio_dshot_trigger(dshot_dev);
   return nxp_flexio_dshot_last_trigger_ns_get(dshot_dev);
 #else
-  return (uint64_t)k_uptime_get() * 1000000ULL;
+  return synapse_time_boot_ns();
 #endif
 }
 

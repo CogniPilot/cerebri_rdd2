@@ -2,6 +2,8 @@
 
 #include "data.h"
 
+#include "synapse_time_status.h"
+
 #include <string.h>
 
 #include <zephyr/kernel.h>
@@ -14,7 +16,7 @@ BUILD_ASSERT(sizeof(synapse_topic_VehicleHealthData_t) == 56U);
 BUILD_ASSERT(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__);
 
 static uint64_t timestamp_ns(void) {
-  return (uint64_t)k_uptime_get() * 1000000ULL;
+  return synapse_time_boot_ns();
 }
 
 void rdd2_topic_make_vehicle_health(synapse_topic_VehicleHealthData_t *output,
