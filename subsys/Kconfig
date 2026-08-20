@@ -4,5 +4,6 @@ rsource "zros_serial/Kconfig"
 rsource "gnss_source/Kconfig"
 rsource "lockstep/Kconfig"
 rsource "synapse_wire/Kconfig"
+rsource "flight_log/Kconfig"
 
 endmenu

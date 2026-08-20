@@ -1,0 +1,48 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+#ifndef RDD2_FLIGHT_LOG_FS_H_
+#define RDD2_FLIGHT_LOG_FS_H_
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/* Disk name published by the board devicetree sdmmc-disk child, and the FAT
+ * mount point derived from it. The FatFs volume string is generated from the
+ * disk name, so the mount point is "/<disk>:". */
+#define RDD2_FLIGHT_LOG_DISK_NAME "SD"
+#define RDD2_FLIGHT_LOG_MOUNT_POINT "/SD:"
+
+/* Per-boot session file basename pattern: flightNNNN.mcap, NNNN zero-padded. */
+#define RDD2_FLIGHT_LOG_FILE_PREFIX "flight"
+#define RDD2_FLIGHT_LOG_FILE_SUFFIX ".mcap"
+
+/*
+ * Initialise the card and mount the existing FAT volume. Returns 0 on success.
+ * A negative value means the card is absent, not ready, or carries no mountable
+ * FAT volume: the caller treats that as a clean no-op and retries later. The
+ * volume is never formatted, so an unformatted card is refused rather than
+ * silently wiped.
+ */
+int rdd2_flight_log_fs_mount(void);
+
+/* Unmount the volume if mounted. Safe to call when already unmounted. */
+int rdd2_flight_log_fs_unmount(void);
+
+/* True while the FAT volume is mounted. */
+bool rdd2_flight_log_fs_mounted(void);
+
+/*
+ * Scan the mounted volume for existing flightNNNN.mcap files and return the
+ * next free index (max existing + 1, or 0 when none exist). Returns 0 on
+ * success or a negative errno.
+ */
+int rdd2_flight_log_fs_next_index(uint32_t *index_out);
+
+/*
+ * Compose the absolute session path for a given index into out (capacity cap).
+ * Returns the number of characters written, or a negative value on truncation.
+ */
+int rdd2_flight_log_fs_session_path(uint32_t index, char *out, size_t cap);
+
+#endif /* RDD2_FLIGHT_LOG_FS_H_ */

@@ -1,0 +1,35 @@
+config RDD2_FLIGHT_LOG
+	bool "SD flight logger"
+	default n
+	select DISK_ACCESS
+	select DISK_DRIVERS
+	select DISK_DRIVER_SDMMC
+	select SDHC
+	select IMX_USDHC
+	select FILE_SYSTEM
+	select FAT_FILESYSTEM_ELM
+	select FS_FATFS_LFN
+	select HWINFO
+	help
+	  Record the internal ZROS flight bus to the microSD card as a
+	  self-contained synapse/1 MCAP file, one session file per boot. The
+	  card is mounted on first use with an existing FAT volume: an absent or
+	  unformatted card is a clean no-op and never blocks bring-up. Selecting
+	  this pulls in the usdhc block device, the FAT filesystem, and the
+	  card-detect disk driver for the mr_vmu_tropic microSD slot.
+
+if RDD2_FLIGHT_LOG
+
+config RDD2_FLIGHT_LOG_SD_SHELL
+	bool "Bench sd shell"
+	depends on SHELL
+	default y
+	help
+	  Register the `sd` shell command group (mount, unmount, ls, info) for
+	  bench validation of the microSD card independent of the logger threads.
+
+module = RDD2_FLIGHT_LOG
+module-str = rdd2 flight log
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # RDD2_FLIGHT_LOG
