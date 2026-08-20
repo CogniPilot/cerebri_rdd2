@@ -11,6 +11,8 @@ config RDD2_FLIGHT_LOG
 	select FS_FATFS_LFN
 	select HWINFO
 	select SYNAPSE_FBS_MCAP
+	select RING_BUFFER
+	select RING_BUFFER_LARGE
 	help
 	  Record the internal ZROS flight bus to the microSD card as a
 	  self-contained synapse/1 MCAP file, one session file per boot. The
@@ -37,6 +39,71 @@ config RDD2_FLIGHT_LOG_BLOCK_BYTES
 	  buffer of this size and flushes whole blocks to FatFs, so short MCAP
 	  records do not each become an unaligned card write. Must be a multiple
 	  of the card sector size (512).
+
+config RDD2_FLIGHT_LOG_RING_BYTES
+	int "Capture ring buffer size in bytes"
+	default 65536
+	help
+	  Bounded single-producer single-consumer staging ring between the
+	  capture thread and the writer thread. When it is full the capture
+	  thread drops the frame and counts it rather than blocking the bus.
+
+config RDD2_FLIGHT_LOG_ROTATE_BYTES
+	int "Session file rotation size in bytes"
+	default 268435456
+	help
+	  Close the current session file and open the next index once it reaches
+	  this size. The default is 256 MiB.
+
+config RDD2_FLIGHT_LOG_TIMEREF_PERIOD_MS
+	int "TimeReference emission period in milliseconds"
+	default 100
+
+config RDD2_FLIGHT_LOG_FLUSH_PERIOD_MS
+	int "Flush and sync period in milliseconds"
+	default 250
+	help
+	  Upper bound on how long written records sit unsynced. Each flush writes
+	  the block remainder and issues an f_sync, so a power loss costs at most
+	  this window of data.
+
+config RDD2_FLIGHT_LOG_RETRY_MS
+	int "Mount retry period in milliseconds"
+	default 2000
+	help
+	  Low-rate retry cadence while no card is present, so a card inserted
+	  after boot starts a session without a reboot.
+
+config RDD2_FLIGHT_LOG_WRITER_PRIORITY
+	int "Writer thread priority"
+	default 10
+	help
+	  Runs below every control-domain thread so storage latency never
+	  disturbs the flight loop.
+
+config RDD2_FLIGHT_LOG_FRONT_PRIORITY
+	int "Capture thread priority"
+	default 4
+	help
+	  Sits between navigation (3) and planning (5) so decimated sample copies
+	  never preempt the estimator or the rate loop.
+
+config RDD2_FLIGHT_LOG_WRITER_STACK_SIZE
+	int "Writer thread stack size"
+	default 4096
+
+config RDD2_FLIGHT_LOG_FRONT_STACK_SIZE
+	int "Capture thread stack size"
+	default 4096
+
+config RDD2_FLIGHT_LOG_ARM_GATED_HIGH_RATE
+	bool "Gate the IMU and PWM tiers on armed"
+	default n
+	help
+	  When set, the high-rate inertial and motor-output tiers are recorded
+	  only while the vehicle is armed. The lower-rate state, command, and
+	  sensor tiers are always recorded. Off by default: full continuous
+	  logging whenever a card is present.
 
 module = RDD2_FLIGHT_LOG
 module-str = rdd2 flight log
