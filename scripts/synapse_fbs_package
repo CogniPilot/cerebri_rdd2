@@ -1,0 +1,77 @@
+#!/usr/bin/env sh
+#
+# Build the pinned synapse_fbs C package for reproducible RDD2 builds.
+#
+# Clones synapse_fbs and the pinned FlatBuffers and FlatCC toolchains at fixed
+# upstream revisions, builds flatc and flatcc from source, runs the xtask
+# generator, and extracts the portable C archive. The final line prints the
+# value to export as RDD2_SYNAPSE_FBS_ROOT before configuring an application.
+#
+# Usage: scripts/synapse_fbs_package [OUTPUT_DIR]
+#   OUTPUT_DIR defaults to ./synapse_fbs-build under the current directory.
+#
+# Requires: git, cmake, a C and C++ compiler, cargo (edition 2024), tar, gzip.
+
+set -eu
+
+# Pinned upstream revisions. Keep in sync with the synapse_fbs release manifest.
+SYNAPSE_FBS_REMOTE="https://github.com/CogniPilot/synapse_fbs.git"
+SYNAPSE_FBS_REV="fc3e57a2f93be2c9b923bbe2e72f5f578ffa3448"
+FLATBUFFERS_REMOTE="https://github.com/google/flatbuffers.git"
+FLATBUFFERS_REV="7e163021e59cca4f8e1e35a7c828b5c6b7915953"
+FLATCC_REMOTE="https://github.com/dvidelabs/flatcc.git"
+FLATCC_REV="d17e324e7e595272da486c5b9b20e848b78ba9ba"
+
+OUTPUT_DIR="${1:-$(pwd)/synapse_fbs-build}"
+mkdir -p "$OUTPUT_DIR"
+# Resolve to an absolute path without embedding any host-specific prefix.
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+
+WORK_DIR="$OUTPUT_DIR/work"
+FLATBUFFERS_DIR="$WORK_DIR/flatbuffers"
+FLATCC_DIR="$WORK_DIR/flatcc"
+SYNAPSE_DIR="$WORK_DIR/synapse_fbs"
+
+# Shallow-fetch a single pinned commit into a fresh checkout.
+fetch_rev() {
+	dir="$1"
+	remote="$2"
+	rev="$3"
+	git init -q "$dir"
+	git -C "$dir" remote add origin "$remote" 2>/dev/null ||
+		git -C "$dir" remote set-url origin "$remote"
+	git -C "$dir" fetch -q --depth 1 origin "$rev"
+	git -C "$dir" checkout -q --detach FETCH_HEAD
+}
+
+# Build the pinned upstream FlatBuffers flatc.
+fetch_rev "$FLATBUFFERS_DIR" "$FLATBUFFERS_REMOTE" "$FLATBUFFERS_REV"
+cmake -S "$FLATBUFFERS_DIR" -B "$FLATBUFFERS_DIR/out" \
+	-DCMAKE_BUILD_TYPE=Release \
+	-DFLATBUFFERS_BUILD_TESTS=OFF
+cmake --build "$FLATBUFFERS_DIR/out" --target flatc --parallel
+export SYNAPSE_FBS_FLATC="$FLATBUFFERS_DIR/out/flatc"
+
+# Build the pinned FlatCC compiler and keep its runtime source tree, which the
+# C archive embeds.
+fetch_rev "$FLATCC_DIR" "$FLATCC_REMOTE" "$FLATCC_REV"
+cmake -S "$FLATCC_DIR" -B "$FLATCC_DIR/out" \
+	-DCMAKE_BUILD_TYPE=Release \
+	-DFLATCC_TEST=OFF \
+	-DFLATCC_INSTALL=OFF
+cmake --build "$FLATCC_DIR/out" --target flatcc_cli --parallel
+export SYNAPSE_FBS_FLATCC="$FLATCC_DIR/bin/flatcc"
+export SYNAPSE_FBS_FLATCC_SOURCE="$FLATCC_DIR"
+
+# Generate and package the C archive with the pinned synapse_fbs xtask.
+fetch_rev "$SYNAPSE_DIR" "$SYNAPSE_FBS_REMOTE" "$SYNAPSE_FBS_REV"
+cargo run --locked --manifest-path "$SYNAPSE_DIR/xtask/Cargo.toml" -- build
+
+# Extract the portable C package. The archive carries a top-level synapse_fbs-c
+# directory, so extraction lands it at "$OUTPUT_DIR/synapse_fbs-c".
+ARCHIVE="$SYNAPSE_DIR/target/xtask/artifacts/synapse_fbs-c.tar.gz"
+PACKAGE_DIR="$OUTPUT_DIR/synapse_fbs-c"
+rm -rf "$PACKAGE_DIR"
+tar -xzf "$ARCHIVE" -C "$OUTPUT_DIR"
+
+printf 'RDD2_SYNAPSE_FBS_ROOT=%s\n' "$PACKAGE_DIR"

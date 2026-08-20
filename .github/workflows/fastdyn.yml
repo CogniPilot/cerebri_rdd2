@@ -34,6 +34,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: cachix/install-nix-action@v31
 
+      - name: Generate Synapse FBS package
+        run: |
+          ./scripts/synapse_fbs_package "$GITHUB_WORKSPACE/synapse_fbs-build" | tee synapse_fbs_env
+          grep '^RDD2_SYNAPSE_FBS_ROOT=' synapse_fbs_env >> "$GITHUB_ENV"
+
       - name: Build RDD2 rehosting firmware
         run: |
           nix run .#west-update

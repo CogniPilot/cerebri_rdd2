@@ -74,7 +74,9 @@ set(ZEPHYR_EXTRA_MODULES
 
 if(NOT RDD2_SYNAPSE_FBS_ROOT)
   message(FATAL_ERROR
-    "RDD2_SYNAPSE_FBS_ROOT must identify the generated Synapse C package"
+    "RDD2_SYNAPSE_FBS_ROOT must identify the generated Synapse C package. "
+    "Generate it with scripts/synapse_fbs_package and export the "
+    "RDD2_SYNAPSE_FBS_ROOT value it prints."
   )
 endif()
 list(APPEND ZEPHYR_EXTRA_MODULES ${RDD2_SYNAPSE_FBS_ROOT})
