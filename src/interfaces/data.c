@@ -75,7 +75,7 @@ void rdd2_topic_make_control_loop_metrics(
     uint32_t main_loop_latency_us) {
   *output = (synapse_topic_ControlLoopMetricsData_t){
       .timestamp_ns = timestamp_ns(),
-      .period_us = 625U,
+      .period_us = 1250U,
       .latency_us = main_loop_latency_us,
   };
 }

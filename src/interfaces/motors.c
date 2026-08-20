@@ -124,7 +124,7 @@ uint64_t rdd2_motor_output_write_all(const rdd2_motor_values_t *motors,
   uint16_t *raw_values = rdd2_topic_motor_raw_data(&raw);
 
 #if defined(CONFIG_RDD2_LOCKSTEP)
-  /* Intermediate 1600 Hz controller outputs do not cross the 200 Hz plant
+  /* Intermediate 800 Hz controller outputs do not cross the 200 Hz plant
    * boundary. Avoid four fake-device writes and a trigger for each one. */
   if (!rdd2_imu_stream_lockstep_at_target()) {
     return 0U;

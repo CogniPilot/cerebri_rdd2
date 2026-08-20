@@ -30,8 +30,8 @@
 
 /*
  * Estimator complementary-filter blend applied to the accelerometer gravity
- * reference each estimator step. At the 1 kHz estimator release this gives a
- * correction time constant of roughly 50 ms, fast enough that sustained
+ * reference each estimator step. At the 800 Hz estimator release this gives a
+ * correction time constant of roughly 62 ms, fast enough that sustained
  * lateral acceleration inside the trust band biases the tilt estimate within
  * a fraction of a second. Acceptable for props-off sign checks, retune before
  * any powered test.
