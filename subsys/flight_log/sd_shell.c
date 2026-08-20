@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
+#include "flight_log.h"
 #include "flight_log_fs.h"
 
 #include <zephyr/fs/fs.h>
@@ -29,6 +30,13 @@ static int cmd_sd_unmount(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 
+	/* The writer owns the volume while a session is open. Refuse rather than
+	 * pull the mount out from under it. Stop logging first. */
+	if (rdd2_flight_log_session_active()) {
+		shell_error(sh, "logging session active, run flightlog stop first");
+		return -EBUSY;
+	}
+
 	rc = rdd2_flight_log_fs_unmount();
 	if (rc != 0) {
 		shell_error(sh, "unmount failed: %d", rc);
@@ -52,9 +60,13 @@ static int cmd_sd_ls(const struct shell *sh, size_t argc, char **argv)
 		return -ENODEV;
 	}
 
+	/* Hold the card lock across the directory walk so it never runs inside
+	 * non-reentrant FatFs concurrently with the writer batch. */
+	rdd2_flight_log_fs_lock();
 	fs_dir_t_init(&dir);
 	rc = fs_opendir(&dir, RDD2_FLIGHT_LOG_MOUNT_POINT);
 	if (rc != 0) {
+		rdd2_flight_log_fs_unlock();
 		shell_error(sh, "opendir failed: %d", rc);
 		return rc;
 	}
@@ -72,6 +84,7 @@ static int cmd_sd_ls(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	(void)fs_closedir(&dir);
+	rdd2_flight_log_fs_unlock();
 	return rc;
 }
 
@@ -89,8 +102,10 @@ static int cmd_sd_info(const struct shell *sh, size_t argc, char **argv)
 		return -ENODEV;
 	}
 
+	rdd2_flight_log_fs_lock();
 	rc = fs_statvfs(RDD2_FLIGHT_LOG_MOUNT_POINT, &stat);
 	if (rc != 0) {
+		rdd2_flight_log_fs_unlock();
 		shell_error(sh, "statvfs failed: %d", rc);
 		return rc;
 	}
@@ -100,6 +115,7 @@ static int cmd_sd_info(const struct shell *sh, size_t argc, char **argv)
 		    (unsigned long long)stat.f_bfree * (unsigned long long)stat.f_frsize);
 
 	rc = rdd2_flight_log_fs_next_index(&next_index);
+	rdd2_flight_log_fs_unlock();
 	if (rc == 0) {
 		shell_print(sh, "next session index=%u", (unsigned int)next_index);
 	}

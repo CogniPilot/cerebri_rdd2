@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
+#include "flight_log.h"
 #include "flight_log_fs.h"
 
 #include <string.h>
@@ -34,6 +35,18 @@ static enum mgmt_cb_return fs_access_cb(uint32_t event, enum mgmt_cb_return prev
 	if (access == NULL || data_size < sizeof(*access) || access->filename == NULL ||
 	    strncmp(access->filename, RDD2_FLIGHT_LOG_MOUNT_POINT, prefix_len) != 0) {
 		*rc = MGMT_ERR_EACCESSDENIED;
+		return MGMT_CB_ERROR_RC;
+	}
+
+	/* The mcumgr read runs later in the fs_mgmt handler, outside the writer's
+	 * card lock, so it cannot be serialized against the writer by that lock.
+	 * FatFs is non-reentrant here, so instead of locking we refuse access
+	 * while a session is open: the operator runs flightlog stop (or rotate to
+	 * close the current file) before retrieving, and downloads then target the
+	 * closed files while no writer is touching the card. This event fires only
+	 * for the FS group, so the img group and OTA are unaffected. */
+	if (rdd2_flight_log_session_active()) {
+		*rc = MGMT_ERR_EBUSY;
 		return MGMT_CB_ERROR_RC;
 	}
 

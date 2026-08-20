@@ -198,8 +198,21 @@ Bench operators use two shell command groups. `sd` mounts, unmounts, lists, and
 reports free space on the card. `flightlog` shows logger state and counters
 (`flightlog status`) and controls sessions (`flightlog start`, `flightlog stop`,
 `flightlog rotate`). The `flightlog` name avoids the Zephyr logging subsystem's
-own `log` command. Session files are retrieved over the network with the mcumgr
-filesystem group, restricted by a file-access hook to the `/SD:` mount point.
+own `log` command. `sd unmount` is refused while a session is open, so stop
+logging before pulling the volume.
+
+FatFs is built non-reentrant on this target, so a single card lock serializes
+every in-process filesystem access: the writer batch and every `sd`/`flightlog`
+command that reaches the volume. The mcumgr retrieval path cannot hold that lock,
+so it is gated differently. Session files are retrieved over the network with the
+mcumgr filesystem group, restricted by a file-access hook to the `/SD:` mount
+point. That same hook refuses file access with a busy error while a logging
+session is open, because the mcumgr read happens later in the mcumgr handler
+where the card lock cannot cover it. To retrieve a file, run `flightlog stop`
+first (or `flightlog rotate` to close the current file and continue a new one),
+then download the closed files. Do not restart logging while a download is in
+progress, since the mcumgr download keeps the file open across chunks and only
+re-checks the hook when the target changes.
 
 ## Raw Zephyr Build 
 

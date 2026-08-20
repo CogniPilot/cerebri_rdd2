@@ -52,8 +52,11 @@ int mcap_stream_open_file(struct mcap_stream *stream, const char *path)
 		return -EINVAL;
 	}
 
+	/* FS_O_TRUNC is load-bearing: if a same-named file already exists (an
+	 * index reused after files were pruned off-vehicle), truncation drops any
+	 * stale tail so the session never carries bytes from a prior recording. */
 	fs_file_t_init(&stream->file);
-	rc = fs_open(&stream->file, path, FS_O_CREATE | FS_O_WRITE);
+	rc = fs_open(&stream->file, path, FS_O_CREATE | FS_O_WRITE | FS_O_TRUNC);
 	if (rc != 0) {
 		return rc;
 	}

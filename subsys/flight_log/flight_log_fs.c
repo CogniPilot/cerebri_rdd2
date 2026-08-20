@@ -28,18 +28,50 @@ static struct fs_mount_t g_mount = {
 };
 static bool g_mounted;
 
+/*
+ * FatFs is built non-reentrant on this target: CONFIG_FS_FATFS_REENTRANT is
+ * incompatible with the LFN BSS working-buffer mode, and that mode keeps one
+ * shared static name buffer. Two threads inside FatFs at once corrupt it, so a
+ * single card lock serializes every in-process filesystem touch: the writer
+ * batch, and every sd/log shell command that reaches the volume. The mcumgr
+ * retrieval path runs its read outside this process and cannot hold this lock,
+ * so it is gated separately by the session-active denial in the fs_mgmt hook.
+ */
+static K_MUTEX_DEFINE(g_card_lock);
+
+/* Latched so the unformatted or foreign card refusal is logged once per state
+ * change rather than on every low-rate retry. Cleared when the card is removed
+ * (init fails) or a volume mounts, so a fresh insert reports once more. */
+static bool g_mount_refused;
+
+void rdd2_flight_log_fs_lock(void)
+{
+	k_mutex_lock(&g_card_lock, K_FOREVER);
+}
+
+void rdd2_flight_log_fs_unlock(void)
+{
+	k_mutex_unlock(&g_card_lock);
+}
+
 int rdd2_flight_log_fs_mount(void)
 {
 	int rc;
 
+	rdd2_flight_log_fs_lock();
+
 	if (g_mounted) {
+		rdd2_flight_log_fs_unlock();
 		return 0;
 	}
 
 	/* Bring the card up. An absent or not-ready card returns non-zero and
-	 * the logger treats that as a no-op it retries at low rate. */
+	 * the logger treats that as a no-op it retries at low rate. This is the
+	 * probe reference: disk_access_init takes one block-device reference. */
 	rc = disk_access_init(RDD2_FLIGHT_LOG_DISK_NAME);
 	if (rc != 0) {
+		g_mount_refused = false;
+		rdd2_flight_log_fs_unlock();
 		return rc;
 	}
 
@@ -47,11 +79,37 @@ int rdd2_flight_log_fs_mount(void)
 	 * with no FAT filesystem is refused here rather than being wiped. */
 	rc = fs_mount(&g_mount);
 	if (rc != 0) {
+		/* FatFs called disk_initialize before it found no volume and does
+		 * not release that reference on FR_NO_FILESYSTEM
+		 * (modules/fs/fatfs/ff.c mount_volume), and the disk_access_init
+		 * probe reference is still held too. Force the refcount to zero
+		 * (zephyr/subsys/disk/disk_access.c DISK_IOCTL_CTRL_DEINIT force
+		 * branch) so retries do not accumulate references and a reformatted
+		 * or reinserted card is genuinely re-initialized. */
+		bool force = true;
+
+		(void)disk_access_ioctl(RDD2_FLIGHT_LOG_DISK_NAME, DISK_IOCTL_CTRL_DEINIT,
+					&force);
+		if (!g_mount_refused) {
+			LOG_WRN("%s present but no mountable FAT volume, logging stays off",
+				RDD2_FLIGHT_LOG_DISK_NAME);
+			g_mount_refused = true;
+		}
+		rdd2_flight_log_fs_unlock();
 		return rc;
 	}
 
+	/* The mount holds its own block-device reference now (one CTRL_INIT via
+	 * the FatFs disk_initialize path). Drop the disk_access_init probe
+	 * reference with a non-forced CTRL_DEINIT so the FatFs reference is the
+	 * only one held. fs_unmount then brings the refcount to zero and a
+	 * reinserted card is re-probed by the next disk_access_init. */
+	(void)disk_access_ioctl(RDD2_FLIGHT_LOG_DISK_NAME, DISK_IOCTL_CTRL_DEINIT, NULL);
+
 	g_mounted = true;
+	g_mount_refused = false;
 	LOG_INF("mounted %s on %s", RDD2_FLIGHT_LOG_DISK_NAME, RDD2_FLIGHT_LOG_MOUNT_POINT);
+	rdd2_flight_log_fs_unlock();
 	return 0;
 }
 
@@ -59,16 +117,24 @@ int rdd2_flight_log_fs_unmount(void)
 {
 	int rc;
 
+	rdd2_flight_log_fs_lock();
+
 	if (!g_mounted) {
+		rdd2_flight_log_fs_unlock();
 		return 0;
 	}
 
+	/* fs_unmount powers the block device off through CTRL_DEINIT. Only the
+	 * FatFs reference remains at this point, so this drops the refcount to
+	 * zero and the card is genuinely deinitialized. */
 	rc = fs_unmount(&g_mount);
 	if (rc != 0) {
+		rdd2_flight_log_fs_unlock();
 		return rc;
 	}
 
 	g_mounted = false;
+	rdd2_flight_log_fs_unlock();
 	return 0;
 }
 
@@ -111,7 +177,7 @@ static bool parse_session_index(const char *name, uint32_t *index_out)
 	return true;
 }
 
-int rdd2_flight_log_fs_next_index(uint32_t *index_out)
+static int next_index_locked(uint32_t *index_out)
 {
 	struct fs_dir_t dir;
 	struct fs_dirent entry;
@@ -119,9 +185,6 @@ int rdd2_flight_log_fs_next_index(uint32_t *index_out)
 	bool any = false;
 	int rc;
 
-	if (index_out == NULL) {
-		return -EINVAL;
-	}
 	if (!g_mounted) {
 		return -ENODEV;
 	}
@@ -160,6 +223,20 @@ int rdd2_flight_log_fs_next_index(uint32_t *index_out)
 	return 0;
 }
 
+int rdd2_flight_log_fs_next_index(uint32_t *index_out)
+{
+	int rc;
+
+	if (index_out == NULL) {
+		return -EINVAL;
+	}
+
+	rdd2_flight_log_fs_lock();
+	rc = next_index_locked(index_out);
+	rdd2_flight_log_fs_unlock();
+	return rc;
+}
+
 int rdd2_flight_log_fs_session_path(uint32_t index, char *out, size_t cap)
 {
 	int written;
@@ -168,8 +245,10 @@ int rdd2_flight_log_fs_session_path(uint32_t index, char *out, size_t cap)
 		return -EINVAL;
 	}
 
+	/* The index never wraps: the caller refuses to start once the scan would
+	 * pass 9999, so %04u always renders a four-digit basename here. */
 	written = snprintk(out, cap, "%s/%s%04u%s", RDD2_FLIGHT_LOG_MOUNT_POINT,
-			   RDD2_FLIGHT_LOG_FILE_PREFIX, (unsigned int)(index % 10000U),
+			   RDD2_FLIGHT_LOG_FILE_PREFIX, (unsigned int)index,
 			   RDD2_FLIGHT_LOG_FILE_SUFFIX);
 	if (written < 0 || (size_t)written >= cap) {
 		return -ENAMETOOLONG;

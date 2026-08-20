@@ -27,6 +27,13 @@ void rdd2_flight_log_status_get(struct rdd2_flight_log_status *out);
  */
 bool rdd2_flight_log_healthy(void);
 
+/*
+ * True while a session file is open and the writer may touch the card. The
+ * fs_mgmt hook reads this to deny mcumgr file access while logging is live, so
+ * a network retrieval never races the writer inside non-reentrant FatFs.
+ */
+bool rdd2_flight_log_session_active(void);
+
 /* Operator controls. Each records a request the writer thread acts on. */
 void rdd2_flight_log_request_start(void);
 void rdd2_flight_log_request_stop(void);

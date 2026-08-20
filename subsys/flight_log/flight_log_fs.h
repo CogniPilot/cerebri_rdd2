@@ -17,6 +17,20 @@
 #define RDD2_FLIGHT_LOG_FILE_PREFIX "flight"
 #define RDD2_FLIGHT_LOG_FILE_SUFFIX ".mcap"
 
+/* Highest four-digit session index. The logger refuses to start a new session
+ * once the next index would exceed this rather than wrapping onto flight0000. */
+#define RDD2_FLIGHT_LOG_MAX_SESSION_INDEX 9999U
+
+/*
+ * Serialize in-process filesystem access to the card. FatFs is non-reentrant on
+ * this target, so the writer batch and every shell command that touches the
+ * volume must bracket their filesystem calls with these. The lock is recursive,
+ * so a locked caller may nest the fs helpers below. The mcumgr retrieval path
+ * cannot hold this lock and is gated by the fs_mgmt hook instead.
+ */
+void rdd2_flight_log_fs_lock(void);
+void rdd2_flight_log_fs_unlock(void);
+
 /*
  * Initialise the card and mount the existing FAT volume. Returns 0 on success.
  * A negative value means the card is absent, not ready, or carries no mountable

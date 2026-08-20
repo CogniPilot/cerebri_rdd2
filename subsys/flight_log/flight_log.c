@@ -454,19 +454,21 @@ static void emit_wire_stats(uint64_t now_ns)
 }
 #endif
 
-static int start_session(void)
+/* Latched so the exhausted-index refusal is logged once, not on every retry.
+ * Cleared once a session opens (the operator archived or pruned old files). */
+static bool g_index_exhausted;
+
+/*
+ * Open the next session file and its MCAP writer. Runs with the card lock held.
+ * Does not touch g_active or the session-active flag, so both start and rotation
+ * reuse it. Returns 0 on success or a negative errno.
+ */
+static int open_session_file(void)
 {
 	uint32_t index = 0U;
 	char path[64];
 	char session_id[RDD2_FLIGHT_LOG_SESSION_ID_LEN];
 	int rc;
-
-	if (!rdd2_flight_log_fs_mounted()) {
-		rc = rdd2_flight_log_fs_mount();
-		if (rc != 0) {
-			return rc;
-		}
-	}
 
 	/* From here a failure most likely means the card was pulled between the
 	 * mount and the scan. Unmount so the next attempt remounts cleanly and
@@ -476,6 +478,17 @@ static int start_session(void)
 		(void)rdd2_flight_log_fs_unmount();
 		return rc;
 	}
+	if (index > RDD2_FLIGHT_LOG_MAX_SESSION_INDEX) {
+		if (!g_index_exhausted) {
+			LOG_ERR("session index space exhausted at flight%04u, "
+				"archive existing files to resume logging",
+				RDD2_FLIGHT_LOG_MAX_SESSION_INDEX);
+			g_index_exhausted = true;
+		}
+		return -ERANGE;
+	}
+	g_index_exhausted = false;
+
 	rc = rdd2_flight_log_fs_session_path(index, path, sizeof(path));
 	if (rc < 0) {
 		return rc;
@@ -507,15 +520,68 @@ static int start_session(void)
 	}
 
 	g_session_index = index;
-	g_session_active = true;
-	atomic_set(&g_active, 1);
 	LOG_INF("logging session %s", path);
 	return 0;
 }
 
+static int start_session(void)
+{
+	int rc;
+
+	rdd2_flight_log_fs_lock();
+
+	if (!rdd2_flight_log_fs_mounted()) {
+		rc = rdd2_flight_log_fs_mount();
+		if (rc != 0) {
+			rdd2_flight_log_fs_unlock();
+			return rc;
+		}
+	}
+
+	rc = open_session_file();
+	if (rc != 0) {
+		rdd2_flight_log_fs_unlock();
+		return rc;
+	}
+
+	g_session_active = true;
+	atomic_set(&g_active, 1);
+	rdd2_flight_log_fs_unlock();
+	return 0;
+}
+
+/* Discard and count any frames the capture thread enqueued during the stop
+ * window. Consumer-side ring reads are safe against the still-live producer, and
+ * counting them keeps the dropped total honest instead of silently losing them
+ * or bleeding them into the next session. */
+static void drop_ring_remainder(void)
+{
+	uint8_t scratch[FLIGHT_LOG_MAX_PAYLOAD];
+
+	while (ring_buf_size_get(&g_ring) >= sizeof(struct ring_header)) {
+		struct ring_header header;
+
+		if (ring_buf_get(&g_ring, (uint8_t *)&header, sizeof(header)) != sizeof(header)) {
+			break;
+		}
+		if (header.len > sizeof(scratch)) {
+			/* Framing invariant broken. Stop rather than reset, since the
+			 * capture producer may still be finishing a batch. */
+			break;
+		}
+		if (ring_buf_get(&g_ring, scratch, header.len) != header.len) {
+			break;
+		}
+		atomic_inc(&g_dropped);
+	}
+}
+
 static void stop_session(void)
 {
+	rdd2_flight_log_fs_lock();
+
 	if (!g_session_active) {
+		rdd2_flight_log_fs_unlock();
 		return;
 	}
 
@@ -524,8 +590,13 @@ static void stop_session(void)
 	(void)synapse_mcap_close(&g_writer);
 	(void)mcap_stream_close_file(&g_stream);
 	g_session_active = false;
+	/* Capture parks on its next loop check, but may have enqueued one more
+	 * batch after g_active cleared. Those frames missed the closed file, so
+	 * count them as dropped rather than lose them uncounted. */
+	drop_ring_remainder();
 	LOG_INF("logging session closed (%llu bytes)",
 		(unsigned long long)g_stream.bytes_written);
+	rdd2_flight_log_fs_unlock();
 }
 
 static void writer_thread(void *a, void *b, void *c)
@@ -568,6 +639,11 @@ static void writer_thread(void *a, void *b, void *c)
 			}
 		}
 
+		/* Serialize this drain/flush batch against every shell command that
+		 * touches the card. Capture keeps enqueuing into the ring meanwhile
+		 * because it never touches FatFs. Release before the sleep so a shell
+		 * command is not blocked across the idle window. */
+		rdd2_flight_log_fs_lock();
 		now = synapse_time_boot_ns();
 		drain_ring();
 
@@ -597,6 +673,7 @@ static void writer_thread(void *a, void *b, void *c)
 			/* A write failure usually means the card was removed. Drop
 			 * the mount so a reinserted card is picked up fresh. */
 			(void)rdd2_flight_log_fs_unmount();
+			rdd2_flight_log_fs_unlock();
 			k_sleep(K_MSEC(CONFIG_RDD2_FLIGHT_LOG_RETRY_MS));
 			continue;
 		}
@@ -605,6 +682,7 @@ static void writer_thread(void *a, void *b, void *c)
 			atomic_set(&g_rotate_request, 1);
 		}
 
+		rdd2_flight_log_fs_unlock();
 		k_sleep(K_MSEC(20));
 	}
 }
@@ -614,6 +692,11 @@ static void writer_thread(void *a, void *b, void *c)
 bool rdd2_flight_log_healthy(void)
 {
 	return atomic_get(&g_active) != 0 && g_stream.file_open && g_stream.last_sync_ok;
+}
+
+bool rdd2_flight_log_session_active(void)
+{
+	return atomic_get(&g_active) != 0;
 }
 
 void rdd2_flight_log_status_get(struct rdd2_flight_log_status *out)
