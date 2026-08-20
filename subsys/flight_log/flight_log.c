@@ -37,6 +37,10 @@
 #include <synapse/mcap_topics.h>
 #include <synapse/optical_flow_reader.h>
 
+#if defined(CONFIG_RDD2_SYNAPSE_WIRE)
+#include "synapse_wire.h"
+#endif
+
 LOG_MODULE_REGISTER(rdd2_flight_log, CONFIG_RDD2_FLIGHT_LOG_LOG_LEVEL);
 
 #define FLIGHT_LOG_MCAP_LIBRARY "rdd2-flight-log/1"
@@ -48,6 +52,7 @@ LOG_MODULE_REGISTER(rdd2_flight_log, CONFIG_RDD2_FLIGHT_LOG_LOG_LEVEL);
 /* Custom topic ids for the logger-owned records, chosen above the generated
  * catalog range so a decoder never confuses them with a catalog topic. */
 #define FLIGHT_LOG_TOPIC_ID_LOGGER_STATUS 200U
+#define FLIGHT_LOG_TOPIC_ID_WIRE_STATS 201U
 
 enum log_channel {
 	LOG_CH_CONTROL_IMU = 0,
@@ -63,6 +68,7 @@ enum log_channel {
 	LOG_CH_GNSS,
 	LOG_CH_TIMEREF,
 	LOG_CH_SELF_STATUS,
+	LOG_CH_WIRE_STATS,
 	LOG_CH_COUNT,
 };
 
@@ -85,6 +91,23 @@ struct __packed flight_log_self_record {
 	uint32_t flush_errors;
 	uint8_t state;
 	uint8_t reserved[3];
+};
+
+/* Logger-owned direct-wire receiver snapshot, packed little-endian. */
+struct __packed flight_log_wire_stream {
+	uint32_t received;
+	uint32_t accepted;
+	uint32_t publish_failed;
+	uint32_t socket_errors;
+	uint32_t sequence_gaps;
+	uint32_t session_changes;
+	uint32_t last_sequence;
+};
+
+struct __packed flight_log_wire_record {
+	uint64_t timestamp_ns;
+	struct flight_log_wire_stream optical;
+	struct flight_log_wire_stream gnss;
 };
 
 struct log_source {
@@ -124,6 +147,7 @@ static struct log_source g_sources[] = {
 
 BUILD_ASSERT(sizeof(synapse_topic_OdometryEstimateData_t) <= FLIGHT_LOG_MAX_PAYLOAD);
 BUILD_ASSERT(sizeof(struct flight_log_self_record) <= FLIGHT_LOG_MAX_PAYLOAD);
+BUILD_ASSERT(sizeof(struct flight_log_wire_record) <= FLIGHT_LOG_MAX_PAYLOAD);
 
 RING_BUF_DECLARE(g_ring, CONFIG_RDD2_FLIGHT_LOG_RING_BYTES);
 
@@ -171,6 +195,28 @@ static synapse_mcap_topic_t logger_status_topic(void)
 	};
 }
 
+#if defined(CONFIG_RDD2_SYNAPSE_WIRE)
+static const uint8_t g_wire_stats_schema[] =
+	"rdd2.flight_log.WireStats packed-le {"
+	"u64 timestamp_ns; "
+	"struct optical{u32 received; u32 accepted; u32 publish_failed; "
+	"u32 socket_errors; u32 sequence_gaps; u32 session_changes; u32 last_sequence;} "
+	"struct gnss{u32 received; u32 accepted; u32 publish_failed; "
+	"u32 socket_errors; u32 sequence_gaps; u32 session_changes; u32 last_sequence;}}";
+
+static synapse_mcap_topic_t wire_stats_topic(void)
+{
+	return (synapse_mcap_topic_t){
+		.topic_id = FLIGHT_LOG_TOPIC_ID_WIRE_STATS,
+		.schema_name = "rdd2.flight_log.WireStats",
+		.schema_data = g_wire_stats_schema,
+		.schema_size = sizeof(g_wire_stats_schema),
+		.payload_size = sizeof(struct flight_log_wire_record),
+		.fixed_layout = 1U,
+	};
+}
+#endif
+
 static uint64_t read_le64(const uint8_t *p)
 {
 	uint64_t v = 0U;
@@ -216,6 +262,9 @@ static int register_channels(void)
 	rc |= register_channel(SYNAPSE_MCAP_TOPIC_TimeReference, "time_reference",
 			       LOG_CH_TIMEREF);
 	rc |= register_channel(logger_status_topic(), "logger_status", LOG_CH_SELF_STATUS);
+#if defined(CONFIG_RDD2_SYNAPSE_WIRE)
+	rc |= register_channel(wire_stats_topic(), "wire_stats", LOG_CH_WIRE_STATS);
+#endif
 
 	return rc == SYNAPSE_MCAP_OK ? 0 : -EIO;
 }
@@ -376,6 +425,35 @@ static void emit_self_status(uint64_t now_ns)
 				       record.timestamp_ns, &record, sizeof(record));
 }
 
+#if defined(CONFIG_RDD2_SYNAPSE_WIRE)
+static void emit_wire_stats(uint64_t now_ns)
+{
+	struct rdd2_synapse_wire_snapshot snap;
+	struct flight_log_wire_record record = {0};
+
+	rdd2_synapse_wire_stats_snapshot(&snap);
+
+	record.timestamp_ns = now_ns;
+	record.optical.received = snap.optical.received;
+	record.optical.accepted = snap.optical.accepted;
+	record.optical.publish_failed = snap.optical.publish_failed;
+	record.optical.socket_errors = snap.optical.socket_errors;
+	record.optical.sequence_gaps = snap.optical.sequence_gaps;
+	record.optical.session_changes = snap.optical.session_changes;
+	record.optical.last_sequence = snap.optical.last_sequence;
+	record.gnss.received = snap.gnss.received;
+	record.gnss.accepted = snap.gnss.accepted;
+	record.gnss.publish_failed = snap.gnss.publish_failed;
+	record.gnss.socket_errors = snap.gnss.socket_errors;
+	record.gnss.sequence_gaps = snap.gnss.sequence_gaps;
+	record.gnss.session_changes = snap.gnss.session_changes;
+	record.gnss.last_sequence = snap.gnss.last_sequence;
+
+	(void)synapse_mcap_write_fixed(&g_writer, &g_channels[LOG_CH_WIRE_STATS], now_ns,
+				       record.timestamp_ns, &record, sizeof(record));
+}
+#endif
+
 static int start_session(void)
 {
 	uint32_t index = 0U;
@@ -495,6 +573,9 @@ static void writer_thread(void *a, void *b, void *c)
 		}
 		if (now - last_self >= 1000000000ULL) {
 			emit_self_status(now);
+#if defined(CONFIG_RDD2_SYNAPSE_WIRE)
+			emit_wire_stats(now);
+#endif
 			last_self = now;
 		}
 		if (now - last_flush >=

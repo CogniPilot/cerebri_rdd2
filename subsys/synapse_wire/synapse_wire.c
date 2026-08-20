@@ -778,6 +778,35 @@ static int receiver_init(void)
 
 SYS_INIT(receiver_init, APPLICATION, 92);
 
+static void snapshot_stream(struct rdd2_synapse_wire_stream_stats *out,
+			    const struct stream_stats *stats)
+{
+	out->received = stats->received;
+	out->accepted = stats->accepted;
+	out->publish_failed = stats->publish_failed;
+	out->socket_errors = stats->socket_errors;
+	out->sequence_gaps = stats->sequence_gaps;
+	out->session_changes = stats->session_changes;
+	out->last_sequence = stats->last_sequence;
+	out->session_id = stats->session_id;
+	out->last_header_flags = stats->last_header_flags;
+	out->last_receiver_time_status = stats->last_receiver_time_status;
+}
+
+void rdd2_synapse_wire_stats_snapshot(struct rdd2_synapse_wire_snapshot *out)
+{
+	k_spinlock_key_t key;
+
+	if (out == NULL) {
+		return;
+	}
+
+	key = k_spin_lock(&g_receiver.lock);
+	snapshot_stream(&out->optical, &g_receiver.streams[STREAM_OPTICAL].stats);
+	snapshot_stream(&out->gnss, &g_receiver.streams[STREAM_GNSS].stats);
+	k_spin_unlock(&g_receiver.lock, key);
+}
+
 #if defined(CONFIG_SHELL)
 static int status_print(const struct shell *shell, const struct stream_context *stream)
 {
