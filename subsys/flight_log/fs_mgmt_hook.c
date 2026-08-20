@@ -11,11 +11,14 @@
 #include <zephyr/mgmt/mcumgr/grp/fs_mgmt/fs_mgmt_callbacks.h>
 
 /*
- * Confine mcumgr file access to the microSD mount point. Every file read and
- * write request routed through the FS management group passes through here, and
- * any path that is not under RDD2_FLIGHT_LOG_MOUNT_POINT is denied. This keeps
- * OTA reflash paths and the internal flash out of reach of a log retrieval
- * client, which only ever needs the session files on the card.
+ * Confine the mcumgr FS management group to the microSD mount point. Every file
+ * read and write request routed through the FS group passes through here, and
+ * any path that is not under RDD2_FLIGHT_LOG_MOUNT_POINT is denied, so a log
+ * retrieval client cannot reach the internal flash through the filesystem group.
+ *
+ * This governs only the FS group. The img group and its OTA reflash path use a
+ * separate management group that does not raise this file-access event, so they
+ * are neither reached nor restricted by this hook.
  */
 static enum mgmt_cb_return fs_access_cb(uint32_t event, enum mgmt_cb_return prev_status,
 					int32_t *rc, uint16_t *group, bool *abort_more,

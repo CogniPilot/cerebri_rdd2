@@ -93,7 +93,9 @@ struct __packed flight_log_self_record {
 	uint8_t reserved[3];
 };
 
-/* Logger-owned direct-wire receiver snapshot, packed little-endian. */
+/* Logger-owned direct-wire receiver snapshot, packed little-endian. Carries the
+ * full per-stream snapshot the accessor copies out, including the source session
+ * id and the last observed header flags and receiver time status. */
 struct __packed flight_log_wire_stream {
 	uint32_t received;
 	uint32_t accepted;
@@ -102,6 +104,10 @@ struct __packed flight_log_wire_stream {
 	uint32_t sequence_gaps;
 	uint32_t session_changes;
 	uint32_t last_sequence;
+	uint64_t session_id;
+	uint16_t last_header_flags;
+	uint8_t last_receiver_time_status;
+	uint8_t reserved;
 };
 
 struct __packed flight_log_wire_record {
@@ -174,7 +180,7 @@ static atomic_t g_ring_high_water;
 static atomic_t g_armed;
 
 /* Documented packed-LE layout for the logger-status custom channel. Non-empty
- * schema bytes are required by the writer; the encoding label is fixed to
+ * schema bytes are required by the writer. The encoding label is fixed to
  * "flatbuffer" by the writer, while these bytes describe the real field
  * layout a decoder reads by offset. */
 static const uint8_t g_self_status_schema[] =
@@ -200,9 +206,11 @@ static const uint8_t g_wire_stats_schema[] =
 	"rdd2.flight_log.WireStats packed-le {"
 	"u64 timestamp_ns; "
 	"struct optical{u32 received; u32 accepted; u32 publish_failed; "
-	"u32 socket_errors; u32 sequence_gaps; u32 session_changes; u32 last_sequence;} "
+	"u32 socket_errors; u32 sequence_gaps; u32 session_changes; u32 last_sequence; "
+	"u64 session_id; u16 last_header_flags; u8 last_receiver_time_status; u8 reserved;} "
 	"struct gnss{u32 received; u32 accepted; u32 publish_failed; "
-	"u32 socket_errors; u32 sequence_gaps; u32 session_changes; u32 last_sequence;}}";
+	"u32 socket_errors; u32 sequence_gaps; u32 session_changes; u32 last_sequence; "
+	"u64 session_id; u16 last_header_flags; u8 last_receiver_time_status; u8 reserved;}}";
 
 static synapse_mcap_topic_t wire_stats_topic(void)
 {
@@ -441,6 +449,9 @@ static void emit_wire_stats(uint64_t now_ns)
 	record.optical.sequence_gaps = snap.optical.sequence_gaps;
 	record.optical.session_changes = snap.optical.session_changes;
 	record.optical.last_sequence = snap.optical.last_sequence;
+	record.optical.session_id = snap.optical.session_id;
+	record.optical.last_header_flags = snap.optical.last_header_flags;
+	record.optical.last_receiver_time_status = snap.optical.last_receiver_time_status;
 	record.gnss.received = snap.gnss.received;
 	record.gnss.accepted = snap.gnss.accepted;
 	record.gnss.publish_failed = snap.gnss.publish_failed;
@@ -448,6 +459,9 @@ static void emit_wire_stats(uint64_t now_ns)
 	record.gnss.sequence_gaps = snap.gnss.sequence_gaps;
 	record.gnss.session_changes = snap.gnss.session_changes;
 	record.gnss.last_sequence = snap.gnss.last_sequence;
+	record.gnss.session_id = snap.gnss.session_id;
+	record.gnss.last_header_flags = snap.gnss.last_header_flags;
+	record.gnss.last_receiver_time_status = snap.gnss.last_receiver_time_status;
 
 	(void)synapse_mcap_write_fixed(&g_writer, &g_channels[LOG_CH_WIRE_STATS], now_ns,
 				       record.timestamp_ns, &record, sizeof(record));
