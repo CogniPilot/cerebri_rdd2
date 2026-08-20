@@ -124,11 +124,12 @@ static void quaternion_to_euler(const float q[4], float *roll, float *pitch,
 /*
  * Attitude-P compute core.
  *
- * Acro mode maps sticks directly to commanded body rates. Attitude and position
- * modes (position is folded to attitude upstream when no position source is
- * ready) map roll/pitch sticks to lean-angle setpoints and drive a proportional
- * loop on the attitude error, while yaw stick commands a body yaw rate directly.
- * Throttle passes through as the normalized collective.
+ * Acro mode maps sticks directly to commanded body rates. Attitude mode maps
+ * roll/pitch sticks to lean-angle setpoints and drives a proportional loop on
+ * the attitude error, while yaw stick commands a body yaw rate directly.
+ * Position control is not implemented in this backend, a position-mode request
+ * falls back to attitude mode at input, so this core only ever sees modes 0
+ * and 1. Throttle passes through as the normalized collective.
  */
 static void simple_guidance_dostep(simple_guidance_state_t *efmu) {
   efmu->rumoca_galec_error_signal_status = 0U;
@@ -137,8 +138,13 @@ static void simple_guidance_dostep(simple_guidance_state_t *efmu) {
   if (efmu->mode == RDD2_FLIGHT_MODE_ACRO) {
     efmu->angularVelocityCommandFlu_rad_s[0] =
         efmu->stick[0] * SIMPLE_MAX_ACRO_RATE_RAD_S;
+    /*
+     * The schema defines pitch_milli as nose-up positive, while a positive
+     * body rate about +y (left) pitches the nose down under the FLU Euler
+     * convention, so the pitch stick is negated here.
+     */
     efmu->angularVelocityCommandFlu_rad_s[1] =
-        efmu->stick[1] * SIMPLE_MAX_ACRO_RATE_RAD_S;
+        -efmu->stick[1] * SIMPLE_MAX_ACRO_RATE_RAD_S;
     efmu->angularVelocityCommandFlu_rad_s[2] =
         efmu->stick[2] * SIMPLE_MAX_YAW_RATE_RAD_S;
     return;
@@ -149,7 +155,11 @@ static void simple_guidance_dostep(simple_guidance_state_t *efmu) {
     float pitch_est;
     float yaw_est;
     float roll_setpoint = efmu->stick[0] * SIMPLE_MAX_TILT_RAD;
-    float pitch_setpoint = efmu->stick[1] * SIMPLE_MAX_TILT_RAD;
+    /*
+     * pitch_milli is nose-up positive per the schema and +pitch is nose-down
+     * in the FLU Euler convention, so the stick is negated at the setpoint.
+     */
+    float pitch_setpoint = -efmu->stick[1] * SIMPLE_MAX_TILT_RAD;
 
     quaternion_to_euler(efmu->quaternionWorldBody, &roll_est, &pitch_est,
                         &yaw_est);
@@ -179,7 +189,16 @@ copy_manual_inputs_to_efmu(simple_guidance_state_t *efmu,
       manual_valid &&
       (manual->flags & synapse_topic_ManualControlFlags_ArmSwitch) != 0U;
 
-  efmu->mode = manual->flight_mode <= 2U ? manual->flight_mode : 0;
+  {
+    uint8_t mode = manual->flight_mode <= 2U ? manual->flight_mode : 0U;
+
+    /*
+     * This backend implements no position control. A position-mode request
+     * falls back to attitude mode so the mode switch cannot select a
+     * capability the backend does not provide.
+     */
+    efmu->mode = mode == 2U ? 1U : mode;
+  }
   efmu->armed = rdd2_guidance_arm_allowed(health_armed, health_failsafe,
                                           manual_valid, arm_switch);
   efmu->stick[0] = 0.001f * (float)manual->roll_milli;
