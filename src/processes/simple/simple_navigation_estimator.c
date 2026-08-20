@@ -57,6 +57,20 @@ LOG_MODULE_DECLARE(rdd2, LOG_LEVEL_INF);
 #define NAVIGATION_STACK_SIZE 32768
 #define SIMPLE_PI 3.14159265358979323846f
 
+/* OpticalFlowVelocity flags bitmask, bit0 per the schema definition. */
+#define SIMPLE_FLOW_VELOCITY_VALID 0x01U
+
+/* Wrap an angle to (-pi, pi]. */
+static float wrap_angle(float angle) {
+  while (angle > SIMPLE_PI) {
+    angle -= 2.0f * SIMPLE_PI;
+  }
+  while (angle <= -SIMPLE_PI) {
+    angle += 2.0f * SIMPLE_PI;
+  }
+  return angle;
+}
+
 struct simple_navigation_estimator_process {
   synapse_topic_InertialSampleData_t imu;
   synapse_topic_GnssFixData_t gnss;
@@ -135,9 +149,10 @@ static void update_attitude(struct simple_navigation_estimator_process *process,
   float az = imu->accel_flu_m_s2.z;
   float accel_norm = sqrtf(ax * ax + ay * ay + az * az);
 
-  process->roll_rad += imu->gyro_flu_rad_s.x * dt;
-  process->pitch_rad += imu->gyro_flu_rad_s.y * dt;
-  process->yaw_rad += imu->gyro_flu_rad_s.z * dt;
+  process->roll_rad = wrap_angle(process->roll_rad + imu->gyro_flu_rad_s.x * dt);
+  process->pitch_rad =
+      wrap_angle(process->pitch_rad + imu->gyro_flu_rad_s.y * dt);
+  process->yaw_rad = wrap_angle(process->yaw_rad + imu->gyro_flu_rad_s.z * dt);
 
   if (accel_norm > SIMPLE_ACCEL_TRUST_LOW * SIMPLE_GRAVITY_M_S2 &&
       accel_norm < SIMPLE_ACCEL_TRUST_HIGH * SIMPLE_GRAVITY_M_S2) {
@@ -151,17 +166,16 @@ static void update_attitude(struct simple_navigation_estimator_process *process,
     float roll_acc = atan2f(ay, az);
     float pitch_acc = atan2f(-ax, sqrtf(ay * ay + az * az));
 
-    process->roll_rad = (1.0f - SIMPLE_ACCEL_BLEND) * process->roll_rad +
-                        SIMPLE_ACCEL_BLEND * roll_acc;
-    process->pitch_rad = (1.0f - SIMPLE_ACCEL_BLEND) * process->pitch_rad +
-                         SIMPLE_ACCEL_BLEND * pitch_acc;
-  }
-
-  /* Keep yaw wrapped to avoid unbounded growth in the float. */
-  if (process->yaw_rad > SIMPLE_PI) {
-    process->yaw_rad -= 2.0f * SIMPLE_PI;
-  } else if (process->yaw_rad < -SIMPLE_PI) {
-    process->yaw_rad += 2.0f * SIMPLE_PI;
+    /*
+     * Blend along the shortest arc so the correction never drags the estimate
+     * through the far side of the circle after a large rotation.
+     */
+    process->roll_rad = wrap_angle(
+        process->roll_rad +
+        SIMPLE_ACCEL_BLEND * wrap_angle(roll_acc - process->roll_rad));
+    process->pitch_rad = wrap_angle(
+        process->pitch_rad +
+        SIMPLE_ACCEL_BLEND * wrap_angle(pitch_acc - process->pitch_rad));
   }
 }
 
@@ -189,7 +203,14 @@ static bool optical_flow_is_fresh(
       flow->velocity_flu_m_s.y,
   };
 
-  return rdd2_control_timestamp_is_fresh(observed, flow->timestamp_ns,
+  /*
+   * The producer marks VelocityValid only while flow tracking is trustworthy,
+   * so a structurally valid sample without it (or with zero quality) must not
+   * drive the odometry twist.
+   */
+  return (flow->flags & SIMPLE_FLOW_VELOCITY_VALID) != 0U &&
+         flow->quality > 0U &&
+         rdd2_control_timestamp_is_fresh(observed, flow->timestamp_ns,
                                          control_now_ns,
                                          SIMPLE_OPTICAL_FLOW_TIMEOUT_NS) &&
          rdd2_control_values_are_finite(values, ARRAY_SIZE(values));
