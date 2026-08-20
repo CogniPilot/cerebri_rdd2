@@ -40,6 +40,7 @@ config RDD2_CONTROL_EFMI
 
 config RDD2_CONTROL_SIMPLE
 	bool "Hand-written stand-in control backend"
+	depends on !RDD2_LOCKSTEP
 	help
 	  Use hand-written stand-in compute cores in place of the generated eFMI
 	  models. The estimator runs a complementary attitude filter with GNSS and
@@ -47,7 +48,9 @@ config RDD2_CONTROL_SIMPLE
 	  allocator runs a rate-P loop with fixed X-quad mixing. Gains are
 	  deliberately conservative bench placeholders. This lets the complete
 	  flight image link without the generated models for bench verification of
-	  sign conventions and data flow.
+	  sign conventions and data flow. Hardware builds only: this backend omits
+	  the lockstep health-time remap the generated estimator performs, so it is
+	  unavailable when RDD2_LOCKSTEP is set.
 
 endchoice
 

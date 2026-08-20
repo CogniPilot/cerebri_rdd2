@@ -17,10 +17,12 @@
  *   - Attitude quaternion is world-from-body in (w, x, y, z) order, so it
  *     rotates a vector expressed in the body frame into the world frame.
  *   - Euler angles use the body-to-world sequence Rz(yaw) * Ry(pitch) * Rx(roll):
- *       roll  is rotation about body +x (forward); +roll is right-side-down.
- *       pitch is rotation about body +y (left);    +pitch is nose-down.
- *       yaw   is rotation about world +z (up);      +yaw turns the nose left
- *                                                   (east toward north).
+ *       roll  is rotation about body +x (forward), +roll is right-side-down.
+ *       pitch is rotation about body +y (left),    +pitch is nose-down.
+ *       yaw   is rotation about world +z (up),     +yaw turns the nose left
+ *                                                  (east toward north).
+ *   - The ManualControl pitch stick is nose-up positive per the schema, which
+ *     is opposite to +pitch above, so guidance negates it where consumed.
  */
 
 /* Standard gravity magnitude, m/s^2. */
@@ -28,8 +30,11 @@
 
 /*
  * Estimator complementary-filter blend applied to the accelerometer gravity
- * reference each estimator step. Small so the gyro dominates short-term and the
- * accelerometer only trims slow tilt drift.
+ * reference each estimator step. At the 1 kHz estimator release this gives a
+ * correction time constant of roughly 50 ms, fast enough that sustained
+ * lateral acceleration inside the trust band biases the tilt estimate within
+ * a fraction of a second. Acceptable for props-off sign checks, retune before
+ * any powered test.
  */
 #define SIMPLE_ACCEL_BLEND 0.02f
 
