@@ -10,6 +10,7 @@ config RDD2_FLIGHT_LOG
 	select FAT_FILESYSTEM_ELM
 	select FS_FATFS_LFN
 	select HWINFO
+	select SYNAPSE_FBS_MCAP
 	help
 	  Record the internal ZROS flight bus to the microSD card as a
 	  self-contained synapse/1 MCAP file, one session file per boot. The
@@ -27,6 +28,15 @@ config RDD2_FLIGHT_LOG_SD_SHELL
 	help
 	  Register the `sd` shell command group (mount, unmount, ls, info) for
 	  bench validation of the microSD card independent of the logger threads.
+
+config RDD2_FLIGHT_LOG_BLOCK_BYTES
+	int "Storage block size in bytes"
+	default 4096
+	help
+	  Sector-aligned staging block. The sink accumulates writer output into a
+	  buffer of this size and flushes whole blocks to FatFs, so short MCAP
+	  records do not each become an unaligned card write. Must be a multiple
+	  of the card sector size (512).
 
 module = RDD2_FLIGHT_LOG
 module-str = rdd2 flight log

@@ -6,6 +6,7 @@ if(CONFIG_RDD2_FLIGHT_LOG)
 
   target_sources(app PRIVATE
     flight_log_fs.c
+    mcap_stream.c
   )
 
   target_sources_ifdef(CONFIG_RDD2_FLIGHT_LOG_SD_SHELL app PRIVATE
