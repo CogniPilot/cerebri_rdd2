@@ -181,8 +181,8 @@ leaves it disabled so it stays lean.
 Two threads and one bounded ring separate the flight bus from the card. A
 capture thread (priority 4, between navigation and planning) subscribes to the
 logged topics with per-topic rate limits and copies each accepted sample into a
-64 KiB ring, never blocking the bus: when the ring is full it drops the frame
-and counts it. A writer thread (priority 10, below every control thread) drains
+128 KiB ring, never blocking the bus: when the ring is full it drops the frame
+and counts it. A writer thread (priority 8, below every control thread) drains
 the ring into the constant-memory MCAP writer, emits a `TimeReference` record
 at 10 Hz plus logger-status and direct-wire-stats records at 1 Hz, and flushes
 and syncs on a fixed cadence so a power loss costs at most one flush window.

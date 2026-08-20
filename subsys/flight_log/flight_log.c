@@ -617,7 +617,7 @@ static void stop_session(void)
  * Roll to the next session file without stopping capture. Runs on the writer
  * thread with the card lock taken here. g_active stays set the whole time, so
  * the capture thread keeps enqueuing into the ring across the close and reopen.
- * Capture never touches the card, so the 64 KiB ring rides the gap and samples
+ * Capture never touches the card, so the 128 KiB ring rides the gap and samples
  * that land during the close-scan-open window are drained into the next file
  * instead of vanishing uncounted. Returns 0 on success or a negative errno.
  */

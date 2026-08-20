@@ -45,11 +45,20 @@ config RDD2_FLIGHT_LOG_BLOCK_BYTES
 
 config RDD2_FLIGHT_LOG_RING_BYTES
 	int "Capture ring buffer size in bytes"
-	default 65536
+	default 131072
 	help
 	  Bounded single-producer single-consumer staging ring between the
 	  capture thread and the writer thread. When it is full the capture
 	  thread drops the frame and counts it rather than blocking the bus.
+
+	  Sizing: at the measured 257 KB/s offered load this 131072-byte ring
+	  holds about 510 ms of frames (131072 / 257000). The writer drains it
+	  every loop but blocks for tens of milliseconds during an f_sync on
+	  FAT, so the ring must cover the flush cadence plus one such spike. At
+	  the 400 ms flush period that leaves about 110 ms of headroom. The
+	  previous 65536-byte ring held only about 255 ms, level with the old
+	  250 ms cadence, so every f_sync spike overflowed it (ring high water
+	  pinned full, steady ~150 dropped frames/s).
 
 config RDD2_FLIGHT_LOG_ROTATE_BYTES
 	int "Session file rotation size in bytes"
@@ -64,11 +73,19 @@ config RDD2_FLIGHT_LOG_TIMEREF_PERIOD_MS
 
 config RDD2_FLIGHT_LOG_FLUSH_PERIOD_MS
 	int "Flush and sync period in milliseconds"
-	default 250
+	default 400
 	help
 	  Upper bound on how long written records sit unsynced. Each flush writes
 	  the block remainder and issues an f_sync, so a power loss costs at most
-	  this window of data.
+	  this window of data (about 400 ms, up from the previous 250 ms).
+
+	  The ring must cover this cadence plus one f_sync latency spike. With
+	  the 131072-byte ring holding about 510 ms of frames at 257 KB/s, a
+	  400 ms cadence leaves about 110 ms of margin to absorb the tens of
+	  milliseconds an f_sync can block on FAT. A 500 ms cadence was rejected:
+	  it would leave only about 10 ms of margin, thinner than a single spike,
+	  so the ring would keep overflowing. 400 ms both keeps that margin and
+	  bounds power-cut loss tighter than 500 ms would.
 
 config RDD2_FLIGHT_LOG_RETRY_MS
 	int "Mount retry period in milliseconds"
@@ -79,10 +96,13 @@ config RDD2_FLIGHT_LOG_RETRY_MS
 
 config RDD2_FLIGHT_LOG_WRITER_PRIORITY
 	int "Writer thread priority"
-	default 10
+	default 8
 	help
-	  Runs below every control-domain thread so storage latency never
-	  disturbs the flight loop.
+	  Runs below every flight and wire thread (priorities 2 through 7) so
+	  card latency never disturbs the flight loop, but above the background
+	  floor-drain threads at priority 14. Priority 8 (raised from 10) gives
+	  the writer enough scheduling headroom to keep draining the ring against
+	  the drop backlog without ever contending with the control domain.
 
 config RDD2_FLIGHT_LOG_FRONT_PRIORITY
 	int "Capture thread priority"
