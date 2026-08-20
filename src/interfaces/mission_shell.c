@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
+#include "synapse_time_status.h"
 #include "zros_topics.h"
 
 #include "gnss_source.h"
@@ -108,7 +109,11 @@ static int read_admission_inputs(struct mission_shell_inputs *inputs) {
   const uint32_t rc_sensor = synapse_topic_SensorComponentFlags_RadioControl;
   const uint8_t health_blocking = synapse_topic_VehicleHealthFlags_Armed |
                                   synapse_topic_VehicleHealthFlags_Failsafe;
-  uint64_t now_ns = (uint64_t)k_uptime_get() * 1000000ULL;
+  /* Compare against the same full-precision boot clock the manual, health, and
+   * estimate stamps now carry. The old millisecond-floored now read a sample
+   * taken later in the current millisecond as if it were from the future, which
+   * failed timestamp_is_recent and stalled admission. */
+  uint64_t now_ns = synapse_time_boot_ns();
 
   if (!rdd2_topic_has_sample(&topic_manual_input) ||
       !rdd2_topic_has_sample(&topic_vehicle_health) ||
