@@ -1,3 +1,13 @@
+# Session files reach 256 MiB, far past the mcumgr FS group's 64KB default cap.
+# When the SD flight logger is built, force the transfer-size choice to its 4GB
+# member so a full session is downloadable, which also widens
+# MCUMGR_GRP_FS_MAX_OFFSET_LEN. This override precedes Kconfig.zephyr so its
+# choice default is evaluated before the upstream 64KB default and therefore
+# wins. It stays inert for the passive image, where the FS group is absent.
+choice MCUMGR_GRP_FS_MAX_FILE_SIZE
+	default MCUMGR_GRP_FS_MAX_FILE_SIZE_4GB if RDD2_FLIGHT_LOG
+endchoice
+
 source "Kconfig.zephyr"
 
 config TOP_SHELL

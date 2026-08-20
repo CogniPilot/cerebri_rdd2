@@ -599,6 +599,44 @@ static void stop_session(void)
 	rdd2_flight_log_fs_unlock();
 }
 
+/*
+ * Roll to the next session file without stopping capture. Runs on the writer
+ * thread with the card lock taken here. g_active stays set the whole time, so
+ * the capture thread keeps enqueuing into the ring across the close and reopen.
+ * Capture never touches the card, so the 64 KiB ring rides the gap and samples
+ * that land during the close-scan-open window are drained into the next file
+ * instead of vanishing uncounted. Returns 0 on success or a negative errno.
+ */
+static int rotate_session(void)
+{
+	int rc;
+
+	rdd2_flight_log_fs_lock();
+
+	if (!g_session_active) {
+		rdd2_flight_log_fs_unlock();
+		return -EINVAL;
+	}
+
+	drain_ring();
+	(void)synapse_mcap_close(&g_writer);
+	(void)mcap_stream_close_file(&g_stream);
+
+	rc = open_session_file();
+	if (rc != 0) {
+		/* Could not open the next file, most likely a pulled card. Park
+		 * capture and drop the mount so the retry path remounts cleanly. */
+		atomic_set(&g_active, 0);
+		g_session_active = false;
+		(void)rdd2_flight_log_fs_unmount();
+		rdd2_flight_log_fs_unlock();
+		return rc;
+	}
+
+	rdd2_flight_log_fs_unlock();
+	return 0;
+}
+
 static void writer_thread(void *a, void *b, void *c)
 {
 	uint64_t last_timeref = 0U;
@@ -632,11 +670,14 @@ static void writer_thread(void *a, void *b, void *c)
 		}
 
 		if (atomic_cas(&g_rotate_request, 1, 0)) {
-			stop_session();
-			if (start_session() != 0) {
+			if (rotate_session() != 0) {
 				k_sleep(K_MSEC(CONFIG_RDD2_FLIGHT_LOG_RETRY_MS));
 				continue;
 			}
+			now = synapse_time_boot_ns();
+			last_timeref = now;
+			last_self = now;
+			last_flush = now;
 		}
 
 		/* Serialize this drain/flush batch against every shell command that
