@@ -23,11 +23,40 @@
 
 LOG_MODULE_DECLARE(rdd2, LOG_LEVEL_INF);
 
-#define IMU_NODE                DT_ALIAS(imu0)
+#define IMU_NODE DT_ALIAS(imu0)
+
+/*
+ * RTIO provisioning for the 1600 Hz ICM45686 data-ready stream.
+ *
+ * Each data-ready completion carries one encoded sample of
+ * sizeof(icm45686_encoded_header) + sizeof(icm45686_encoded_payload)
+ * = 16 + 14 = 30 bytes, which fits in a single 64-byte pool block.
+ *
+ * A block stays allocated from the moment the driver fills it until this
+ * context's consumer (rdd2_imu_stream_wait_next) releases it. The number of
+ * blocks that can be outstanding at once therefore sets the longest consumer
+ * stall the stream can ride out before the driver fails buffer acquisition
+ * with -ENOMEM:
+ *
+ *   tolerated_latency = BUF_COUNT / ODR = 64 / 1600 Hz = 40 ms
+ *
+ * An outstanding block also needs a completion-queue slot to hand it back, so
+ * CQ_COUNT must be at least BUF_COUNT or the effective ceiling collapses to the
+ * smaller of the two. The previous sizing (BUF 32, CQ 16) capped the stream at
+ * min(32, 16) / 1600 = 10 ms, which the log-storm consumer stall blew past,
+ * producing the observed len-30 -ENOMEM acquisition failures. 40 ms is a 4x
+ * margin over that and comfortably longer than any consumer hiccup once the
+ * console no longer blocks the rate loop.
+ *
+ * BUF_SIZE drops 128 -> 64 while BUF_COUNT rises 32 -> 64, so the block pool
+ * stays 4096 bytes; only the completion-queue pool grows (16 -> 64 slots).
+ * SQ_COUNT stays 16: a single multishot stream submission is ever in flight.
+ * SQ and CQ counts must be powers of two.
+ */
 #define RDD2_IMU_RTIO_SQ_COUNT  16U
-#define RDD2_IMU_RTIO_CQ_COUNT  16U
-#define RDD2_IMU_RTIO_BUF_COUNT 32U
-#define RDD2_IMU_RTIO_BUF_SIZE  128U
+#define RDD2_IMU_RTIO_CQ_COUNT  64U
+#define RDD2_IMU_RTIO_BUF_COUNT 64U
+#define RDD2_IMU_RTIO_BUF_SIZE  64U
 
 static void imu_outputs_zero(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel)
 {
