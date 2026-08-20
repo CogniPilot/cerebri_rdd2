@@ -13,7 +13,7 @@ manifest:
   projects:
     - name: zephyr
       remote: cognipilot
-      revision: 85216b72231c5aea52cf31deb678e9405c83a164
+      revision: 97b3c914d75f28933e968c099086b8e5c024e698 # platinum-next gPTP clock step threshold
       path: zephyr
       west-commands: scripts/west-commands.yml
     - name: cmsis
@@ -50,7 +50,7 @@ manifest:
       path: modules/lib/zcbor
     - name: zros
       remote: cognipilot
-      revision: 20ab07983224ca078f17e2e851b4fe8cb92eb517 # Zephyr main module schema
+      revision: 4e8a7a53a935b61106a7e3065f74b7bbe2cac28f # convergence
       path: modules/lib/zros
     - name: cerebri_modules
       remote: cognipilot
