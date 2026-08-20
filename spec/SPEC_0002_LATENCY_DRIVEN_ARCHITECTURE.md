@@ -4,7 +4,7 @@
 ACCEPTED
 
 ## Summary
-Minimal latency is a primary system driver. The IMU-paced 1600 Hz thread calls
+Minimal latency is a primary system driver. The IMU-paced 800 Hz thread calls
 the generated rate/allocation eFMU and DSHOT directly. Navigation, planning,
 and guidance run as separate RTOS tasks at the periods declared by their
 Modelica blocks and exchange latest-value messages over ZROS only where a
@@ -15,7 +15,7 @@ thread boundary actually exists.
 **REQUIRED:**
 - The device hot path uses one thread: the rate process in
   `src/processes/rate_control_allocator.c`, running in Zephyr's main thread.
-- On `mr_vmu_tropic`, the main body-rate loop is paced by the `ICM45686` data-ready interrupt at 1600 Hz.
+- On `mr_vmu_tropic`, the main body-rate loop is paced by the `ICM45686` data-ready interrupt at 800 Hz.
 - Every control-loop iteration consumes the latest decoded IMU sample,
   cross-thread navigation angular velocity, and `RateCommandData`; advances
   the generated rate/allocation eFMU; and triggers DSHOT in that one thread.
@@ -30,7 +30,7 @@ thread boundary actually exists.
   consumed by guidance.
 - Navigation, Guidance, and Planning derive their modeled release phases by
   integer phase accumulation from the preceding control-domain publication
-  rate (`1600 -> 1000 -> 200/50 Hz`). ZROS subscription wall-clock rate limits
+  rate (`800 -> 800 -> 200/50 Hz`). ZROS subscription wall-clock rate limits
   may not define flight-process cadence, so accelerated lockstep and paused
   lockstep preserve the same releases as hardware.
 - RTOS precedence is rate, navigation, planning, then guidance. Planning must
@@ -49,7 +49,7 @@ thread boundary actually exists.
 - Hot-path math uses `float`, not `double`.
 - No heap allocation occurs after boot.
 - Hot-path synchronization points stay explicit and few.
-- If attitude correction exists, it must stay out of the 1600 Hz body-rate hot path and must not gate motor output.
+- If attitude correction exists, it must stay out of the 800 Hz body-rate hot path and must not gate motor output.
 - A Rate command is usable only after a new topic sample has been observed.
   Its publisher timestamp must be in the shared IMU-derived control-time domain
   and no more than `25 ms` old (five `200 Hz` Guidance release periods) when
@@ -114,7 +114,7 @@ thread boundary actually exists.
 - Queues between RC state, estimator, controllers, allocator, and motor output.
 - Mutexes, semaphores, or workqueues in the hot-path publish path.
 - Synchronous IMU bus reads from the flight control loop on `mr_vmu_tropic`.
-- Periodic shell or log output from the 1600 Hz body-rate loop.
+- Periodic shell or log output from the 800 Hz body-rate loop.
 - Kalman or measurement-correction steps in the IMU-paced rate thread.
 - Adding latency-oriented abstractions without measured justification on `mr_vmu_tropic`.
 - Reusing a retained trajectory reference after its freshness budget expires.

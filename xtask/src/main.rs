@@ -19,8 +19,8 @@ use serde::Serialize;
 use shared_memory::LockstepOutputs;
 
 const DEFAULT_PLANT_DT: f64 = 0.005;
-/// RDD2's fixed 1600 Hz firmware control-loop period.
-const CONTROLLER_DT: f64 = 0.000_625;
+/// RDD2's fixed 800 Hz firmware control-loop period.
+const CONTROLLER_DT: f64 = 0.001_25;
 const TAKEOFF_ALTITUDE_M: f64 = 1.5;
 const MISSION_ARM_DELAY_S: f64 = 0.5;
 const MISSION_POSITION_START_S: f64 = 4.0;
@@ -144,7 +144,7 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
         bail!("--duration must be finite and at least 30 seconds");
     }
     if !plant_dt.is_finite() || !(CONTROLLER_DT..=0.020).contains(&plant_dt) {
-        bail!("--plant-dt must be finite and between 0.000625 and 0.020 seconds");
+        bail!("--plant-dt must be finite and between 0.00125 and 0.020 seconds");
     }
     if !minimum_speedup.is_finite() || minimum_speedup < 0.0 {
         bail!("--minimum-speedup must be finite and non-negative");
@@ -649,7 +649,7 @@ where
     report.speedup_over_realtime = report.simulated_seconds / report.wall_seconds;
     report.minimum_speedup_required = options.minimum_speedup;
     report.plant_step_seconds = options.plant_dt;
-    // Derived from the simulated duration at the 1600 Hz control rate, not
+    // Derived from the simulated duration at the 800 Hz control rate, not
     // counted from firmware telemetry.
     report.controller_ticks_expected = (report.simulated_seconds / CONTROLLER_DT).round() as u64;
     report.final_altitude_m = plant.altitude();
@@ -941,7 +941,7 @@ mod tests {
 
         let result = (|| -> Result<()> {
             for _ in 0..4_000 {
-                target_ns += 625_000;
+                target_ns += 1_250_000;
                 let fix = gnss.sample([0.0; 3], [0.0; 3], target_ns);
                 let inputs = protocol::lockstep_inputs(
                     [0.0; 3],
@@ -974,7 +974,7 @@ mod tests {
             let mut last_status = MissionStatusWire::default();
             let mut last_quality = 0_i8;
             for _ in 0..320 {
-                target_ns += 625_000;
+                target_ns += 1_250_000;
                 let fix = gnss.sample([0.0; 3], [0.0; 3], target_ns);
                 let inputs = protocol::lockstep_inputs(
                     [0.0; 3],

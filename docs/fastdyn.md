@@ -106,8 +106,8 @@ these paths automatically for a multi-repository editable checkout.
 
 ## Timing and communications
 
-The default 20 ms plant macro-step advances all 32 controller ticks at
-1,600 Hz. Direct shared memory is the only lockstep pacing path. Merge
+The default 20 ms plant macro-step advances all 16 controller ticks at
+800 Hz. Direct shared memory is the only lockstep pacing path. Merge
 `fastdyn/comms.conf` when the native target also needs its network stack for
 diagnostics. ROS 2 CDR mirrors run on the host. Host network provisioning is
 external to `xtask`, so the mission runner never invokes privileged platform

@@ -16,7 +16,7 @@ published as a ROS 2 CDRv1 mirror through `rmw_zenoh_cpp`.
 - Header encoding, decoding, and validation use the generated
   `synapse_fbs` C library.
 - Socket receive and reconnect run in a dedicated preemptible thread outside
-  the 1600 Hz controller.
+  the 800 Hz controller.
 - The receiver validates source and destination addresses, ports, interface,
   hop limit, schema, topic, source identity, session, sequence, timestamp, and
   payload before publishing onto ZROS.
@@ -38,7 +38,7 @@ published as a ROS 2 CDRv1 mirror through `rmw_zenoh_cpp`.
 - Board-level Zephyr network shells are allowed for diagnostics.
 
 **PROHIBITED:**
-- Blocking the 1600 Hz control loop on Ethernet or Zenoh traffic.
+- Blocking the 800 Hz control loop on Ethernet or Zenoh traffic.
 - Handwritten schema decoders or RDD2-local topic keys.
 - Unbounded payload buffering or per-sample heap ownership in shell/debug code.
 - Treating a CDR mirror as authoritative control, estimation, readiness, or

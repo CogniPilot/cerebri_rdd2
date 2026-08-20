@@ -35,7 +35,7 @@ Source files stay under 2000 lines, and shell-based topic diagnostics are isolat
 
 **PROHIBITED:**
 - Per-command topic watcher threads.
-- Shell printing from the 1600 Hz control loop.
+- Shell printing from the 800 Hz control loop.
 - Folding growing shell/debug code back into `src/main.c`.
 - Blocking the control loop on shell/debug state reads.
 - Using file size as an excuse to introduce abstraction layers with no ownership benefit.

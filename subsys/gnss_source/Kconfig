@@ -99,7 +99,7 @@ config RDD2_GNSS_UBX_THREAD_PRIORITY
 	help
 	  Must stay preemptible and below the control loop. A cooperative
 	  (negative) priority here would let NMEA/UBX parsing block the
-	  1600 Hz loop, which SPEC_0002 and SPEC_0005 forbid.
+	  800 Hz loop, which SPEC_0002 and SPEC_0005 forbid.
 
 config RDD2_GNSS_UBX_THREAD_STACK_SIZE
 	int "Reader thread stack size"

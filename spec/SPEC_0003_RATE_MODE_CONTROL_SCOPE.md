@@ -105,7 +105,7 @@ therefore execute the same control laws at the same task boundaries.
   boundary.
 - Extra controller modes used only to manage integrators or transitions.
 - Navigation fusion in the rate-loop hot path.
-- Attitude correction or other estimator update steps that block the 1600 Hz body-rate loop.
+- Attitude correction or other estimator update steps that block the 800 Hz body-rate loop.
 - Automatic takeoff or landing from the built-in demo mission ingress.
 - Resuming a previously aborted mission on mode, arm, navigation, manual, or
   position-source recovery.

@@ -52,7 +52,7 @@ The Modelica objects are the application. Zephyr schedules one process per
 eFMU and maps its driver and ZROS boundaries:
 
 ```text
-driver IMU ── 1600 Hz rate thread ── control_imu ── 1000 Hz navigation eFMU
+driver IMU ── 800 Hz rate thread ── control_imu ── 800 Hz navigation eFMU
                     ↑                                    │
                     │                         navigation_odometry + attitude
                     │                                    │

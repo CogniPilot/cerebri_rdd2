@@ -7,8 +7,8 @@ composition root.
 
 | Process | Release | Priority | Inputs | Outputs |
 |---|---:|---:|---|---|
-| `RateControlAllocator` | IMU data-ready, 1600 Hz | 2 (main thread) | IMU and motor drivers; latest `rate_command` and `attitude_estimate` | DSHOT driver; `control_imu`, health, and loop metrics |
-| `NavigationEstimator` | latest-value IMU, 1000 Hz | 3 | `control_imu`, external odometry, GNSS | `navigation_odometry`, `attitude_estimate` |
+| `RateControlAllocator` | IMU data-ready, 800 Hz | 2 (main thread) | IMU and motor drivers; latest `rate_command` and `attitude_estimate` | DSHOT driver; `control_imu`, health, and loop metrics |
+| `NavigationEstimator` | latest-value IMU, 800 Hz | 3 | `control_imu`, external odometry, GNSS | `navigation_odometry`, `attitude_estimate` |
 | `WaypointTrajectoryPlanner` | estimator release, 50 Hz | 5 | waypoint-plan ingress and external-reference fallback | `trajectory_reference` |
 | `GuidanceController` | estimator release, 200 Hz | 6 | manual/health, navigation, trajectory reference | `rate_command`, `attitude_command` |
 

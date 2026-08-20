@@ -4,7 +4,7 @@
 ACCEPTED
 
 ## Summary
-`native_sim` runs the same 1600 Hz flight-control loop as flight firmware. Its
+`native_sim` runs the same 800 Hz flight-control loop as flight firmware. Its
 simulator IO terminates in lockstep RC, IMU, GNSS/mission, and DSHOT
 interfaces using the same
 generated `synapse_fbs` messages and shared direct sequencing
@@ -15,8 +15,8 @@ concurrently, but never pace lockstep.
 
 **REQUIRED:**
 - The `native_sim` target is for lockstep simulation and debug only.
-- The controller still runs in the main 1600 Hz application thread on `native_sim`.
-- Host simulator IO must stay out of the 1600 Hz controller thread.
+- The controller still runs in the main 800 Hz application thread on `native_sim`.
+- Host simulator IO must stay out of the 800 Hz controller thread.
 - `src/main.c` must remain free of `native_sim`-specific control-path branches.
 - The simulator boundary must terminate at board-selected `rc`, `imu0`, and `motors` devices, not at ad hoc app-level IO hooks.
 - Inbound simulator data uses generated `ManualControlData`,
@@ -55,7 +55,7 @@ concurrently, but never pace lockstep.
   concurrently for realtime observation.
 
 **PROHIBITED:**
-- Blocking socket IO in the 1600 Hz control loop.
+- Blocking socket IO in the 800 Hz control loop.
 - A simulation-only control loop separate from `src/main.c`.
 - Incompatible simulation messages that bypass generated `synapse_fbs`
   payloads.

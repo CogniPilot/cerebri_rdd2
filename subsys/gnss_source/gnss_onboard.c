@@ -11,7 +11,7 @@
  * A dedicated thread rather than a workqueue is deliberate. SPEC_0005 forbids
  * GNSS threads justified only by convenience, but the alternative here is the
  * system workqueue, whose negative priority is cooperative and therefore
- * cannot be preempted by the 1600 Hz control loop. This thread is preemptible
+ * cannot be preempted by the 800 Hz control loop. This thread is preemptible
  * and sits below it.
  */
 

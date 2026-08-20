@@ -259,7 +259,7 @@ disarmed.
 ```
 off  size  type    field
   0     8  u64     timestamp_ns
-  8     4  u32     period_us                 always 625 (1600 Hz)
+  8     4  u32     period_us                 always 1250 (800 Hz)
  12     4  u32     latency_us                IMU interrupt -> DSHOT trigger
  16     4  u32     overrun_count             (not populated)
  20     2  u16     load_dpermille            (not populated)
