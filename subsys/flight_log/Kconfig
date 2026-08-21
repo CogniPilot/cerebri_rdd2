@@ -73,7 +73,7 @@ config RDD2_FLIGHT_LOG_ROTATE_BYTES
 
 config RDD2_FLIGHT_LOG_PREALLOC_STEP_BYTES
 	int "Background spare growth step in bytes"
-	default 8388608
+	default 1048576
 	help
 	  Amount by which the writer grows the background spare file on each flush
 	  cycle. While a session streams, the writer incrementally builds a spare

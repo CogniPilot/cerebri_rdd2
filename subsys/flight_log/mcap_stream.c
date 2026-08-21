@@ -347,20 +347,22 @@ int mcap_stream_spare_grow(struct prealloc_spare *spare, uint64_t step_bytes)
 		return -EIO;
 	}
 
-	/* Persist the step (full or a disk-full short grow): flush the FAT window
-	 * and the directory size so the on-disk spare stays consistent and `sd ls`
-	 * shows it climb. f_lseek reports FR_OK even when a full card clips the
-	 * grow, so the reached offset, not the return code, is the truth. */
-	if (f_sync(fil) != FR_OK) {
-		return -EIO;
-	}
-
+	/* No per-step sync: the spare is disposable, so durability of a partial
+	 * build is worthless, and skipping the sync lets the FatFs sector window
+	 * coalesce the FAT writes of many consecutive steps into the rare flush
+	 * when the window moves. The one durable sync happens at completion via
+	 * the close below, which also lands the directory size. f_lseek reports
+	 * FR_OK even when a full card clips the grow, so the reached offset, not
+	 * the return code, is the truth. */
 	spare->reserved = (uint64_t)f_tell(fil);
 	if (spare->reserved < next) {
 		/* create_chain clipped on a full card: the spare cannot reach target. */
 		return -ENOSPC;
 	}
 	if (spare->reserved >= spare->target) {
+		if (f_sync(fil) != FR_OK) {
+			return -EIO;
+		}
 		mcap_stream_spare_close(spare);
 		return 1;
 	}

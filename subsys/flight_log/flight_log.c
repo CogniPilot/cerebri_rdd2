@@ -820,6 +820,16 @@ static void spare_maintain(void)
 		return;
 	}
 
+	/* Grow the spare only in genuinely idle cycles: if the ring is holding
+	 * more than a small fraction of its capacity, draining the session comes
+	 * first and the spare waits for a quieter cycle. Rotation arrives after
+	 * roughly seventeen minutes, so even sparse idle cycles finish the build
+	 * with two orders of magnitude of margin. */
+	if (ring_buf_size_get(&g_ring) >
+	    (CONFIG_RDD2_FLIGHT_LOG_RING_BYTES / 8)) {
+		return;
+	}
+
 	switch (g_spare_state) {
 	case SPARE_IDLE:
 		spare_begin();
