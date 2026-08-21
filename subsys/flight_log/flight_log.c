@@ -18,6 +18,16 @@
  * pulled mid-flight could otherwise corrupt, leaving only the short unsynced
  * data tail as the residual removal risk. Close truncates the unused tail back
  * to the streamed byte count so the reservation frees cleanly.
+ *
+ * To keep the open-time reservation out of a mid-flight rotation, the writer
+ * builds the next session's extent ahead of time. While a session streams, one
+ * flush cycle at a time, it grows a disposable spare file (flightspare.pre) to
+ * the rotation size in small steps. At rotation the completed spare is renamed
+ * into the next session index, a directory-entry-only operation that inherits
+ * the pre-built cluster chain, so the swap writes no allocation table and does
+ * not stall the writer. The first session after boot still reserves inline (its
+ * burst is pre-arming and harmless), then spare construction begins. If no spare
+ * is ready at rotation, the inline reservation path runs as a fallback.
  */
 
 #include "flight_log.h"
@@ -28,6 +38,7 @@
 #include "interfaces/synapse_time_status.h"
 #include "interfaces/zros_topics.h"
 
+#include <errno.h>
 #include <string.h>
 
 #include <zephyr/fs/fs.h>
@@ -493,6 +504,28 @@ static void emit_wire_stats(uint64_t now_ns)
 static bool g_index_exhausted;
 
 /*
+ * Background spare lifecycle. While a session streams the writer grows a spare
+ * file to the rotation size, so the next rotation renames a ready extent into
+ * place instead of reserving one inline.
+ *
+ *   IDLE     -> no spare yet; the next flush cycle begins one.
+ *   BUILDING -> growing one step per flush cycle, spare file open.
+ *   READY    -> grown to target and closed; rotation renames it into the
+ *               next session and returns to IDLE to build the following spare.
+ *   GIVEUP   -> the card could not hold a second full reservation; rotation
+ *               falls back to the inline expand path and returns to IDLE.
+ */
+enum spare_state {
+	SPARE_IDLE = 0,
+	SPARE_BUILDING,
+	SPARE_READY,
+	SPARE_GIVEUP,
+};
+
+static enum spare_state g_spare_state;
+static struct prealloc_spare g_spare;
+
+/*
  * Reserve a contiguous extent for the freshly opened session file so the
  * streaming writes fill it in place and never grow the FAT. Runs with the card
  * lock held, immediately after the file is opened and before any bytes are
@@ -539,23 +572,17 @@ static void preallocate_session(void)
 }
 
 /*
- * Open the next session file and its MCAP writer. Runs with the card lock held.
- * Does not touch g_active or the session-active flag, so both start and rotation
- * reuse it. Returns 0 on success or a negative errno.
+ * Resolve the next free session index and its path. Runs with the card lock
+ * held. Returns 0 with index_out and path filled, -ERANGE when the index space
+ * is exhausted, or another negative errno from the directory scan.
  */
-static int open_session_file(void)
+static int resolve_next_index(uint32_t *index_out, char *path, size_t cap)
 {
 	uint32_t index = 0U;
-	char path[64];
-	char session_id[RDD2_FLIGHT_LOG_SESSION_ID_LEN];
 	int rc;
 
-	/* From here a failure most likely means the card was pulled between the
-	 * mount and the scan. Unmount so the next attempt remounts cleanly and
-	 * the low-rate retry can pick up a reinserted card. */
 	rc = rdd2_flight_log_fs_next_index(&index);
 	if (rc != 0) {
-		(void)rdd2_flight_log_fs_unmount();
 		return rc;
 	}
 	if (index > RDD2_FLIGHT_LOG_MAX_SESSION_INDEX) {
@@ -569,23 +596,24 @@ static int open_session_file(void)
 	}
 	g_index_exhausted = false;
 
-	rc = rdd2_flight_log_fs_session_path(index, path, sizeof(path));
+	rc = rdd2_flight_log_fs_session_path(index, path, cap);
 	if (rc < 0) {
 		return rc;
 	}
+	*index_out = index;
+	return 0;
+}
 
-	memset(&g_stream, 0, sizeof(g_stream));
-	rc = mcap_stream_open_file(&g_stream, path);
-	if (rc != 0) {
-		LOG_WRN("open %s failed: %d", path, rc);
-		(void)rdd2_flight_log_fs_unmount();
-		return rc;
-	}
-
-	/* Reserve the session extent while the file is still empty, before the MCAP
-	 * header write. This is the only point at which the underlying f_expand is
-	 * accepted, so it must precede synapse_mcap_open. */
-	preallocate_session();
+/*
+ * Attach the MCAP writer to the already-open g_stream and register channels.
+ * Shared tail of the inline-open and rename-from-spare paths. Runs with the card
+ * lock held. Returns 0 on success or a negative errno, closing the stream on
+ * failure so the caller does not have to.
+ */
+static int finish_open(uint32_t index, const char *path)
+{
+	char session_id[RDD2_FLIGHT_LOG_SESSION_ID_LEN];
+	int rc;
 
 	mcap_stream_session_id(session_id);
 	memset(g_channels, 0, sizeof(g_channels));
@@ -609,6 +637,205 @@ static int open_session_file(void)
 	return 0;
 }
 
+/*
+ * Open the next session file with an inline reservation. Runs with the card lock
+ * held. Used for the first session after boot and as the rotation fallback when
+ * no spare is ready. Does not touch g_active or the session-active flag. Returns
+ * 0 on success or a negative errno.
+ */
+static int open_session_file(void)
+{
+	uint32_t index = 0U;
+	char path[64];
+	int rc;
+
+	rc = resolve_next_index(&index, path, sizeof(path));
+	if (rc != 0) {
+		/* A directory-scan failure most likely means the card was pulled
+		 * between the mount and the scan. Unmount so the next attempt remounts
+		 * cleanly and the low-rate retry can pick up a reinserted card. The
+		 * exhausted-index and name-length cases leave the mount up. */
+		if (rc != -ERANGE && rc != -ENAMETOOLONG) {
+			(void)rdd2_flight_log_fs_unmount();
+		}
+		return rc;
+	}
+
+	memset(&g_stream, 0, sizeof(g_stream));
+	rc = mcap_stream_open_file(&g_stream, path);
+	if (rc != 0) {
+		LOG_WRN("open %s failed: %d", path, rc);
+		(void)rdd2_flight_log_fs_unmount();
+		return rc;
+	}
+
+	/* Reserve the session extent while the file is still empty, before the MCAP
+	 * header write. This is the only point at which the underlying f_expand is
+	 * accepted, so it must precede synapse_mcap_open. */
+	preallocate_session();
+
+	return finish_open(index, path);
+}
+
+/*
+ * Open the next session by renaming the ready spare into the next index. Runs
+ * with the card lock held and only when g_spare_state is SPARE_READY. The rename
+ * is a directory-entry-only FatFs operation, so the spare's pre-built cluster
+ * chain carries into the new session untouched and no f_expand runs. The file is
+ * reopened without truncation and streamed from offset 0, overwriting the
+ * reserved clusters in place. Returns 0 on success or a negative errno; on
+ * failure any renamed target is removed so the inline fallback reuses the index.
+ */
+static int open_from_spare(uint64_t reserved_bytes)
+{
+	uint32_t index = 0U;
+	char path[64];
+	char spare[64];
+	int rc;
+
+	rc = resolve_next_index(&index, path, sizeof(path));
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = snprintk(spare, sizeof(spare), "%s/%s", RDD2_FLIGHT_LOG_MOUNT_POINT,
+		      RDD2_FLIGHT_LOG_SPARE_NAME);
+	if (rc < 0 || (size_t)rc >= sizeof(spare)) {
+		return -ENAMETOOLONG;
+	}
+
+	rc = fs_rename(spare, path);
+	if (rc != 0) {
+		return rc;
+	}
+
+	memset(&g_stream, 0, sizeof(g_stream));
+	rc = mcap_stream_open_existing(&g_stream, path, reserved_bytes);
+	if (rc != 0) {
+		/* The rename already consumed the spare into this name; if it cannot be
+		 * reopened, remove it so no orphaned full-size file is left and the
+		 * inline fallback reuses this same index. */
+		(void)fs_unlink(path);
+		return rc;
+	}
+
+	return finish_open(index, path);
+}
+
+/* The spare always reserves the full rotation size. Unlike the inline path it is
+ * not shrunk to fit a tight card: a card that cannot hold a live session plus a
+ * full spare simply fails the grow and rotation falls back to inline expand. */
+static uint64_t spare_target(void)
+{
+	return (uint64_t)CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES;
+}
+
+static int spare_path(char *out, size_t cap)
+{
+	int written = snprintk(out, cap, "%s/%s", RDD2_FLIGHT_LOG_MOUNT_POINT,
+			       RDD2_FLIGHT_LOG_SPARE_NAME);
+
+	if (written < 0 || (size_t)written >= cap) {
+		return -ENAMETOOLONG;
+	}
+	return 0;
+}
+
+/* Close any in-progress build and remove the spare from the card so no dangling
+ * reservation is left. Safe in any state; does not change g_spare_state. */
+static void spare_discard(void)
+{
+	char path[64];
+
+	mcap_stream_spare_close(&g_spare);
+	if (spare_path(path, sizeof(path)) == 0) {
+		(void)fs_unlink(path);
+	}
+}
+
+/* Begin a fresh spare for the current session. A leftover spare of exactly the
+ * target size (from a previous run) is adopted as-is, since the next session
+ * overwrites it from offset 0; any other leftover is deleted and rebuilt. Runs
+ * with the card lock held. */
+static void spare_begin(void)
+{
+	char path[64];
+	struct fs_dirent info;
+	uint64_t target = spare_target();
+	int rc;
+
+	if (spare_path(path, sizeof(path)) != 0) {
+		g_spare_state = SPARE_GIVEUP;
+		return;
+	}
+
+	if (fs_stat(path, &info) == 0 && info.type == FS_DIR_ENTRY_FILE &&
+	    (uint64_t)info.size == target) {
+		LOG_INF("reusing leftover spare (%llu bytes)", (unsigned long long)target);
+		g_spare_state = SPARE_READY;
+		return;
+	}
+
+	(void)fs_unlink(path);
+	rc = mcap_stream_spare_open(&g_spare, path, target);
+	if (rc != 0) {
+		LOG_WRN("spare open failed (%d), rotation will expand inline", rc);
+		g_spare_state = SPARE_GIVEUP;
+		return;
+	}
+	g_spare_state = SPARE_BUILDING;
+}
+
+/* Advance the in-progress build by one growth step. Runs with the card lock
+ * held. On a full card the grow returns -ENOSPC, so the partial spare is
+ * discarded and rotation takes the inline fallback. */
+static void spare_step(void)
+{
+	int rc = mcap_stream_spare_grow(&g_spare,
+					(uint64_t)CONFIG_RDD2_FLIGHT_LOG_PREALLOC_STEP_BYTES);
+
+	if (rc == 1) {
+		g_spare_state = SPARE_READY;
+		LOG_INF("spare ready (%llu bytes), next rotation is burst-free",
+			(unsigned long long)g_spare.reserved);
+	} else if (rc < 0) {
+		LOG_WRN("spare growth stopped (%d), rotation will expand inline", rc);
+		spare_discard();
+		g_spare_state = SPARE_GIVEUP;
+	}
+	/* rc == 0: more steps remain, stay BUILDING. */
+}
+
+/*
+ * One spare action per flush cycle, called from the writer batch under the card
+ * lock and between drain batches. The active session file's whole extent is
+ * already built, so this is the only FAT-allocation work the writer does during
+ * a session and it lands entirely on the disposable spare. A card yank during a
+ * growth step can leave the spare's chain inconsistent, but never the streaming
+ * session, whose clusters are all pre-allocated and thus metadata-quiet.
+ */
+static void spare_maintain(void)
+{
+	if (!g_session_active) {
+		return;
+	}
+
+	switch (g_spare_state) {
+	case SPARE_IDLE:
+		spare_begin();
+		break;
+	case SPARE_BUILDING:
+		spare_step();
+		break;
+	case SPARE_READY:
+	case SPARE_GIVEUP:
+	default:
+		/* READY waits for rotation to consume it; GIVEUP waits for the next
+		 * session open to reset the state and retry. */
+		break;
+	}
+}
+
 static int start_session(void)
 {
 	int rc;
@@ -629,6 +856,9 @@ static int start_session(void)
 		return rc;
 	}
 
+	/* First session after boot reserved inline above; spare construction starts
+	 * on the next flush cycle now that streaming is about to begin. */
+	g_spare_state = SPARE_IDLE;
 	g_session_active = true;
 	atomic_set(&g_active, 1);
 	rdd2_flight_log_fs_unlock();
@@ -675,6 +905,10 @@ static void stop_session(void)
 	(void)synapse_mcap_close(&g_writer);
 	(void)mcap_stream_close_file(&g_stream);
 	g_session_active = false;
+	/* Stop leaves no dangling reservation: close a spare build in progress and
+	 * remove the spare file so the card carries only the completed sessions. */
+	spare_discard();
+	g_spare_state = SPARE_IDLE;
 	/* Capture parks on its next loop check, but may have enqueued one more
 	 * batch after g_active cleared. Those frames missed the closed file, so
 	 * count them as dropped rather than lose them uncounted. */
@@ -689,11 +923,19 @@ static void stop_session(void)
  * thread with the card lock taken here. g_active stays set the whole time, so
  * the capture thread keeps enqueuing into the ring across the close and reopen.
  * Capture never touches the card, so the 128 KiB ring rides the gap and samples
- * that land during the close-scan-open window are drained into the next file
- * instead of vanishing uncounted. Returns 0 on success or a negative errno.
+ * that land during the swap window are drained into the next file instead of
+ * vanishing uncounted.
+ *
+ * When a spare is ready the swap is a rename of the pre-built extent: no
+ * f_expand, no free-extent scan, so the writer stalls only for the close and the
+ * rename, both directory-entry work. When no spare is ready (an early manual
+ * rotate, or a build that gave up on a full card) it falls back to the inline
+ * expand path, which carries the known open-time burst. Returns 0 on success or
+ * a negative errno.
  */
 static int rotate_session(void)
 {
+	uint64_t reserved = spare_target();
 	int rc;
 
 	rdd2_flight_log_fs_lock();
@@ -705,7 +947,28 @@ static int rotate_session(void)
 
 	drain_ring();
 	(void)synapse_mcap_close(&g_writer);
-	(void)mcap_stream_close_file(&g_stream);
+
+	if (g_spare_state == SPARE_READY) {
+		/* Size-triggered rotation filled the whole reservation, so close
+		 * session N without truncation (the tail is already spent) and rename
+		 * the spare into session N+1. */
+		(void)mcap_stream_close_file_full(&g_stream);
+		rc = open_from_spare(reserved);
+		if (rc == 0) {
+			g_spare_state = SPARE_IDLE; /* build the next spare */
+			rdd2_flight_log_fs_unlock();
+			return 0;
+		}
+		LOG_WRN("spare rotation failed (%d), expanding inline", rc);
+		spare_discard();
+	} else {
+		/* No ready spare: close session N normally, freeing its unused tail. */
+		(void)mcap_stream_close_file(&g_stream);
+		if (g_spare_state != SPARE_IDLE) {
+			LOG_WRN("no spare ready at rotation, expanding inline");
+		}
+		spare_discard();
+	}
 
 	rc = open_session_file();
 	if (rc != 0) {
@@ -714,10 +977,12 @@ static int rotate_session(void)
 		atomic_set(&g_active, 0);
 		g_session_active = false;
 		(void)rdd2_flight_log_fs_unmount();
+		g_spare_state = SPARE_IDLE;
 		rdd2_flight_log_fs_unlock();
 		return rc;
 	}
 
+	g_spare_state = SPARE_IDLE;
 	rdd2_flight_log_fs_unlock();
 	return 0;
 }
@@ -790,6 +1055,12 @@ static void writer_thread(void *a, void *b, void *c)
 			if (synapse_mcap_flush(&g_writer) != SYNAPSE_MCAP_OK) {
 				g_flush_errors++;
 			}
+			/* Advance the background spare one step per flush cycle, still
+			 * under the card lock and after the session is synced. This moves
+			 * the next rotation's f_expand burst off the rotation path and
+			 * onto the disposable spare, amortized over the first minutes of
+			 * the session. */
+			spare_maintain();
 			last_flush = now;
 		}
 

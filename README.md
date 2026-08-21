@@ -194,25 +194,58 @@ low-rate retry starts a session if a card is inserted after boot. Size-based
 rotation opens the next index at `CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES`
 (256 MiB default).
 
-Each session file is preallocated to a contiguous extent at open (a native
-`f_expand`, enabled through `CONFIG_FS_FATFS_EXTRA_NATIVE_API`), sized to the
-rotation size or to the free space above a small reserve when the card is
-tighter than that. Because the clusters are reserved up front, the steady-state
-writes fill them in place and update no FAT allocation table, so a card removed
-mid-flight no longer risks the periodic cluster-growth metadata writes that ran
-several times a second before. With preallocation the residual surprise-removal
-exposure is the up-to-one-flush-window (400 ms) of unsynced data at the tail,
-the single fixed-location directory-entry rewrite each flush leaves behind (the
-file-size field stays at the reserved size and the timestamp is a fixed constant
-with no RTC, so its bytes do not change and the FAT itself is untouched), and
-card-internal remapping the host cannot see. A clean close, rotation, or stop
-truncates the file back to the bytes actually streamed so the reservation frees
-its unused tail; if the card is pulled first, the stale full-size entry with a
+Each session file holds a preallocated extent so the steady-state writes fill
+reserved clusters in place and update no FAT allocation table. A card removed
+mid-flight then no longer risks the periodic cluster-growth metadata writes that
+ran several times a second before. The first session after boot reserves its
+extent inline with a native `f_expand` (enabled through
+`CONFIG_FS_FATFS_EXTRA_NATIVE_API`), sized to the rotation size or to the free
+space above a small reserve on a tighter card. That open-time reservation scans
+for a free run and writes the whole cluster chain to both FAT copies at once, a
+burst of roughly a second. At boot it lands before arming and is harmless, but a
+mid-flight rotation (about every 17 min at 256 MiB) cannot afford it: the burst
+would stall the writer long enough to overflow the capture ring and drop frames.
+
+So the extent for the next session is built ahead of time. While a session
+streams, the writer grows a disposable spare file, `flightspare.pre`, toward the
+rotation size in steps of `CONFIG_RDD2_FLIGHT_LOG_PREALLOC_STEP_BYTES` (8 MiB
+default), one step per flush cycle between drain batches under the card lock.
+Each step stretches the spare's cluster chain over a newly seeked range with the
+FatFs write-mode `f_lseek` idiom, writing only a few FAT sectors and no file
+data, so it blocks draining only briefly. At the 400 ms flush cadence the 32
+steps for a 256 MiB reservation complete in about 13 s, far ahead of the next
+rotation. When the size threshold trips, rotation renames the ready spare into
+the next `flightNNNN.mcap` index. FatFs rename is a directory-entry operation:
+the new name inherits the spare's pre-built cluster chain untouched, so the swap
+runs no `f_expand` and no free-extent scan and the writer never stalls. The
+outgoing file filled its whole reservation, so it is closed without truncation,
+and the incoming file is reopened without `O_TRUNC` (which would free the
+pre-built chain) and streamed from offset 0 over the reserved clusters. `sd ls`
+shows the spare climb toward the rotation size while a session records.
+
+If no spare is ready at rotation, an early manual `flightlog rotate` before the
+build finishes, or a card too full to hold a live session plus a second full
+reservation, rotation falls back to the inline `f_expand` path with its known
+burst and logs one warning. Stop truncates the active file back to the streamed
+byte count and deletes the spare, so the card is left carrying only completed
+sessions with no dangling reservation. A leftover spare from a previous run is
+reused when its size already matches the rotation size, otherwise deleted and
+rebuilt. The spare name is ignored by the session-index scan and lives under the
+`/SD:` mount, so the mcumgr file-access confinement still covers it.
+
+The residual surprise-removal exposure of an active session is the
+up-to-one-flush-window (400 ms) of unsynced data at the tail, the fixed-location
+directory-entry rewrite each flush leaves behind (the file-size field stays at
+the reserved size and the timestamp is a fixed constant with no RTC, so its
+bytes do not change and the FAT itself is untouched), and card-internal
+remapping the host cannot see. The active file's chain is fully built, so
+streaming writes no FAT allocation metadata: the only FAT-allocation writes
+during a session are the spare-growth steps, and those land entirely on the
+disposable spare. A card pulled during a growth step can leave the spare's chain
+inconsistent, but never the recording, whose clusters are all already reserved.
+If the card is pulled mid-session, the stale full-size directory entry with a
 garbage tail is harmless because the MCAP reader stops at the first invalid
-record. Preallocation is an optimization, never a gate: a fragmented or nearly
-full card that cannot grant a contiguous extent simply falls back to the prior
-grow-on-write path with a warning. While a session is open, `sd info` shows the
-reservation removed from free space; the unused portion returns at close.
+record.
 
 Bench operators use two shell command groups. `sd` mounts, unmounts, lists, and
 reports free space on the card. `flightlog` shows logger state and counters

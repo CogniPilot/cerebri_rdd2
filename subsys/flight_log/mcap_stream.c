@@ -71,6 +71,43 @@ int mcap_stream_open_file(struct mcap_stream *stream, const char *path)
 	stream->write_failed = false;
 	stream->last_sync_ok = true;
 	stream->preallocated = false;
+	stream->reserved_bytes = 0U;
+	stream->bytes_written = 0U;
+	stream->block_fill = 0U;
+	return 0;
+}
+
+int mcap_stream_open_existing(struct mcap_stream *stream, const char *path,
+			      uint64_t reserved_bytes)
+{
+	int rc;
+
+	if (stream == NULL || path == NULL) {
+		return -EINVAL;
+	}
+
+	/* No FS_O_TRUNC and no FS_O_APPEND: truncation would free the pre-built
+	 * chain this session is meant to reuse, and append would force every write
+	 * to end-of-file instead of overwriting the reserved clusters from the top.
+	 * FatFs opens the file with the pointer at 0; seek to 0 anyway so the first
+	 * write lands at the start of the reserved extent regardless. */
+	fs_file_t_init(&stream->file);
+	rc = fs_open(&stream->file, path, FS_O_WRITE);
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = fs_seek(&stream->file, 0, FS_SEEK_SET);
+	if (rc != 0) {
+		(void)fs_close(&stream->file);
+		return rc;
+	}
+
+	stream->file_open = true;
+	stream->write_failed = false;
+	stream->last_sync_ok = true;
+	stream->preallocated = true;
+	stream->reserved_bytes = reserved_bytes;
 	stream->bytes_written = 0U;
 	stream->block_fill = 0U;
 	return 0;
@@ -101,10 +138,11 @@ int mcap_stream_preallocate(struct mcap_stream *stream, uint64_t size_bytes)
 	}
 
 	stream->preallocated = true;
+	stream->reserved_bytes = size_bytes;
 	return 0;
 }
 
-int mcap_stream_close_file(struct mcap_stream *stream)
+static int mcap_stream_close_common(struct mcap_stream *stream, bool truncate_tail)
 {
 	int rc;
 
@@ -121,8 +159,17 @@ int mcap_stream_close_file(struct mcap_stream *stream)
 			 * cluster past it. Best-effort: a card pulled mid-session sets
 			 * write_failed and skips this path entirely, and a stale
 			 * full-size directory entry with a garbage tail is acceptable
-			 * because the MCAP reader stops at the first invalid record. */
-			if (stream->preallocated && stream->file.filep != NULL) {
+			 * because the MCAP reader stops at the first invalid record.
+			 *
+			 * truncate_tail is cleared on size-triggered rotation, where the
+			 * stream ran past its whole reservation: the tail is already
+			 * empty so there is nothing to free, and skipping the truncate
+			 * keeps that rotation off the FAT. Fall back to truncating if the
+			 * file somehow closed short of its reservation. */
+			bool tail_present = stream->bytes_written < stream->reserved_bytes;
+
+			if (stream->preallocated && stream->file.filep != NULL &&
+			    (truncate_tail || tail_present)) {
 				FIL *fil = (FIL *)stream->file.filep;
 
 				if (f_lseek(fil, (FSIZE_t)stream->bytes_written) == FR_OK) {
@@ -136,6 +183,16 @@ int mcap_stream_close_file(struct mcap_stream *stream)
 	rc = fs_close(&stream->file);
 	stream->file_open = false;
 	return rc;
+}
+
+int mcap_stream_close_file(struct mcap_stream *stream)
+{
+	return mcap_stream_close_common(stream, true);
+}
+
+int mcap_stream_close_file_full(struct mcap_stream *stream)
+{
+	return mcap_stream_close_common(stream, false);
 }
 
 int mcap_stream_sink_write(void *context, const uint8_t *data, size_t size)
@@ -236,4 +293,85 @@ void mcap_stream_session_id(char *out)
 		out[i * 2U + 1U] = hex_digits[seed[i] & 0x0FU];
 	}
 	out[32] = '\0';
+}
+
+int mcap_stream_spare_open(struct prealloc_spare *spare, const char *path, uint64_t target)
+{
+	int rc;
+
+	if (spare == NULL || path == NULL || target == 0U) {
+		return -EINVAL;
+	}
+
+	/* FS_O_TRUNC resets any leftover partial spare so growth starts from an
+	 * empty chain at a known zero size. */
+	fs_file_t_init(&spare->file);
+	rc = fs_open(&spare->file, path, FS_O_CREATE | FS_O_WRITE | FS_O_TRUNC);
+	if (rc != 0) {
+		return rc;
+	}
+
+	spare->open = true;
+	spare->reserved = 0U;
+	spare->target = target;
+	return 0;
+}
+
+int mcap_stream_spare_grow(struct prealloc_spare *spare, uint64_t step_bytes)
+{
+	FIL *fil;
+	uint64_t next;
+	FRESULT fr;
+
+	if (spare == NULL || !spare->open || spare->file.filep == NULL || step_bytes == 0U) {
+		return -EINVAL;
+	}
+
+	next = spare->reserved + step_bytes;
+	if (next > spare->target) {
+		next = spare->target;
+	}
+
+	/* Classic FatFs grow idiom: with FA_WRITE set, seeking past the current file
+	 * size stretches the cluster chain over the range. In ff.c f_lseek the
+	 * cluster-follow loop calls create_chain with forced stretch for every
+	 * cluster it crosses in write mode, allocating clusters and writing FAT
+	 * entries but no file data. f_expand cannot be used per step because it
+	 * requires an empty file (objsize == 0) and so cannot extend an already
+	 * partly grown spare. This is the only FAT allocation the writer performs
+	 * during a live session, and it lands entirely on this disposable file, not
+	 * the active session whose extent is already fully built and thus quiet. */
+	fil = (FIL *)spare->file.filep;
+	fr = f_lseek(fil, (FSIZE_t)next);
+	if (fr != FR_OK) {
+		return -EIO;
+	}
+
+	/* Persist the step (full or a disk-full short grow): flush the FAT window
+	 * and the directory size so the on-disk spare stays consistent and `sd ls`
+	 * shows it climb. f_lseek reports FR_OK even when a full card clips the
+	 * grow, so the reached offset, not the return code, is the truth. */
+	if (f_sync(fil) != FR_OK) {
+		return -EIO;
+	}
+
+	spare->reserved = (uint64_t)f_tell(fil);
+	if (spare->reserved < next) {
+		/* create_chain clipped on a full card: the spare cannot reach target. */
+		return -ENOSPC;
+	}
+	if (spare->reserved >= spare->target) {
+		mcap_stream_spare_close(spare);
+		return 1;
+	}
+	return 0;
+}
+
+void mcap_stream_spare_close(struct prealloc_spare *spare)
+{
+	if (spare == NULL || !spare->open) {
+		return;
+	}
+	(void)fs_close(&spare->file);
+	spare->open = false;
 }

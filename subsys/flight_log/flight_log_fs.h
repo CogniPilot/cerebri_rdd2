@@ -17,6 +17,13 @@
 #define RDD2_FLIGHT_LOG_FILE_PREFIX "flight"
 #define RDD2_FLIGHT_LOG_FILE_SUFFIX ".mcap"
 
+/* Reserved basename for the background pre-allocated spare file. Deliberately
+ * not an .mcap and not a flightNNNN name: the session-index scan ignores it and
+ * a decoder never mistakes it for a recording. The writer grows this file to the
+ * rotation size while a session streams, then renames it into the next session
+ * on rotation so the extent is built ahead of time rather than at rotation. */
+#define RDD2_FLIGHT_LOG_SPARE_NAME "flightspare.pre"
+
 /* Highest four-digit session index. The logger refuses to start a new session
  * once the next index would exceed this rather than wrapping onto flight0000. */
 #define RDD2_FLIGHT_LOG_MAX_SESSION_INDEX 9999U

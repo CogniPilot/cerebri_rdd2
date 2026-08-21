@@ -209,6 +209,12 @@ static int next_index_locked(uint32_t *index_out)
 		if (entry.type != FS_DIR_ENTRY_FILE) {
 			continue;
 		}
+		/* Skip the background spare explicitly. parse_session_index already
+		 * rejects it (its name carries no four-digit field), but naming it
+		 * here keeps the scan correct even if the spare name ever changes. */
+		if (strcmp(entry.name, RDD2_FLIGHT_LOG_SPARE_NAME) == 0) {
+			continue;
+		}
 		if (!parse_session_index(entry.name, &index)) {
 			continue;
 		}

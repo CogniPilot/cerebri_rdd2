@@ -71,6 +71,26 @@ config RDD2_FLIGHT_LOG_ROTATE_BYTES
 	  Close the current session file and open the next index once it reaches
 	  this size. The default is 256 MiB.
 
+config RDD2_FLIGHT_LOG_PREALLOC_STEP_BYTES
+	int "Background spare growth step in bytes"
+	default 8388608
+	help
+	  Amount by which the writer grows the background spare file on each flush
+	  cycle. While a session streams, the writer incrementally builds a spare
+	  reserved file (flightspare.pre) up to the rotation size so the next
+	  session's extent is fully allocated before rotation, keeping the f_expand
+	  burst out of the mid-flight rotation path. Growth is one step per flush
+	  cycle, taken in the writer thread between drain batches under the card
+	  lock, so each step blocks draining only briefly (a few small FAT writes)
+	  and the whole reservation amortizes over the first minutes of a session.
+
+	  The default is 8 MiB. At the 256 MiB rotation size that is 32 steps, and
+	  at the 400 ms flush cadence the spare completes in about 13 s, far ahead
+	  of a size-triggered rotation (about 17 min at 256 MiB). Larger steps
+	  finish sooner but lengthen each lock hold; smaller steps shorten the hold
+	  but spread the build over more cycles. Must be a multiple of the card
+	  cluster size for a clean per-step cluster-chain extension.
+
 config RDD2_FLIGHT_LOG_TIMEREF_PERIOD_MS
 	int "TimeReference emission period in milliseconds"
 	default 100
