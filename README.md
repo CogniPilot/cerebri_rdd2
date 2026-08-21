@@ -226,7 +226,14 @@ shows the spare climb toward the rotation size while a session records.
 If no spare is ready at rotation, an early manual `flightlog rotate` before the
 build finishes, or a card too full to hold a live session plus a second full
 reservation, rotation falls back to the inline `f_expand` path with its known
-burst and logs one warning. Stop truncates the active file back to the streamed
+burst and logs one warning. A manual rotate of a session far short of the
+rotation size also pays a one-time truncate burst (freeing the unused tail of
+the reservation walks the same amount of allocation table as building it,
+roughly a second with counted ring drops). This is inherent to reclaiming the
+space and acceptable because manual rotation is a stationary bench and
+retrieval action. The size-triggered rotation in flight closes a file that
+consumed its whole reservation, so it truncates nothing and swaps to the
+prepared spare with no burst. Stop truncates the active file back to the streamed
 byte count and deletes the spare, so the card is left carrying only completed
 sessions with no dangling reservation. A leftover spare from a previous run is
 reused when its size already matches the rotation size, otherwise deleted and
