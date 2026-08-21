@@ -17,6 +17,8 @@ struct rdd2_flight_log_status {
 	uint32_t dropped_frames;
 	uint32_t ring_high_water;
 	uint32_t flush_errors;
+	uint8_t spare_state;    /* 0 idle, 1 building, 2 ready, 3 given up */
+	uint64_t spare_reserved; /* bytes reserved so far in the background spare */
 };
 
 void rdd2_flight_log_status_get(struct rdd2_flight_log_status *out);

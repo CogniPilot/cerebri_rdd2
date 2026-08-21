@@ -22,6 +22,15 @@ static int cmd_log_status(const struct shell *sh, size_t argc, char **argv)
 		    RDD2_FLIGHT_LOG_FILE_PREFIX, (unsigned int)(status.session_index % 10000U),
 		    RDD2_FLIGHT_LOG_FILE_SUFFIX, (unsigned long long)status.bytes_written,
 		    status.dropped_frames, status.ring_high_water, status.flush_errors);
+	{
+		static const char *const spare_names[] = {"idle", "building", "ready",
+							  "given-up"};
+		const char *name = status.spare_state < 4U ? spare_names[status.spare_state]
+							   : "unknown";
+
+		shell_print(sh, "spare=%s reserved=%llu", name,
+			    (unsigned long long)status.spare_reserved);
+	}
 	return 0;
 }
 

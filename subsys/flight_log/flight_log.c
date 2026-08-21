@@ -1126,6 +1126,8 @@ void rdd2_flight_log_status_get(struct rdd2_flight_log_status *out)
 	out->dropped_frames = (uint32_t)atomic_get(&g_dropped);
 	out->ring_high_water = (uint32_t)atomic_get(&g_ring_high_water);
 	out->flush_errors = g_flush_errors;
+	out->spare_state = (uint8_t)g_spare_state;
+	out->spare_reserved = g_spare.reserved;
 }
 
 void rdd2_flight_log_request_start(void)
