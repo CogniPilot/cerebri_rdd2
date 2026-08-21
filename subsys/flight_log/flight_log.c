@@ -11,6 +11,13 @@
  * MCAP writer, emits the periodic TimeReference and logger-status records,
  * flushes and syncs on a fixed cadence, and owns all card access including the
  * mount, session-file rotation, and start/stop requests.
+ *
+ * Each session file is preallocated to a contiguous extent at open, so the
+ * steady-state writes fill reserved clusters in place and update no FAT
+ * allocation table. That removes the periodic cluster-growth writes that a card
+ * pulled mid-flight could otherwise corrupt, leaving only the short unsynced
+ * data tail as the residual removal risk. Close truncates the unused tail back
+ * to the streamed byte count so the reservation frees cleanly.
  */
 
 #include "flight_log.h"
@@ -23,6 +30,7 @@
 
 #include <string.h>
 
+#include <zephyr/fs/fs.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
@@ -48,6 +56,18 @@ LOG_MODULE_REGISTER(rdd2_flight_log, CONFIG_RDD2_FLIGHT_LOG_LOG_LEVEL);
 
 /* Largest logged fixed payload: OdometryEstimate at 232 bytes. */
 #define FLIGHT_LOG_MAX_PAYLOAD 232U
+
+/*
+ * Session-extent preallocation guard rails. The session file is expanded to a
+ * contiguous extent at open so the streaming writes touch no FAT allocation
+ * metadata, which collapses the surprise-removal corruption window. Keep
+ * FLIGHT_LOG_PREALLOC_MARGIN_BYTES of free space in reserve so the expand never
+ * consumes the last clusters the directory entry, FSINFO, and the close-time
+ * truncate still need. Below FLIGHT_LOG_PREALLOC_FLOOR_BYTES a reservation is
+ * not worth attempting, so the session grows on write instead.
+ */
+#define FLIGHT_LOG_PREALLOC_MARGIN_BYTES (1U << 20) /* 1 MiB */
+#define FLIGHT_LOG_PREALLOC_FLOOR_BYTES (4U << 20)  /* 4 MiB */
 
 /* Custom topic ids for the logger-owned records, chosen above the generated
  * catalog range so a decoder never confuses them with a catalog topic. */
@@ -473,6 +493,52 @@ static void emit_wire_stats(uint64_t now_ns)
 static bool g_index_exhausted;
 
 /*
+ * Reserve a contiguous extent for the freshly opened session file so the
+ * streaming writes fill it in place and never grow the FAT. Runs with the card
+ * lock held, immediately after the file is opened and before any bytes are
+ * written. Best-effort: any failure leaves the session on grow-on-write, which
+ * is exactly today's behavior, so preallocation is never a gate on logging.
+ *
+ * The reservation size is the rotation size when the card has room for it. When
+ * free space is tighter than that, shrink the reservation to what remains above
+ * the safety margin so a nearly full card still gets a contiguous run rather
+ * than falling all the way back to grow-on-write. Below the floor, skip it.
+ */
+static void preallocate_session(void)
+{
+	uint64_t target = (uint64_t)CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES;
+	struct fs_statvfs vfs;
+	int rc;
+
+	if (fs_statvfs(RDD2_FLIGHT_LOG_MOUNT_POINT, &vfs) == 0) {
+		uint64_t free_bytes =
+			(uint64_t)vfs.f_bfree * (uint64_t)vfs.f_frsize;
+
+		if (free_bytes < target + FLIGHT_LOG_PREALLOC_MARGIN_BYTES) {
+			if (free_bytes > (uint64_t)FLIGHT_LOG_PREALLOC_MARGIN_BYTES +
+						 FLIGHT_LOG_PREALLOC_FLOOR_BYTES) {
+				target = free_bytes - FLIGHT_LOG_PREALLOC_MARGIN_BYTES;
+			} else {
+				target = 0U;
+			}
+		}
+	}
+
+	if (target < FLIGHT_LOG_PREALLOC_FLOOR_BYTES) {
+		LOG_WRN("card too full to preallocate, growing session on write");
+		return;
+	}
+
+	rc = mcap_stream_preallocate(&g_stream, target);
+	if (rc == 0) {
+		LOG_INF("preallocated %llu bytes for the session file",
+			(unsigned long long)target);
+	} else {
+		LOG_WRN("preallocation unavailable (%d), growing session on write", rc);
+	}
+}
+
+/*
  * Open the next session file and its MCAP writer. Runs with the card lock held.
  * Does not touch g_active or the session-active flag, so both start and rotation
  * reuse it. Returns 0 on success or a negative errno.
@@ -515,6 +581,11 @@ static int open_session_file(void)
 		(void)rdd2_flight_log_fs_unmount();
 		return rc;
 	}
+
+	/* Reserve the session extent while the file is still empty, before the MCAP
+	 * header write. This is the only point at which the underlying f_expand is
+	 * accepted, so it must precede synapse_mcap_open. */
+	preallocate_session();
 
 	mcap_stream_session_id(session_id);
 	memset(g_channels, 0, sizeof(g_channels));
@@ -733,6 +804,11 @@ static void writer_thread(void *a, void *b, void *c)
 			continue;
 		}
 
+		/* Rotate on the streamed byte count, not the on-disk file size. With
+		 * preallocation the file size jumps to the reserved extent at open,
+		 * but bytes_written still climbs from zero as records are written, so
+		 * this triggers at the real data volume and the reservation cannot
+		 * make it fire early. */
 		if (g_stream.bytes_written >= (uint64_t)CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES) {
 			atomic_set(&g_rotate_request, 1);
 		}

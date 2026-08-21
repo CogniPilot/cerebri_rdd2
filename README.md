@@ -194,6 +194,26 @@ low-rate retry starts a session if a card is inserted after boot. Size-based
 rotation opens the next index at `CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES`
 (256 MiB default).
 
+Each session file is preallocated to a contiguous extent at open (a native
+`f_expand`, enabled through `CONFIG_FS_FATFS_EXTRA_NATIVE_API`), sized to the
+rotation size or to the free space above a small reserve when the card is
+tighter than that. Because the clusters are reserved up front, the steady-state
+writes fill them in place and update no FAT allocation table, so a card removed
+mid-flight no longer risks the periodic cluster-growth metadata writes that ran
+several times a second before. With preallocation the residual surprise-removal
+exposure is the up-to-one-flush-window (400 ms) of unsynced data at the tail,
+the single fixed-location directory-entry rewrite each flush leaves behind (the
+file-size field stays at the reserved size and the timestamp is a fixed constant
+with no RTC, so its bytes do not change and the FAT itself is untouched), and
+card-internal remapping the host cannot see. A clean close, rotation, or stop
+truncates the file back to the bytes actually streamed so the reservation frees
+its unused tail; if the card is pulled first, the stale full-size entry with a
+garbage tail is harmless because the MCAP reader stops at the first invalid
+record. Preallocation is an optimization, never a gate: a fragmented or nearly
+full card that cannot grant a contiguous extent simply falls back to the prior
+grow-on-write path with a warning. While a session is open, `sd info` shows the
+reservation removed from free space; the unused portion returns at close.
+
 Bench operators use two shell command groups. `sd` mounts, unmounts, lists, and
 reports free space on the card. `flightlog` shows logger state and counters
 (`flightlog status`) and controls sessions (`flightlog start`, `flightlog stop`,

@@ -9,6 +9,10 @@ config RDD2_FLIGHT_LOG
 	select FILE_SYSTEM
 	select FAT_FILESYSTEM_ELM
 	select FS_FATFS_LFN
+	# Compiles in the FatFs native extension calls, including f_expand, which
+	# the session layer uses to reserve a contiguous per-session extent so
+	# streaming writes touch no FAT allocation metadata.
+	select FS_FATFS_EXTRA_NATIVE_API
 	select HWINFO
 	select SYNAPSE_FBS_MCAP
 	select RING_BUFFER

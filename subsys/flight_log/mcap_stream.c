@@ -12,6 +12,12 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
 
+/* Native FatFs handle and calls. For an FS_FATFS mount the VFS stores the
+ * underlying FIL in fs_file_t.filep (zephyr/subsys/fs/fat_fs.c fatfs_open sets
+ * zfp->filep to a FIL from the fatfs_filep_pool slab). Reaching it lets the
+ * session layer call f_expand and f_truncate, which have no VFS equivalent. */
+#include <ff.h>
+
 static int write_all(struct mcap_stream *stream, const uint8_t *buf, size_t len)
 {
 	size_t offset = 0U;
@@ -64,8 +70,37 @@ int mcap_stream_open_file(struct mcap_stream *stream, const char *path)
 	stream->file_open = true;
 	stream->write_failed = false;
 	stream->last_sync_ok = true;
+	stream->preallocated = false;
 	stream->bytes_written = 0U;
 	stream->block_fill = 0U;
+	return 0;
+}
+
+int mcap_stream_preallocate(struct mcap_stream *stream, uint64_t size_bytes)
+{
+	FIL *fil;
+	FRESULT fr;
+
+	if (stream == NULL || !stream->file_open || stream->file.filep == NULL ||
+	    size_bytes == 0U) {
+		return -EINVAL;
+	}
+
+	/* Allocate the contiguous extent now (opt = 1). f_expand requires the file
+	 * to be empty, which holds here because this runs right after open and
+	 * before the first write. It sets the file size to the full extent but
+	 * leaves the write pointer at 0, so the sequential writes that follow fill
+	 * the reserved clusters in place without stretching the FAT. */
+	fil = (FIL *)stream->file.filep;
+	fr = f_expand(fil, (FSIZE_t)size_bytes, 1);
+	if (fr != FR_OK) {
+		/* FR_DENIED here means no contiguous free block of that size exists
+		 * (fragmented or nearly full card). Report it as no-space so the
+		 * caller falls back to grow-on-write. */
+		return fr == FR_DENIED ? -ENOSPC : -EIO;
+	}
+
+	stream->preallocated = true;
 	return 0;
 }
 
@@ -79,6 +114,21 @@ int mcap_stream_close_file(struct mcap_stream *stream)
 
 	if (!stream->write_failed) {
 		if (flush_block(stream) == 0) {
+			/* Give back the unused tail of a preallocated extent so the
+			 * card is not left holding phantom clusters. After flush_block
+			 * the FatFs write pointer sits at the real end, so seek to the
+			 * streamed byte count and truncate there to free every reserved
+			 * cluster past it. Best-effort: a card pulled mid-session sets
+			 * write_failed and skips this path entirely, and a stale
+			 * full-size directory entry with a garbage tail is acceptable
+			 * because the MCAP reader stops at the first invalid record. */
+			if (stream->preallocated && stream->file.filep != NULL) {
+				FIL *fil = (FIL *)stream->file.filep;
+
+				if (f_lseek(fil, (FSIZE_t)stream->bytes_written) == FR_OK) {
+					(void)f_truncate(fil);
+				}
+			}
 			(void)fs_sync(&stream->file);
 		}
 	}

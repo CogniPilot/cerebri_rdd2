@@ -24,12 +24,18 @@
  * data a power loss can cost. All memory is caller-owned and there is no
  * dynamic allocation: only the writer's storage thread ever calls into the
  * sink, so blocking on the card here is by design.
+ *
+ * When preallocated is set the session file was expanded to a contiguous extent
+ * at open (see mcap_stream_preallocate), so the streaming writes fill the
+ * reserved clusters in place and never grow the FAT. Close truncates the unused
+ * tail back to bytes_written so the reservation does not leave phantom space.
  */
 struct mcap_stream {
 	struct fs_file_t file;
 	bool file_open;
 	bool write_failed;
 	bool last_sync_ok;
+	bool preallocated;      /* session file holds a reserved contiguous extent */
 	uint64_t bytes_written; /* payload bytes handed to FatFs */
 	size_t block_fill;
 	uint8_t block[CONFIG_RDD2_FLIGHT_LOG_BLOCK_BYTES];
@@ -40,6 +46,18 @@ struct mcap_stream {
  * negative errno. The stream must be zeroed by the caller before first use.
  */
 int mcap_stream_open_file(struct mcap_stream *stream, const char *path);
+
+/*
+ * Reserve a contiguous size_bytes extent for the freshly opened session file so
+ * the streaming writes fill it in place and touch no FAT allocation metadata.
+ * Must be called immediately after mcap_stream_open_file and before any bytes
+ * are written, because the underlying f_expand only accepts an empty file. On
+ * success sets stream->preallocated and returns 0. Returns -ENOSPC when no
+ * contiguous extent that large is free, or another negative errno on failure:
+ * preallocation is an optimization, so the caller continues with grow-on-write
+ * on any failure. Runs under the card lock like the rest of the session layer.
+ */
+int mcap_stream_preallocate(struct mcap_stream *stream, uint64_t size_bytes);
 
 /*
  * Flush any buffered remainder, sync, and close the file. Returns 0 on success.
