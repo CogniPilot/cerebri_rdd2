@@ -13,7 +13,7 @@ manifest:
   projects:
     - name: zephyr
       remote: cognipilot
-      revision: 97b3c914d75f28933e968c099086b8e5c024e698 # platinum-next gPTP clock step threshold
+      revision: 72d5ac4afcbb51a97c253d88d4515a5633ff2840 # platinum-next: step threshold, icm45686 rate limit, crsf hardening
       path: zephyr
       west-commands: scripts/west-commands.yml
     - name: cmsis
