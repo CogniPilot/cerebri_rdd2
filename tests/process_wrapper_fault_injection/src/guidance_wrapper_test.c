@@ -488,6 +488,18 @@ int guidance_fake_zros_sub_update(struct zros_sub *sub) {
     }
     return 0;
   }
+  if (sub == &g_process.control_clock_sub) {
+    /* Guidance is released by dividing the control tick, so the harness has
+     * to publish that clock. It carries the same instant the scripted
+     * estimate does, which is what the release used to imply. */
+    g_process.control_clock = (synapse_topic_InertialSampleData_t){
+        .timestamp_ns =
+            TEST_NS_FROM_US(UINT64_C(300000) + guidance_active_cycle * 20000U),
+        .flags = synapse_topic_InertialFieldFlags_Accel |
+                 synapse_topic_InertialFieldFlags_Gyro,
+    };
+    return 0;
+  }
   if (sub == &g_process.attitude_sub) {
     guidance_fill_navigation();
     return 0;

@@ -242,7 +242,7 @@ int rdd2_rate_control_allocator_process_run(void)
 			imu_valid = rdd2_imu_stream_wait_next(
 				&process->gyro, &process->accel, &dt, &sample_ns);
 		} else {
-			k_usleep(625U);
+			k_usleep((int32_t)(RDD2_CONTROL_PERIOD_NS / 1000ULL));
 			process->gyro = (rdd2_vec3f_t){0};
 			process->accel = (rdd2_vec3f_t){0};
 			imu_valid = false;

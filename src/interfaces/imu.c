@@ -121,7 +121,7 @@ static void imu_stream_drain_cq(void)
  * producing would never be noticed there. This watches it from outside instead:
  * the loop only bumps a counter, and a low-rate work item restarts the stream
  * when that counter stops moving. Checking every RDD2_IMU_WATCHDOG_MS rather
- * than re-arming per sample keeps the 1600 Hz path down to one atomic add.
+ * than re-arming per sample keeps the 800 Hz path down to one atomic add.
  */
 #define RDD2_IMU_WATCHDOG_MS 100
 
@@ -251,7 +251,7 @@ bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *d
 	 * K_FOREVER, because RTIO only blocks on its consume semaphore for that
 	 * timeout: every finite one takes the non-blocking consume and spins on
 	 * Z_SPIN_DELAY until it expires. At this thread's priority that spin
-	 * burned the whole period between samples -- 137 us of work out of 625,
+	 * burned the whole period between samples -- 137 us of work out of 1250,
 	 * the rest polling -- and starved every lower-priority thread, which is
 	 * why the shell never reached SHELL_STATE_ACTIVE. The stuck-stream case
 	 * the old timeout covered is now the watchdog's job, below.
@@ -433,7 +433,7 @@ bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *d
 
 #if defined(CONFIG_RDD2_LOCKSTEP)
 	/* Decode each generated InertialSample once, then reuse it for the eight
-	 * 1600 Hz controller substeps belonging to a 200 Hz plant input. */
+	 * 800 Hz controller substeps belonging to a 200 Hz plant input. */
 	*gyro = g_lockstep_gyro;
 	*accel = g_lockstep_accel;
 #else

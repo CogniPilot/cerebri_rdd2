@@ -75,13 +75,38 @@
 	spi-max-frequency = <10000000>;
 	/*
 	 * Pace the rate loop directly from the IMU data-ready interrupt at
-	 * 1600 Hz. Keep the filter settings conservative enough to cut motor
-	 * vibration without adding extra control-path threading.
+	 * 800 Hz.
+	 *
+	 * The LPF settings are expressed as a fraction of the ODR, so halving
+	 * the ODR while keeping the same fractions would halve both filter
+	 * bandwidths. They are widened by one step instead, which holds the
+	 * ABSOLUTE bandwidths exactly where they are today: gyro 1600/8 =
+	 * 200 Hz becomes 800/4 = 200 Hz, accel 1600/16 = 100 Hz becomes
+	 * 800/8 = 100 Hz. Nothing in the control loop or the estimator changes
+	 * character, and no phase lag is added to the rate loop; keeping the
+	 * fractions would have added roughly 2.4 ms of group delay to the
+	 * innermost loop for no benefit.
+	 *
+	 * Against the rotor content the plant model derives, the hover
+	 * fundamental is 120.5 Hz and blade pass is 241 Hz. A gyro corner at
+	 * 100 Hz (ODR/8) would sit BELOW the hover fundamental, putting an
+	 * always-present tone on the steep part of the response where a small
+	 * RPM change becomes a large amplitude and phase change; 200 Hz keeps
+	 * the fundamental in the flat band and still rolls off blade pass.
+	 * The accel corner stays at 100 Hz, below the fundamental, which is
+	 * what is wanted there: vibration on the accelerometer carries no
+	 * attitude information the estimator needs.
+	 *
+	 * Anti-aliasing: Nyquist is 400 Hz and both corners are at or below
+	 * half of it, so the first rotor harmonic that folds (2x blade pass at
+	 * 482 Hz) is already well down the filter skirt. Preintegrating every
+	 * sample in the estimator thread adds a further sinc null at each
+	 * multiple of the 100 Hz packet rate.
 	 */
-	accel-odr = <ICM45686_DT_ACCEL_ODR_1600>;
-	accel-lpf = <ICM45686_DT_ACCEL_LPF_BW_1_16>;
-	gyro-odr = <ICM45686_DT_GYRO_ODR_1600>;
-	gyro-lpf = <ICM45686_DT_GYRO_LPF_BW_1_8>;
+	accel-odr = <ICM45686_DT_ACCEL_ODR_800>;
+	accel-lpf = <ICM45686_DT_ACCEL_LPF_BW_1_8>;
+	gyro-odr = <ICM45686_DT_GYRO_ODR_800>;
+	gyro-lpf = <ICM45686_DT_GYRO_LPF_BW_1_4>;
 	fifo-watermark = <0>;
 };
 

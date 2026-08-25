@@ -18,8 +18,8 @@ use protocol::{MissionStatusWire, SyntheticGnss, WaypointPlanWire};
 use serde::Serialize;
 use shared_memory::LockstepOutputs;
 
-/// RDD2's fixed 1600 Hz firmware control-loop period.
-const CONTROLLER_DT: f64 = 0.000_625;
+/// RDD2's fixed 800 Hz firmware control-loop period.
+const CONTROLLER_DT: f64 = 0.001_25;
 const TAKEOFF_ALTITUDE_M: f64 = 1.5;
 const MISSION_SIDE_M: f64 = 0.5;
 const MISSION_SPEED_M_S: f32 = 0.1;
@@ -232,9 +232,9 @@ fn evaluate(report: &mut Report) {
         ));
     }
     if !report.release_rate_window_observed
-        || report.rate_releases_per_second != 1_600
-        || report.navigation_releases_per_second != 1_000
-        || report.guidance_releases_per_second != 200
+        || report.rate_releases_per_second != 800
+        || report.navigation_releases_per_second != 100
+        || report.guidance_releases_per_second != 100
         || report.planning_releases_per_second != 50
         || report.health_releases_per_second != 200
     {
@@ -868,14 +868,14 @@ mod tests {
             maximum_reference_generation: 100,
             maximum_plan_generation: 1,
             release_rate_window_observed: true,
-            rate_releases_per_second: 1_600,
-            navigation_releases_per_second: 1_000,
-            guidance_releases_per_second: 200,
+            rate_releases_per_second: 800,
+            navigation_releases_per_second: 100,
+            guidance_releases_per_second: 100,
             planning_releases_per_second: 50,
             health_releases_per_second: 200,
-            controller_releases_observed: 70_400,
-            plant_steps: 70_400,
-            motor_messages: 70_400,
+            controller_releases_observed: 35_200,
+            plant_steps: 35_200,
+            motor_messages: 35_200,
             flight_state_messages: 100,
             max_altitude_m: 2.0,
             max_roll_response_deg: 5.0,
@@ -1054,8 +1054,8 @@ mod tests {
         let mut empty_odometry_observed = false;
 
         let result = (|| -> Result<()> {
-            for _ in 0..4_000 {
-                target_ns += 625_000;
+            for _ in 0..2_000 {
+                target_ns += 1_250_000;
                 let fix = gnss.sample([0.0; 3], [0.0; 3], target_ns);
                 let inputs = protocol::lockstep_inputs(
                     [0.0; 3],
@@ -1087,8 +1087,8 @@ mod tests {
             let mut pending_observed = false;
             let mut last_status = MissionStatusWire::default();
             let mut last_quality = 0_i8;
-            for _ in 0..320 {
-                target_ns += 625_000;
+            for _ in 0..160 {
+                target_ns += 1_250_000;
                 let fix = gnss.sample([0.0; 3], [0.0; 3], target_ns);
                 let inputs = protocol::lockstep_inputs(
                     [0.0; 3],
@@ -1116,8 +1116,8 @@ mod tests {
             let baseline = last_status;
             let mut last_motor_values = [0.0_f32; 4];
             let mut last_flight_armed = false;
-            for _ in 0..1_600 {
-                target_ns += 625_000;
+            for _ in 0..800 {
+                target_ns += 1_250_000;
                 let fix = gnss.sample([0.0; 3], [0.0; 3], target_ns);
                 let inputs = protocol::lockstep_inputs(
                     [0.0; 3],
@@ -1141,16 +1141,16 @@ mod tests {
             );
             assert_eq!(
                 last_status.odometry_generation - baseline.odometry_generation,
-                1_000
+                100
             );
             assert_eq!(
                 last_status.guidance_generation - baseline.guidance_generation,
-                200,
+                100,
                 "guidance must publish safe commands at its exact release rate"
             );
             assert_eq!(
                 last_status.motor_generation - baseline.motor_generation,
-                1_600
+                800
             );
             assert_eq!(
                 last_status.health_generation - baseline.health_generation,

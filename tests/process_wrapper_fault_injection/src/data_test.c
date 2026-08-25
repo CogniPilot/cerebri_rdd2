@@ -51,16 +51,15 @@ ZTEST(process_wrapper_fault_injection,
                                ? 1U
                                : 0U;
   }
-  for (uint32_t sample = 0U; sample < RDD2_NAVIGATION_ESTIMATOR_RATE_HZ;
-       ++sample) {
+  /* Guidance and planning divide the CONTROL tick, not the estimator
+   * publication: their rates must not move when the estimator rate does. */
+  for (uint32_t sample = 0U; sample < RDD2_CONTROL_RATE_HZ; ++sample) {
     guidance_releases +=
-        rdd2_release_due(&guidance, RDD2_NAVIGATION_ESTIMATOR_RATE_HZ,
-                         RDD2_GUIDANCE_RATE_HZ)
+        rdd2_release_due(&guidance, RDD2_CONTROL_RATE_HZ, RDD2_GUIDANCE_RATE_HZ)
             ? 1U
             : 0U;
     planning_releases +=
-        rdd2_release_due(&planning, RDD2_NAVIGATION_ESTIMATOR_RATE_HZ,
-                         RDD2_PLANNING_RATE_HZ)
+        rdd2_release_due(&planning, RDD2_CONTROL_RATE_HZ, RDD2_PLANNING_RATE_HZ)
             ? 1U
             : 0U;
   }
@@ -69,6 +68,6 @@ ZTEST(process_wrapper_fault_injection,
   zexpect_equal(guidance_releases, RDD2_GUIDANCE_RATE_HZ);
   zexpect_equal(planning_releases, RDD2_PLANNING_RATE_HZ);
   zexpect_true(navigation.phase < RDD2_CONTROL_RATE_HZ);
-  zexpect_true(guidance.phase < RDD2_NAVIGATION_ESTIMATOR_RATE_HZ);
-  zexpect_true(planning.phase < RDD2_NAVIGATION_ESTIMATOR_RATE_HZ);
+  zexpect_true(guidance.phase < RDD2_CONTROL_RATE_HZ);
+  zexpect_true(planning.phase < RDD2_CONTROL_RATE_HZ);
 }

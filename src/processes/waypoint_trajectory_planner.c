@@ -43,7 +43,7 @@ struct waypoint_trajectory_planner_process {
   WaypointTrajectoryPlannerState efmu;
   rdd2_waypoint_plan_t ingress_plan;
   rdd2_waypoint_plan_t mission_plan;
-  synapse_topic_AttitudeEstimateData_t release_clock;
+  synapse_topic_InertialSampleData_t release_clock;
   synapse_topic_ManualControlData_t manual;
   synapse_topic_VehicleHealthData_t health;
   synapse_topic_OdometryEstimateData_t odometry;
@@ -489,8 +489,9 @@ static void waypoint_trajectory_planner_thread(void *arg1, void *arg2,
         zros_sub_update(&process->release_sub) != 0) {
       continue;
     }
-    if (!rdd2_release_due(&process->release_scheduler,
-                          RDD2_NAVIGATION_ESTIMATOR_RATE_HZ,
+    /* Divides the control tick, like guidance: the planner never consumed
+     * the estimate on its clock edge, it only needed a periodic release. */
+    if (!rdd2_release_due(&process->release_scheduler, RDD2_CONTROL_RATE_HZ,
                           RDD2_PLANNING_RATE_HZ)) {
       continue;
     }
@@ -530,7 +531,7 @@ int rdd2_waypoint_trajectory_planner_process_start(void) {
                      &process->ingress_plan, 0.0);
   if (rc == 0) {
     rc = zros_sub_init(&process->release_sub, &process->node,
-                       &topic_attitude_estimate, &process->release_clock, 0.0);
+                       &topic_control_imu, &process->release_clock, 0.0);
   }
   if (rc == 0) {
     rc = zros_sub_init(&process->manual_sub, &process->node,

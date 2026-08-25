@@ -7,10 +7,10 @@ composition root.
 
 | Process | Release | Priority | Inputs | Outputs |
 |---|---:|---:|---|---|
-| `RateControlAllocator` | IMU data-ready, 1600 Hz | 2 (main thread) | IMU and motor drivers; latest `rate_command` and `attitude_estimate` | DSHOT driver; `control_imu`, health, and loop metrics |
-| `NavigationEstimator` | latest-value IMU, 1000 Hz | 3 | `control_imu`, external odometry, GNSS | `navigation_odometry`, `attitude_estimate` |
-| `WaypointTrajectoryPlanner` | estimator release, 50 Hz | 5 | bounded waypoint-plan ingress | `trajectory_reference` |
-| `GuidanceController` | estimator release, 200 Hz | 6 | manual/health, navigation, trajectory reference | `rate_command`, `attitude_command` |
+| `RateControlAllocator` | IMU data-ready, 800 Hz | 2 (main thread) | IMU and motor drivers; latest `rate_command` and `attitude_estimate` | DSHOT driver; `control_imu`, health, and loop metrics |
+| `NavigationEstimator` | every `control_imu` sample, preintegrated; releases at 100 Hz | 3 | `control_imu`, external odometry, GNSS | `navigation_odometry`, `attitude_estimate`, gyroscope bias |
+| `WaypointTrajectoryPlanner` | `control_imu` divided, 50 Hz | 5 | bounded waypoint-plan ingress | `trajectory_reference` |
+| `GuidanceController` | `control_imu` divided, 100 Hz | 6 | manual/health, navigation, trajectory reference | `rate_command`, `attitude_command` |
 
 Zephyr priorities are numerically ascending in execution precedence. Planner
 therefore runs before guidance when their phase-zero releases coincide. The
