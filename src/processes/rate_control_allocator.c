@@ -61,7 +61,7 @@ struct rate_control_allocator_process {
 
 static RDD2_HOTPATH_DTCM_BSS struct rate_control_allocator_process g_process;
 
-/* The 1600 Hz rate loop is the latency-critical path: its budget is 625 us
+/* The 800 Hz rate loop is the latency-critical path: its budget is 1250 us
  * and it already reports imu_to_motor_latency_us, which this measures the
  * generated component of. */
 RDD2_STEP_TIMING_DEFINE(g_step_timing);
@@ -197,6 +197,16 @@ static bool navigation_rates_are_valid(
          rdd2_control_values_are_finite(rates, ARRAY_SIZE(rates));
 }
 
+/* The rate loop now measures body rate from the IMU sample itself, so the
+ * sample has to satisfy the same contract the estimator publication did. */
+static bool
+gyro_sample_is_valid(const struct rate_control_allocator_process *process) {
+  const float rates[] = {process->gyro.x, process->gyro.y, process->gyro.z};
+
+  return process->status.imu_ok &&
+         rdd2_control_values_are_finite(rates, ARRAY_SIZE(rates));
+}
+
 static bool
 control_inputs_are_usable(struct rate_control_allocator_process *process,
                           uint64_t control_now_ns, bool *rate_command_updated) {
@@ -211,14 +221,54 @@ control_inputs_are_usable(struct rate_control_allocator_process *process,
              control_now_ns, RDD2_GUIDANCE_COMMAND_TIMEOUT_NS) &&
          process->rate_command.type_mask == 0U &&
          rate_command_values_are_finite(&process->rate_command) &&
+         gyro_sample_is_valid(process) &&
          navigation_rates_are_valid(&process->navigation);
+}
+
+/*
+ * Body rate for the innermost loop, at the IMU rate.
+ *
+ * This used to be process->navigation.angular_velocity_flu_rad_s, the
+ * estimator's own publication. That is the correct VALUE but it arrives at
+ * the estimator rate, so the 800 Hz loop was consuming an eight-tick
+ * zero-order-hold staircase with up to one estimator period of lag, in the
+ * one place in the vehicle where lag costs the most phase margin. The
+ * estimator publishes exactly imu.angularVelocityBodyFlu_rad_s minus its
+ * gyroscope-bias state (Estimation.StrapdownINS.ESKF.navigationEstimate), so
+ * evaluating that same expression here against the current sample is the same
+ * quantity on a faster clock, not a different signal. Bias is a slowly
+ * varying state, so taking it at the estimator rate and the gyro at the IMU
+ * rate is the right split; it is what ArduPilot and Betaflight feed their rate
+ * loops, and PX4 reaches the same place with an output predictor.
+ */
+static void body_rate_for_rate_loop(
+    const struct rate_control_allocator_process *process, float rates[3]) {
+  float bias_rad_s[3];
+
+  rates[0] = process->gyro.x;
+  rates[1] = process->gyro.y;
+  rates[2] = process->gyro.z;
+  if (!rdd2_control_values_are_finite(rates, 3U)) {
+    rates[0] = 0.0f;
+    rates[1] = 0.0f;
+    rates[2] = 0.0f;
+    return;
+  }
+  if (rdd2_navigation_gyroscope_bias_get(bias_rad_s) &&
+      rdd2_control_values_are_finite(bias_rad_s, 3U)) {
+    rates[0] -= bias_rad_s[0];
+    rates[1] -= bias_rad_s[1];
+    rates[2] -= bias_rad_s[2];
+  }
 }
 
 static void
 copy_topic_inputs_to_efmu(struct rate_control_allocator_process *process,
                           bool inputs_usable) {
   RateControlAllocatorState *efmu = &process->efmu;
+  float measured_rates[3];
 
+  body_rate_for_rate_loop(process, measured_rates);
   efmu->armed = process->status.armed && inputs_usable;
   efmu->thrust_N = inputs_usable ? process->rate_command.thrust : 0.0f;
   efmu->angularVelocityCommandFlu_rad_s[0] =
@@ -228,13 +278,11 @@ copy_topic_inputs_to_efmu(struct rate_control_allocator_process *process,
   efmu->angularVelocityCommandFlu_rad_s[2] =
       inputs_usable ? process->rate_command.body_rate_flu_rad_s.yaw : 0.0f;
   efmu->angularVelocityMeasuredFlu_rad_s[0] =
-      inputs_usable ? process->navigation.angular_velocity_flu_rad_s.roll
-                    : 0.0f;
+      inputs_usable ? measured_rates[0] : 0.0f;
   efmu->angularVelocityMeasuredFlu_rad_s[1] =
-      inputs_usable ? process->navigation.angular_velocity_flu_rad_s.pitch
-                    : 0.0f;
+      inputs_usable ? measured_rates[1] : 0.0f;
   efmu->angularVelocityMeasuredFlu_rad_s[2] =
-      inputs_usable ? process->navigation.angular_velocity_flu_rad_s.yaw : 0.0f;
+      inputs_usable ? measured_rates[2] : 0.0f;
 }
 
 static void copy_efmu_outputs_to_motor_buffer(

@@ -240,8 +240,10 @@ int rdd2_imu_stream_init(void) { return 0; }
 
 bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel,
                                float *dt, uint64_t *interrupt_timestamp_ns) {
-  *gyro = (rdd2_vec3f_t){0};
-  *accel = (rdd2_vec3f_t){0};
+  /* The rate loop measures body rate from this sample now, not from the
+   * estimator publication, so the stub has to carry a rate. */
+  *gyro = (rdd2_vec3f_t){.x = 0.01f, .y = 0.02f, .z = 0.03f};
+  *accel = (rdd2_vec3f_t){.x = 0.0f, .y = 0.0f, .z = 9.80665f};
   *dt = RDD2_CONTROL_DT_S;
   *interrupt_timestamp_ns = control_time_ns(g_cycle);
   return true;
@@ -361,7 +363,17 @@ static void expect_generated_inputs_forwarded(size_t cycle, bool armed) {
   const struct generated_observation *observation =
       &g_generated_observations[cycle];
   const float expected_command[] = {0.1f, -0.1f, 0.2f};
-  const float expected_measured[] = {0.01f, 0.02f, 0.03f};
+  /* The contract is the raw gyro sample minus the estimator bias, evaluated
+   * at the control tick. Reading the bias through the same accessor the
+   * wrapper uses keeps this independent of whether the estimator has
+   * published one yet. */
+  float bias_rad_s[3] = {0.0f, 0.0f, 0.0f};
+  float expected_measured[3];
+
+  (void)rdd2_navigation_gyroscope_bias_get(bias_rad_s);
+  expected_measured[0] = 0.01f - bias_rad_s[0];
+  expected_measured[1] = 0.02f - bias_rad_s[1];
+  expected_measured[2] = 0.03f - bias_rad_s[2];
 
   zexpect_equal(observation->armed, armed,
                 "cycle %zu generated armed input mismatch", cycle);
