@@ -42,10 +42,14 @@ if(CONFIG_RDD2_COMMS_STUB)
 endif()
 
 # eFMUs whose generated code runs on a periodic tick, hottest first:
-# rate allocation at 1600 Hz, the estimator at its own release rate, and
-# guidance at 200 Hz. The 50 Hz trajectory planner is deliberately excluded:
-# it is the largest generated unit and the coldest, so it keeps ITCM free
-# for the units that run every millisecond.
+# rate allocation at 800 Hz, the estimator at 100 Hz, and guidance at 100 Hz.
+# The 50 Hz trajectory planner is deliberately excluded: it is the largest
+# generated unit and the coldest, so it keeps ITCM free for the units that
+# run on the control tick.
+#
+# imu_preintegration.c joins them because it is the only new code that runs
+# on EVERY control tick: it composes each IMU sample into the packet the
+# estimator consumes.
 set(_rdd2_hotpath_efmus
   Vehicles_Rdd2_RateControlAllocator
   Vehicles_Rdd2_NavigationEstimator
@@ -107,6 +111,7 @@ set(RDD2_HOTPATH_EXPECT_ITCM
   Vehicles_Rdd2_GuidanceController.c.obj
   rumoca_galec_kernels.c.obj
   navigation_estimator.c.obj
+  imu_preintegration.c.obj
   rate_control_allocator.c.obj
 )
 set(RDD2_HOTPATH_EXPECT_DTCM

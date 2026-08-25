@@ -61,4 +61,24 @@ config RDD2_OPTICAL_FLOW_WORST_STDDEV_MM_S
 	default 1000
 	range 1 10000
 
+config RDD2_OPTICAL_FLOW_RANGE_STDDEV_MM
+	int "Downward range standard deviation in millimeters"
+	default 50
+	range 0 5000
+	help
+	  The estimator forms the velocity observation as range times flow over
+	  the integration time, so range uncertainty enters the observation
+	  covariance through that product. 50 mm reproduces the 0.0025 m2 the
+	  mission model declares as opticalFlowGroundDistanceVariance_m2.
+
+config RDD2_OPTICAL_FLOW_COMPENSATION_STDDEV_URAD
+	int "Residual rotation-compensation uncertainty in microradians"
+	default 10
+	range 1 100000
+	help
+	  The CSyn producer removes camera rotation before reporting velocity,
+	  so the firmware reports a zero rotation integral. This declares what
+	  is left over. 10 urad matches the 1e-10 rad2 the mission model carries
+	  over a 10 ms exposure.
+
 endif

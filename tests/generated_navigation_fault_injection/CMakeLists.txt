@@ -56,6 +56,7 @@ target_sources(app PRIVATE
   src/log_module.c
   src/main.c
   "${RDD2_TEST_APP_ROOT}/src/processes/navigation_gps.c"
+  "${RDD2_TEST_APP_ROOT}/src/processes/imu_preintegration.c"
   ${_navigation_sources}
 )
 target_compile_definitions(app PRIVATE CONFIG_RDD2_LOCKSTEP=1)

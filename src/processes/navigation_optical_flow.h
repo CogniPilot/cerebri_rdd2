@@ -41,6 +41,7 @@ struct rdd2_navigation_optical_flow_config {
   float max_speed_m_s;
   float best_stddev_m_s;
   float worst_stddev_m_s;
+  float range_variance_m2;
   uint8_t sensor_id;
   uint8_t min_quality;
   bool require_gptp;
@@ -55,6 +56,7 @@ struct rdd2_navigation_optical_flow_measurement {
   float integrated_line_of_sight_rad[2];
   float integration_time_s;
   float ground_distance_m;
+  float ground_distance_variance_m2;
   float quality;
 };
 

@@ -92,7 +92,14 @@ struct publication_observation {
   synapse_topic_AttitudeEstimateData_t attitude;
 };
 
-#define MAX_SCRIPT_CYCLES (RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES + 3U)
+/* Long enough for the bounded-hold scenario, which is sized by the hold
+ * deadline, and for the longest fixed script, which is nine cycles. The two
+ * used to share one bound, so shortening the hold deadline shortened every
+ * other script with it. */
+#define MAX_SCRIPT_CYCLES                                                      \
+  (((RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES + 3U) > 12U)                        \
+       ? (RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES + 3U)                          \
+       : 12U)
 
 static jmp_buf loop_escape;
 static enum navigation_scenario active_scenario;
@@ -392,12 +399,26 @@ static void run_scenario(enum navigation_scenario scenario, size_t cycles) {
   NavigationEstimator_startup(&g_process.efmu);
   rdd2_navigation_gps_init(&g_process.gps_adapter);
   set_default_mocap_covariance(&g_process.efmu);
+  /* The block times itself on this, and the harness enters the thread body
+   * directly rather than through the process start that would set it. */
+  g_process.efmu.samplePeriod =
+      1.0f / (float)RDD2_NAVIGATION_ESTIMATOR_RATE_HZ;
   NavigationEstimator_recalibrate(&g_process.efmu);
+  rdd2_imu_preintegrator_reset(
+      &g_process.preintegrator,
+      g_process.efmu.initialGyroscopeBiasBodyFlu_rad_s,
+      g_process.efmu.initialAccelerometerBiasBodyFlu_m_s2);
+  g_process.preintegrator.nominal_sample_period_s = RDD2_CONTROL_DT_S;
   if (scenario == NAV_SCENARIO_LARGE_GPS_CORRECTION_RECOVERY) {
-    g_process.efmu.covarianceInflateWindow_s = 0.002f;
-    g_process.efmu.covarianceInflateTimeConstant_s = 0.001f;
-    g_process.efmu.aidingDivergentWindow_s = 0.005f;
-    g_process.efmu.aidingStaleTimeout_s = 0.0001f;
+    /* The recovery ladder is timed in seconds and advanced once per release,
+     * so this scenario states its windows as multiples of the release period
+     * rather than as absolute times written against a 1 kHz release. */
+    const float release_period_s = g_process.efmu.samplePeriod;
+
+    g_process.efmu.covarianceInflateWindow_s = 2.0f * release_period_s;
+    g_process.efmu.covarianceInflateTimeConstant_s = 1.0f * release_period_s;
+    g_process.efmu.aidingDivergentWindow_s = 5.0f * release_period_s;
+    g_process.efmu.aidingStaleTimeout_s = 0.1f * release_period_s;
   }
 
   if (setjmp(loop_escape) == 0) {
@@ -499,6 +520,34 @@ ZTEST(generated_navigation_fault_injection, test_baseline_is_valid_and_finite) {
       generated[0].quaternion[3] * generated[0].quaternion[3];
   zexpect_within(quaternion_norm_squared, 1.0f, 1.0e-6f);
   expect_valid_publication(0U);
+}
+
+/*
+ * The specific failure a bad migration to the preintegrated interface
+ * produces is a filter that never predicts: the packet reaches the block
+ * with a zero integration time or a non-finite Jacobian, imuPayloadFinite
+ * comes out false, and the estimator publishes a held payload forever while
+ * looking outwardly healthy. This asserts the opposite directly, on the real
+ * generated block driven by the real wrapper.
+ */
+ZTEST(generated_navigation_fault_injection,
+      test_the_preintegrated_packet_makes_the_filter_predict) {
+  run_scenario(NAV_SCENARIO_BASELINE, 3U);
+
+  for (size_t cycle = 0U; cycle < 3U; ++cycle) {
+    zexpect_true(generated[cycle].imu_valid,
+                 "cycle %zu handed the block an unusable packet", cycle);
+    zexpect_false(generated[cycle].status_imu_payload_held,
+                  "cycle %zu held its IMU payload", cycle);
+  }
+  /* Cycle 0 initializes; every cycle after it must integrate the packet. */
+  zexpect_true(generated[1].status_prediction_accepted,
+               "the estimator did not predict on the first packet after "
+               "initialization");
+  zexpect_true(generated[2].status_prediction_accepted,
+               "the estimator stopped predicting");
+  zexpect_true(g_process.imu_packet.integration_time_s > 0.0f);
+  zexpect_equal(g_process.imu_packet.sample_count, 1U);
 }
 
 ZTEST(generated_navigation_fault_injection,

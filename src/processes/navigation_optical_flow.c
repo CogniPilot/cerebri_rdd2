@@ -167,6 +167,7 @@ void rdd2_navigation_optical_flow_step(
   measurement->velocity_covariance_body_m2_s2[1][1] =
       measurement->velocity_covariance_body_m2_s2[0][0];
   measurement->ground_distance_m = adapter->sample.distance_m;
+  measurement->ground_distance_variance_m2 = config->range_variance_m2;
   measurement->quality = (float)adapter->sample.quality / (float)UINT8_MAX;
 }
 

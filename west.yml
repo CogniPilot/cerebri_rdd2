@@ -60,7 +60,10 @@ manifest:
       path: modules/lib/cerebri_lockstep
     - name: modelica_models
       remote: cognipilot
-      revision: a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f
+      # main: preintegration ESKF, rotor-vibration plant, IMU anti-alias
+      # filter, and the NEES/NIS consistency instrumentation
+      # pinned: 2026-08-25
+      revision: 8e19eba6bbc2d1b747faee00467e55df576a5254
       path: models/modelica_models
     - name: fastdyn
       url: https://github.com/jgoppert/FastDyn.git

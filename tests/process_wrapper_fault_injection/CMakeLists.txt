@@ -53,9 +53,11 @@ target_sources(app PRIVATE
   src/log_module.c
   src/rate_wrapper_test.c
   src/data_test.c
+  src/imu_preintegration_test.c
   src/navigation_wrapper_test.c
   src/navigation_gps_test.c
   src/guidance_wrapper_test.c
   "${RDD2_TEST_APP_ROOT}/src/processes/navigation_gps.c"
+  "${RDD2_TEST_APP_ROOT}/src/processes/imu_preintegration.c"
 )
 target_compile_definitions(app PRIVATE CONFIG_RDD2_LOCKSTEP=1)

@@ -69,7 +69,11 @@ ZTEST(generated_guidance_validity,
                (double)attitude_thrust);
   zassert_true(fabsf(hover_thrust - 19.6f) < 1.0e-3f,
                "POSITION hover thrust changed: %g", (double)hover_thrust);
-  zassert_true(fabsf(climb_thrust - 21.9012f) < 1.0e-3f,
+  /* 23.6 N is m * (g + positionGain_s2[3] * 1 m) = 2 * (9.8 + 2.0). The
+   * position law is now stated as separate position and velocity gains in
+   * Control.Multirotor.LogLinear rather than one feedback gain, and the
+   * vertical position gain that falls out of it is 2.0 per second squared. */
+  zassert_true(fabsf(climb_thrust - 23.6f) < 1.0e-3f,
                "POSITION altitude response changed: %g",
                (double)climb_thrust);
   zassert_true(climb_thrust > hover_thrust + 1.0f,

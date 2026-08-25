@@ -21,6 +21,7 @@ else()
   target_sources(app PRIVATE
     interfaces/motors.c
     processes/guidance_controller.c
+    processes/imu_preintegration.c
     processes/navigation_estimator.c
     processes/navigation_gps.c
     processes/navigation_optical_flow.c
@@ -80,6 +81,7 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
       FILES
         interfaces/motors.c
         processes/guidance_controller.c
+        processes/imu_preintegration.c
         processes/navigation_estimator.c
         processes/navigation_gps.c
         processes/navigation_optical_flow.c

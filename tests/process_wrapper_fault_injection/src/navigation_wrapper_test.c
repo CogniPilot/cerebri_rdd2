@@ -399,6 +399,11 @@ static void navigation_expect_valid_publication(size_t cycle) {
 ZTEST(process_wrapper_fault_injection,
       test_navigation_wrapper_sanitizes_generated_failures) {
   memset(&g_process, 0, sizeof(g_process));
+  /* The thread body is entered directly, so the field the process start
+   * would have set has to be stated here: it is the interval the first
+   * sample after a reset covers, having no earlier timestamp to difference
+   * against. */
+  g_process.preintegrator.nominal_sample_period_s = RDD2_CONTROL_DT_S;
   memset(navigation_generated, 0, sizeof(navigation_generated));
   memset(navigation_publications, 0, sizeof(navigation_publications));
   navigation_active_cycle = 0U;
@@ -444,12 +449,19 @@ ZTEST(process_wrapper_fault_injection,
 
   zexpect_true(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].reset);
   zexpect_false(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].imu_valid);
-  zexpect_true(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].imu_fresh);
+  /* A non-finite sample is refused at the accumulator, so the window it
+   * would have entered closes empty: the packet is neither valid nor fresh,
+   * and the block never sees the NaN at all. That is stronger than the
+   * previous contract, where the raw NaN reached the block and only its own
+   * payload guard kept it out of the state. */
+  zexpect_false(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].imu_fresh);
   zexpect_equal(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].imu_flags,
                 synapse_topic_InertialFieldFlags_Accel |
                     synapse_topic_InertialFieldFlags_Gyro);
-  zexpect_true(
+  zexpect_false(
       isnan(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].accel[2]));
+  zexpect_equal(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].accel[2],
+                0.0f);
   zexpect_true(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET]
                    .output_estimate_valid);
   zexpect_true(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET]
@@ -478,7 +490,7 @@ ZTEST(process_wrapper_fault_injection,
   zexpect_true(navigation_generated[NAV_CYCLE_ESTIMATE_RECOVERY].reset);
   zexpect_true(navigation_generated[NAV_CYCLE_TIMESTAMP_RECOVERY].reset);
   zexpect_false(navigation_generated[NAV_CYCLE_INVALID_IMU].imu_valid);
-  zexpect_true(navigation_generated[NAV_CYCLE_INVALID_IMU].imu_fresh);
+  zexpect_false(navigation_generated[NAV_CYCLE_INVALID_IMU].imu_fresh);
   zexpect_true(
       navigation_generated[NAV_CYCLE_INVALID_IMU].output_imu_payload_held);
   zexpect_equal(
@@ -497,8 +509,10 @@ ZTEST(process_wrapper_fault_injection,
   zexpect_within(
       navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].imu_timestamp_s, 0.2f,
       1.0e-6f);
+  /* The refused sample contributed no interval, so the packet mean is the
+   * empty-window zero rather than the sample. */
   zexpect_equal(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RESET].gyro[1],
-                -0.02f);
+                0.0f);
   zexpect_equal(navigation_generated[NAV_CYCLE_NONFINITE_IMU_RECOVERY].accel[2],
                 9.75f);
   zexpect_equal(
