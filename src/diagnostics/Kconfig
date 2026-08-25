@@ -1,0 +1,12 @@
+config RDD2_STEP_TIMING
+	bool "Measure the periodic control path with the DWT cycle counter"
+	depends on CPU_CORTEX_M
+	default n
+	help
+	  Bracket the generated control steps with the Cortex-M7 DWT cycle
+	  counter and log a worst case, mean, and coarse histogram at a low
+	  rate. Intended for bench work on real silicon: it is the only way to
+	  observe external-flash wait states and cache behaviour, which the
+	  rehosted FastDyn image cannot model. Numbers produced under FastDyn
+	  are QEMU artefacts and are labelled as such. Off by default so flight
+	  images carry no instrumentation.

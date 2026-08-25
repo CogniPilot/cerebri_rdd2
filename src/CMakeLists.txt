@@ -43,6 +43,10 @@ target_sources_ifdef(CONFIG_TOP_SHELL app PRIVATE
   diagnostics/top_shell.c
 )
 
+target_sources_ifdef(CONFIG_RDD2_STEP_TIMING app PRIVATE
+  diagnostics/step_timing.c
+)
+
 target_sources_ifdef(CONFIG_RDD2_FASTDYN app PRIVATE
   platform/fastdyn_board.c
 )

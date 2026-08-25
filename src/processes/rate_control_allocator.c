@@ -4,6 +4,7 @@
 
 #include "control_safety.h"
 #include "hotpath_memory.h"
+#include "diagnostics/step_timing.h"
 #include "interfaces/drivers.h"
 #include "interfaces/zros_topics.h"
 #include "scheduling.h"
@@ -59,6 +60,11 @@ struct rate_control_allocator_process {
 };
 
 static RDD2_HOTPATH_DTCM_BSS struct rate_control_allocator_process g_process;
+
+/* The 1600 Hz rate loop is the latency-critical path: its budget is 625 us
+ * and it already reports imu_to_motor_latency_us, which this measures the
+ * generated component of. */
+RDD2_STEP_TIMING_DEFINE(g_step_timing);
 
 enum {
   RDD2_MOTOR_COUNT = sizeof(((rdd2_motor_values_t *)0)->value) / sizeof(float),
@@ -249,7 +255,12 @@ static void step_efmu(struct rate_control_allocator_process *process,
   update_arming_state(process, control_now_ns, rate_command_updated,
                       inputs_usable);
   copy_topic_inputs_to_efmu(process, inputs_usable);
-  RateControlAllocator_dostep(&process->efmu);
+  {
+    uint32_t step_started = rdd2_step_timing_begin();
+
+    RateControlAllocator_dostep(&process->efmu);
+    rdd2_step_timing_end(&g_step_timing, step_started);
+  }
   step_ok =
       rdd2_generated_step_ok(process->efmu.rumoca_galec_error_signal_status);
   outputs_finite =
@@ -360,6 +371,9 @@ int rdd2_rate_control_allocator_process_run(void) {
 
   *process = (struct rate_control_allocator_process){0};
   RateControlAllocator_startup(&process->efmu);
+  (void)rdd2_step_timing_init();
+  rdd2_step_timing_register(&g_step_timing, "RateControlAllocator_dostep",
+                            RDD2_CONTROL_RATE_HZ);
   RateControlAllocator_recalibrate(&process->efmu);
 
   rc = process_zros_init(process);

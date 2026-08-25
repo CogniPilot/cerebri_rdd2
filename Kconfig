@@ -23,6 +23,7 @@ config RDD2_COMMS_STUB
 	  publisher that can only emit zero/disarmed output. This image is for
 	  communications and timing bench work and must never be used for flight.
 
+rsource "src/diagnostics/Kconfig"
 rsource "subsys/Kconfig"
 rsource "drivers/Kconfig"
 

@@ -4,6 +4,7 @@
 
 #include "control_safety.h"
 #include "hotpath_memory.h"
+#include "diagnostics/step_timing.h"
 #include "interfaces/zros_topics.h"
 #include "navigation_gps.h"
 #include "navigation_optical_flow.h"
@@ -64,6 +65,10 @@ struct navigation_estimator_process {
 };
 
 static RDD2_HOTPATH_DTCM_BSS struct navigation_estimator_process g_process;
+
+/* Cycle-accurate cost of the generated estimator step. The budget is the
+ * estimator release period, so overruns and headroom are read directly. */
+RDD2_STEP_TIMING_DEFINE(g_step_timing);
 static atomic_t g_origin_valid;
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
 static struct k_spinlock g_optical_flow_diagnostics_lock;
@@ -482,7 +487,13 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     }
     process->efmu.reset =
         !process->initialized || process->gps_origin_initialization_pending;
-    NavigationEstimator_dostep(&process->efmu);
+    {
+      uint32_t step_started = rdd2_step_timing_begin();
+
+      NavigationEstimator_dostep(&process->efmu);
+      rdd2_step_timing_end(&g_step_timing, step_started);
+    }
+    rdd2_step_timing_report();
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
     if (process->efmu.status_opticalFlowCorrectionAccepted) {
       process->optical_flow_fusion_accepted_count++;
@@ -545,6 +556,9 @@ int rdd2_navigation_estimator_process_start(void) {
 
   *process = (struct navigation_estimator_process){0};
   rdd2_navigation_gps_init(&process->gps_adapter);
+  (void)rdd2_step_timing_init();
+  rdd2_step_timing_register(&g_step_timing, "NavigationEstimator_dostep",
+                            RDD2_NAVIGATION_ESTIMATOR_RATE_HZ);
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
   rdd2_navigation_optical_flow_init(&process->optical_flow_adapter);
 #endif
