@@ -3,6 +3,7 @@
 #include "processes.h"
 
 #include "control_safety.h"
+#include "hotpath_memory.h"
 #include "interfaces/zros_topics.h"
 #include "navigation_gps.h"
 #include "navigation_optical_flow.h"
@@ -62,7 +63,7 @@ struct navigation_estimator_process {
   bool imu_payload_usable_observed;
 };
 
-static struct navigation_estimator_process g_process;
+static RDD2_HOTPATH_DTCM_BSS struct navigation_estimator_process g_process;
 static atomic_t g_origin_valid;
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_CSYN)
 static struct k_spinlock g_optical_flow_diagnostics_lock;

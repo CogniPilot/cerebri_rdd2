@@ -3,6 +3,7 @@
 #include "processes.h"
 
 #include "control_safety.h"
+#include "hotpath_memory.h"
 #include "interfaces/zros_topics.h"
 #include "scheduling.h"
 
@@ -51,7 +52,7 @@ struct guidance_controller_process {
   bool awaiting_disarmed_health;
 };
 
-static struct guidance_controller_process g_process;
+static RDD2_HOTPATH_DTCM_BSS struct guidance_controller_process g_process;
 static struct k_thread g_thread;
 K_THREAD_STACK_DEFINE(g_guidance_stack, GUIDANCE_STACK_SIZE);
 

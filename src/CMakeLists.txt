@@ -92,3 +92,9 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
     LOCATION DTCM_DATA_BSS
   )
 endif()
+
+# Place the periodic control path in tightly-coupled memory. Kept in its own
+# module because the generated units it names are a known reconstruction of
+# compiler knowledge (ledger item R-12); see the file for the rationale and
+# the replacement plan.
+include(${CMAKE_CURRENT_LIST_DIR}/hotpath_placement.cmake)
