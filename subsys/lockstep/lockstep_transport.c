@@ -10,6 +10,7 @@
 #include "interfaces/zros_topics.h"
 #include "lockstep_input.h"
 #include "processes/processes.h"
+#include "processes/scheduling.h"
 
 #include <string.h>
 
@@ -302,4 +303,69 @@ bool rdd2_lockstep_motor_output_blob_if_updated(uint32_t *last_generation,
 
   *last_generation = generation;
   return true;
+}
+
+enum rdd2_lockstep_frame_result rdd2_lockstep_advance_frame(
+    struct cerebri_lockstep_sequence *sequence,
+    struct rdd2_lockstep_shared *shared, uint64_t *coordinator_boot_ns,
+    uint32_t *flight_generation, uint32_t *motor_generation) {
+  rdd2_topic_flight_state_blob_t flight;
+  rdd2_topic_motor_output_blob_t motor = {0};
+  size_t flight_len = 0U;
+  size_t motor_len = 0U;
+  uint64_t base = *coordinator_boot_ns;
+  uint64_t target = shared->inertial_sample.timestamp_ns;
+  uint64_t tick_ns;
+
+  if (!rdd2_lockstep_handle_manual_control(&shared->manual_control) ||
+      !rdd2_lockstep_handle_gps_mission(
+          &shared->gnss_fix, &shared->waypoint_plan,
+          shared->inertial_sample.timestamp_ns)) {
+    return RDD2_LOCKSTEP_FRAME_INVALID;
+  }
+
+  /* A plant macro-step ends at shared->inertial_sample.timestamp_ns. Replay the
+   * frame's single inertial reading once per 800 Hz controller period up to
+   * that boundary; a frame with no forward progress still advances one tick so
+   * the exchange always completes. Each tick blocks on its motor output, which
+   * yields the CPU long enough for the estimator, planner, and guidance threads
+   * to run before the next tick is fed. */
+  if (target <= base) {
+    target = base + RDD2_CONTROL_PERIOD_NS;
+  }
+  for (tick_ns = base; tick_ns < target;) {
+    synapse_topic_InertialSampleData_t sample = shared->inertial_sample;
+
+    tick_ns += RDD2_CONTROL_PERIOD_NS;
+    if (tick_ns > target) {
+      tick_ns = target;
+    }
+    sample.timestamp_ns = tick_ns;
+    if (!rdd2_lockstep_handle_input_blob((const uint8_t *)&sample,
+                                         sizeof(sample))) {
+      return RDD2_LOCKSTEP_FRAME_INVALID;
+    }
+    while (!rdd2_lockstep_motor_output_blob_if_updated(
+        motor_generation, (uint8_t *)&motor, sizeof(motor), &motor_len)) {
+      if (cerebri_lockstep_sequence_terminated(sequence)) {
+        return RDD2_LOCKSTEP_FRAME_TERMINATED;
+      }
+      k_yield();
+    }
+  }
+  *coordinator_boot_ns = target;
+
+  (void)rdd2_lockstep_flight_state_blob_if_updated(
+      flight_generation, (uint8_t *)&flight, sizeof(flight), &flight_len);
+  shared->pwm_signal_outputs = motor;
+  if (flight_len == sizeof(flight)) {
+    shared->vehicle_health = flight.vehicle_health;
+    shared->attitude_estimate = flight.attitude_estimate;
+    shared->attitude_command = flight.attitude_command;
+    shared->control_loop_metrics = flight.control_loop_metrics;
+    shared->odometry_estimate = flight.odometry_estimate;
+    shared->planner_reference = flight.planner_reference;
+  }
+  rdd2_lockstep_gps_mission_status_get(&shared->mission_status);
+  return RDD2_LOCKSTEP_FRAME_OK;
 }

@@ -37,11 +37,12 @@ _Static_assert((RDD2_CONTROL_RATE_HZ % RDD2_PLANNING_RATE_HZ) == 0U,
  * allocator keeps tracking it for a fixed number of those periods; five periods
  * rides out a few missed releases from a briefly preempted guidance thread
  * while still catching a genuinely stalled producer within a small fraction of
- * a second. Under the deterministic FastDyn lockstep the controller advances
- * every substep of a plant frame back to back with no idle time, so the lower
- * priority guidance thread is serviced only once per plant frame; the tolerance
- * is widened for that build so a normally scheduled command is not misread as
- * stalled.
+ * a second. Under the deterministic FastDyn lockstep the coordinator feeds the
+ * firmware one controller tick at a time and blocks on each tick's motor
+ * output, so the guidance thread is scheduled every controller period and
+ * releases at its configured rate. The tolerance is kept wider for that build
+ * to ride out the longer scheduling jitter of the rehosted image without
+ * misreading a normally scheduled command as stalled.
  */
 #define RDD2_GUIDANCE_COMMAND_PERIOD_NS                                        \
   (UINT64_C(1000000000) / RDD2_GUIDANCE_RATE_HZ)

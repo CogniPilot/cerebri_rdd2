@@ -29,17 +29,13 @@ static struct cerebri_lockstep_sequence g_lockstep;
 static void fastdyn_thread(void *arg0, void *arg1, void *arg2) {
   uint32_t flight_generation = 0U;
   uint32_t motor_generation = 0U;
+  uint64_t coordinator_boot_ns = 0U;
 
   ARG_UNUSED(arg0);
   ARG_UNUSED(arg1);
   ARG_UNUSED(arg2);
 
   while (true) {
-    uint32_t sequence;
-    rdd2_topic_flight_state_blob_t flight;
-    rdd2_topic_motor_output_blob_t motor;
-    size_t flight_len = 0U;
-    size_t motor_len = 0U;
     int rc = cerebri_lockstep_sequence_wait(&g_lockstep);
 
     if (rc == -ECANCELED) {
@@ -49,42 +45,21 @@ static void fastdyn_thread(void *arg0, void *arg1, void *arg2) {
       LOG_ERR("FastDyn lockstep wait failed: %d", rc);
       return;
     }
-    sequence = cerebri_lockstep_sequence_current(&g_lockstep);
-    if (!rdd2_lockstep_handle_manual_control(
-            &rdd2_fastdyn_lockstep_shared.manual_control) ||
-        !rdd2_lockstep_handle_gps_mission(
-            &rdd2_fastdyn_lockstep_shared.gnss_fix,
-            &rdd2_fastdyn_lockstep_shared.waypoint_plan,
-            rdd2_fastdyn_lockstep_shared.inertial_sample.timestamp_ns) ||
-        !rdd2_lockstep_handle_input_blob(
-            (const uint8_t *)&rdd2_fastdyn_lockstep_shared.inertial_sample,
-            sizeof(rdd2_fastdyn_lockstep_shared.inertial_sample))) {
-      LOG_ERR("invalid FastDyn lockstep input for sequence %u", sequence);
+
+    switch (rdd2_lockstep_advance_frame(&g_lockstep,
+                                        &rdd2_fastdyn_lockstep_shared,
+                                        &coordinator_boot_ns, &flight_generation,
+                                        &motor_generation)) {
+    case RDD2_LOCKSTEP_FRAME_OK:
+      cerebri_lockstep_sequence_respond(&g_lockstep);
+      break;
+    case RDD2_LOCKSTEP_FRAME_TERMINATED:
+      return;
+    case RDD2_LOCKSTEP_FRAME_INVALID:
+      LOG_ERR("invalid FastDyn lockstep input for sequence %u",
+              cerebri_lockstep_sequence_current(&g_lockstep));
       return;
     }
-
-    while (!rdd2_lockstep_motor_output_blob_if_updated(
-        &motor_generation, (uint8_t *)&motor, sizeof(motor), &motor_len)) {
-      if (cerebri_lockstep_sequence_terminated(&g_lockstep)) {
-        return;
-      }
-      k_yield();
-    }
-    (void)rdd2_lockstep_flight_state_blob_if_updated(
-        &flight_generation, (uint8_t *)&flight, sizeof(flight), &flight_len);
-    rdd2_fastdyn_lockstep_shared.pwm_signal_outputs = motor;
-    if (flight_len == sizeof(flight)) {
-      rdd2_fastdyn_lockstep_shared.vehicle_health = flight.vehicle_health;
-      rdd2_fastdyn_lockstep_shared.attitude_estimate = flight.attitude_estimate;
-      rdd2_fastdyn_lockstep_shared.attitude_command = flight.attitude_command;
-      rdd2_fastdyn_lockstep_shared.control_loop_metrics =
-          flight.control_loop_metrics;
-      rdd2_fastdyn_lockstep_shared.odometry_estimate = flight.odometry_estimate;
-      rdd2_fastdyn_lockstep_shared.planner_reference = flight.planner_reference;
-    }
-    rdd2_lockstep_gps_mission_status_get(
-        &rdd2_fastdyn_lockstep_shared.mission_status);
-    cerebri_lockstep_sequence_respond(&g_lockstep);
   }
 }
 

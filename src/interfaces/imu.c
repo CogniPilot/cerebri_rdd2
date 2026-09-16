@@ -461,8 +461,10 @@ bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *d
 	}
 
 #if defined(CONFIG_RDD2_LOCKSTEP)
-	/* Decode each generated InertialSample once, then reuse it for the four
-	 * 800 Hz controller substeps belonging to a 200 Hz plant input. */
+	/* The lockstep coordinator feeds one InertialSample per 800 Hz controller
+	 * period, so each decoded sample advances exactly one control tick. Should
+	 * a sample's timestamp span more than one period, the boot-time clamp above
+	 * still walks the intervening ticks and reuses this reading for each. */
 	*gyro = g_lockstep_gyro;
 	*accel = g_lockstep_accel;
 #else

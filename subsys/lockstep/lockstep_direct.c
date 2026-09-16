@@ -27,26 +27,16 @@ static struct k_thread g_direct_thread;
 static struct rdd2_lockstep_shared *g_shared;
 static struct cerebri_lockstep_sequence g_lockstep;
 
-static void exit_if_terminated(void) {
-  if (cerebri_lockstep_sequence_terminated(&g_lockstep)) {
-    nsi_exit(0);
-  }
-}
-
 static void direct_thread(void *arg0, void *arg1, void *arg2) {
   uint32_t flight_generation = 0U;
   uint32_t motor_generation = 0U;
+  uint64_t coordinator_boot_ns = 0U;
 
   ARG_UNUSED(arg0);
   ARG_UNUSED(arg1);
   ARG_UNUSED(arg2);
 
   while (true) {
-    uint32_t sequence;
-    rdd2_topic_flight_state_blob_t flight;
-    rdd2_topic_motor_output_blob_t motor;
-    size_t flight_len = 0U;
-    size_t motor_len = 0U;
     int rc = cerebri_lockstep_sequence_wait(&g_lockstep);
 
     if (rc == -ECANCELED) {
@@ -56,38 +46,24 @@ static void direct_thread(void *arg0, void *arg1, void *arg2) {
       LOG_ERR("direct SIL lockstep wait failed: %d", rc);
       return;
     }
-    sequence = cerebri_lockstep_sequence_current(&g_lockstep);
-    if (!rdd2_lockstep_handle_manual_control(&g_shared->manual_control) ||
-        !rdd2_lockstep_handle_gps_mission(
-            &g_shared->gnss_fix, &g_shared->waypoint_plan,
-            g_shared->inertial_sample.timestamp_ns) ||
-        !rdd2_lockstep_handle_input_blob(
-            (const uint8_t *)&g_shared->inertial_sample,
-            sizeof(g_shared->inertial_sample))) {
-      LOG_ERR("invalid direct SIL input for sequence %u", sequence);
+
+    /* PwmSignalOutputs is emitted every controller tick; the frame advance
+     * blocks on it once per tick, which is the deterministic completion
+     * barrier for each of the frame's controller substeps. */
+    switch (rdd2_lockstep_advance_frame(&g_lockstep, g_shared,
+                                        &coordinator_boot_ns, &flight_generation,
+                                        &motor_generation)) {
+    case RDD2_LOCKSTEP_FRAME_OK:
+      cerebri_lockstep_sequence_respond(&g_lockstep);
+      break;
+    case RDD2_LOCKSTEP_FRAME_TERMINATED:
+      nsi_exit(0);
+      break;
+    case RDD2_LOCKSTEP_FRAME_INVALID:
+      LOG_ERR("invalid direct SIL input for sequence %u",
+              cerebri_lockstep_sequence_current(&g_lockstep));
       return;
     }
-    /* PwmSignalOutputs is emitted every controller tick. Waiting for its next
-     * generation is the deterministic completion barrier for this input.
-     */
-    while (!rdd2_lockstep_motor_output_blob_if_updated(
-        &motor_generation, (uint8_t *)&motor, sizeof(motor), &motor_len)) {
-      exit_if_terminated();
-      k_yield();
-    }
-    (void)rdd2_lockstep_flight_state_blob_if_updated(
-        &flight_generation, (uint8_t *)&flight, sizeof(flight), &flight_len);
-    g_shared->pwm_signal_outputs = motor;
-    if (flight_len == sizeof(flight)) {
-      g_shared->vehicle_health = flight.vehicle_health;
-      g_shared->attitude_estimate = flight.attitude_estimate;
-      g_shared->attitude_command = flight.attitude_command;
-      g_shared->control_loop_metrics = flight.control_loop_metrics;
-      g_shared->odometry_estimate = flight.odometry_estimate;
-      g_shared->planner_reference = flight.planner_reference;
-    }
-    rdd2_lockstep_gps_mission_status_get(&g_shared->mission_status);
-    cerebri_lockstep_sequence_respond(&g_lockstep);
   }
 }
 
