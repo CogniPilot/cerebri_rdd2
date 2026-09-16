@@ -91,6 +91,17 @@ config RDD2_FLIGHT_LOG_PREALLOC_STEP_BYTES
 	  but spread the build over more cycles. Must be a multiple of the card
 	  cluster size for a clean per-step cluster-chain extension.
 
+config RDD2_FLIGHT_LOG_EAGER_ROTATE
+	bool "Rotate immediately at the byte threshold"
+	default n
+	help
+	  Trigger the size-based session rotation as soon as the streamed byte
+	  count reaches the rotation size, without waiting for the background
+	  spare to be ready and the ring to be nearly empty. This is the older
+	  eager behavior whose mid-flight extent reservation stalled the writer
+	  long enough to overflow the capture ring, and it is retained only for
+	  regression comparison against the deferred rotation path.
+
 config RDD2_FLIGHT_LOG_TIMEREF_PERIOD_MS
 	int "TimeReference emission period in milliseconds"
 	default 100

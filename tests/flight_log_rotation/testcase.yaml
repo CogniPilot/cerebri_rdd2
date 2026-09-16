@@ -1,0 +1,15 @@
+tests:
+  rdd2.flight_log_rotation.deferred:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - rdd2
+      - flight_log
+  rdd2.flight_log_rotation.eager:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - rdd2
+      - flight_log
+    extra_args:
+      - RDD2_FLIGHT_LOG_EAGER_ROTATE=y

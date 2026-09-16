@@ -78,7 +78,9 @@ LOG_MODULE_REGISTER(rdd2_flight_log, CONFIG_RDD2_FLIGHT_LOG_LOG_LEVEL);
  * not worth attempting, so the session grows on write instead.
  */
 #define FLIGHT_LOG_PREALLOC_MARGIN_BYTES (1U << 20) /* 1 MiB */
+#ifndef FLIGHT_LOG_PREALLOC_FLOOR_BYTES
 #define FLIGHT_LOG_PREALLOC_FLOOR_BYTES (4U << 20)  /* 4 MiB */
+#endif
 
 /* Custom topic ids for the logger-owned records, chosen above the generated
  * catalog range so a decoder never confuses them with a catalog topic. */
@@ -1108,10 +1110,18 @@ static void writer_thread(void *a, void *b, void *c)
 		 * Deferring to a quiet cycle costs only a few kilobytes past the 256 MiB
 		 * reservation. A manual `flightlog rotate` bypasses these gates and
 		 * rotates immediately through the same request path. */
+#if defined(CONFIG_RDD2_FLIGHT_LOG_EAGER_ROTATE)
+		/* Rotate as soon as the byte threshold is crossed, without waiting
+		 * for a burst-free cycle. This reproduces the pre-deferral behavior
+		 * whose mid-flight reservation stall overflowed the ring. */
+		bool spare_settled = true;
+		bool ring_quiet = true;
+#else
 		bool spare_settled = (g_spare_state == SPARE_READY ||
 				      g_spare_state == SPARE_GIVEUP);
 		bool ring_quiet = ring_buf_size_get(&g_ring) <=
 				  (CONFIG_RDD2_FLIGHT_LOG_RING_BYTES / 8U);
+#endif
 
 		if (g_stream.bytes_written >= (uint64_t)CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES &&
 		    spare_settled && ring_quiet) {
