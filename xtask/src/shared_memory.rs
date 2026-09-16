@@ -392,7 +392,7 @@ mod tests {
             .shared()
             .magic
             .store(RDD2_LOCKSTEP_MAGIC, Ordering::Release);
-        let mut synthetic_gnss = protocol::SyntheticGnss::default();
+        let mut synthetic_gnss = protocol::SyntheticGnss::with_fidelity();
         // Slot 2 (200 ms) is an emitting slot in the bimodal cadence; before
         // gPTP sync the stamp carries the 356 ms producer freerun lead.
         let gnss_fix = synthetic_gnss.sample([0.0; 3], [0.0; 3], 200_000_000);

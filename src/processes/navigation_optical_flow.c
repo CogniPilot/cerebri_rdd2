@@ -12,7 +12,11 @@ config_valid(const struct rdd2_navigation_optical_flow_config *config) {
          config->max_distance_m >= config->min_distance_m &&
          config->max_tilt_rad > 0.0f && config->max_speed_m_s > 0.0f &&
          config->best_stddev_m_s > 0.0f &&
-         config->worst_stddev_m_s >= config->best_stddev_m_s;
+         config->worst_stddev_m_s >= config->best_stddev_m_s &&
+         config->min_integration_time_s > 0.0f &&
+         config->max_integration_time_s >= config->min_integration_time_s &&
+         config->nominal_integration_time_s >= config->min_integration_time_s &&
+         config->nominal_integration_time_s <= config->max_integration_time_s;
 }
 
 bool rdd2_navigation_optical_flow_config_valid(
@@ -132,10 +136,34 @@ void rdd2_navigation_optical_flow_step(
       adapter->status = sample_status(sample, config);
       adapter->sample_valid = adapter->status == RDD2_OPTICAL_FLOW_ACCEPTED;
       if (adapter->sample_valid) {
-        adapter->sample = *sample;
-        adapter->last_valid_control_timestamp_ns = control_timestamp_ns;
-        adapter->accepted_count++;
-        accepted = true;
+        float integration_time_s = config->nominal_integration_time_s;
+
+        if (adapter->accepted_timestamp_observed) {
+          uint64_t interval_ns =
+              sample->timestamp_ns - adapter->last_accepted_source_timestamp_ns;
+          integration_time_s = (float)interval_ns * 1.0e-9f;
+        }
+
+        if (integration_time_s < config->min_integration_time_s ||
+            integration_time_s > config->max_integration_time_s) {
+          /* The gap since the previous fused frame is implausible as a single
+           * exposure window. Drop this sample and restart the interval so the
+           * next accepted frame falls back to the nominal period rather than
+           * inheriting the stale baseline. */
+          adapter->status = RDD2_OPTICAL_FLOW_REJECTED_INTEGRATION_TIME;
+          adapter->sample_valid = false;
+          adapter->accepted_timestamp_observed = false;
+          adapter->last_accepted_source_timestamp_ns = sample->timestamp_ns;
+          adapter->rejected_count++;
+        } else {
+          adapter->integration_time_s = integration_time_s;
+          adapter->last_accepted_source_timestamp_ns = sample->timestamp_ns;
+          adapter->accepted_timestamp_observed = true;
+          adapter->sample = *sample;
+          adapter->last_valid_control_timestamp_ns = control_timestamp_ns;
+          adapter->accepted_count++;
+          accepted = true;
+        }
       } else {
         adapter->rejected_count++;
       }
@@ -167,6 +195,7 @@ void rdd2_navigation_optical_flow_step(
   measurement->timestamp_ns = control_timestamp_ns;
   measurement->velocity_body_flu_m_s[0] = adapter->sample.velocity_flu_m_s.x;
   measurement->velocity_body_flu_m_s[1] = adapter->sample.velocity_flu_m_s.y;
+  measurement->integration_time_s = adapter->integration_time_s;
   measurement->velocity_covariance_body_m2_s2[0][0] =
       velocity_variance(adapter->sample.quality, config);
   measurement->velocity_covariance_body_m2_s2[1][1] =
@@ -183,6 +212,7 @@ const char *rdd2_navigation_optical_flow_status_name(
       "zero-timestamp", "sensor-id", "flags",          "quality",
       "time-status",    "nonfinite", "distance",       "tilt",
       "speed",          "replay",    "clock-rollback", "expired",
+      "integration-time",
   };
 
   return (unsigned int)status < sizeof(names) / sizeof(names[0]) ? names[status]

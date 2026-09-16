@@ -57,6 +57,7 @@ target_sources(app PRIVATE
   src/imu_preintegration_test.c
   src/navigation_wrapper_test.c
   src/navigation_gps_test.c
+  src/optical_flow_test.c
   src/guidance_wrapper_test.c
   "${RDD2_TEST_APP_ROOT}/src/processes/navigation_gps.c"
   "${RDD2_TEST_APP_ROOT}/src/processes/imu_preintegration.c"

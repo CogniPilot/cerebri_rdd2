@@ -130,9 +130,43 @@ pub fn bounded_square_plan(sequence: i32, side_m: f32, speed_m_s: f32) -> Result
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SyntheticGnss {
     latest: topic::GnssFixData,
+    // When set, apply the flight0114-derived fidelity model (producer freerun
+    // lead, bimodal 5-10 Hz cadence, degraded-then-converging early accuracy).
+    // Defaults off: the bounded lockstep mission validates against the perfect
+    // boot-synced 10 Hz constant-accuracy stream.
+    fidelity: bool,
 }
 
 impl SyntheticGnss {
+    // Opt-in flight0114 fidelity source. The producer freerun lead intentionally
+    // trips the firmware future gate, so before the gPTP sync instant no fix is
+    // adopted; the firmware tolerates the gated fix without stalling. The bimodal
+    // cadence carries 200 ms gaps that exceed the receiver's max-gap window, so a
+    // fidelity stream never satisfies the source-ready stability gate. It exists
+    // to exercise those gates, not to fly the bounded mission.
+    #[cfg(test)]
+    pub fn with_fidelity() -> Self {
+        Self {
+            fidelity: true,
+            ..Self::default()
+        }
+    }
+
+    // Select the fidelity model from the environment (RDD2_GNSS_FIDELITY=1),
+    // defaulting to the perfect boot-synced 10 Hz mission stream when unset.
+    pub fn from_env() -> Self {
+        let enabled = std::env::var("RDD2_GNSS_FIDELITY")
+            .map(|value| {
+                let value = value.trim();
+                value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("on")
+            })
+            .unwrap_or(false);
+        Self {
+            fidelity: enabled,
+            ..Self::default()
+        }
+    }
+
     pub fn sample(
         &mut self,
         position_enu_m: [f64; 3],
@@ -140,16 +174,24 @@ impl SyntheticGnss {
         target_boot_time_ns: u64,
     ) -> topic::GnssFixData {
         let grid_ts = target_boot_time_ns / GNSS_PERIOD_NS * GNSS_PERIOD_NS;
-        // Before gPTP sync the producer clock led the boot clock; stamp the fix
-        // ahead so the future/age gates (and the GPS-denied startup) are hit.
-        let stamp_ns = if target_boot_time_ns >= GNSS_SYNC_AT_NS {
+        // In the fidelity model, before gPTP sync the producer clock led the boot
+        // clock; stamp the fix ahead so the future/age gates are hit. The default
+        // mission stream is boot-synced, so the stamp is always the grid time.
+        let stamp_ns = if !self.fidelity || target_boot_time_ns >= GNSS_SYNC_AT_NS {
             grid_ts
         } else {
             grid_ts + GNSS_FREERUN_LEAD_NS
         };
         let slot = grid_ts / GNSS_PERIOD_NS;
-        if grid_ts != 0 && stamp_ns > self.latest.timestamp_ns() && gnss_slot_emits(slot) {
-            let (hacc_mm, vacc_mm, sats) = gnss_startup_quality(target_boot_time_ns);
+        // The fidelity model emits on the bimodal cadence; the default stream
+        // emits a fix on every 100 ms slot (a perfect 10 Hz grid).
+        let emits = !self.fidelity || gnss_slot_emits(slot);
+        if grid_ts != 0 && stamp_ns > self.latest.timestamp_ns() && emits {
+            let (hacc_mm, vacc_mm, sats) = if self.fidelity {
+                gnss_startup_quality(target_boot_time_ns)
+            } else {
+                (GNSS_HACC_MM_SETTLED, GNSS_VACC_MM_SETTLED, GNSS_SATS_SETTLED)
+            };
             self.latest = if synthetic_gnss_values_are_usable(position_enu_m, velocity_enu_m_s) {
                 make_gnss_fix(position_enu_m, velocity_enu_m_s, stamp_ns, hacc_mm, vacc_mm, sats)
             } else {
@@ -432,7 +474,7 @@ mod tests {
         channels[2] = 1250;
         channels[4] = 2000;
         channels[5] = 2000;
-        let mut synthetic_gnss = SyntheticGnss::default();
+        let mut synthetic_gnss = SyntheticGnss::with_fidelity();
         // Slot 2 is an emitting slot in the bimodal cadence; before gPTP sync
         // the stamp carries the producer freerun lead.
         let gnss_fix =
@@ -488,7 +530,7 @@ mod tests {
 
     #[test]
     fn synthetic_gnss_freerun_lead_clears_at_sync() {
-        let mut gnss = SyntheticGnss::default();
+        let mut gnss = SyntheticGnss::with_fidelity();
         // Slot 1 is not an emitting slot, so the fix is held at its default.
         let held = gnss.sample([1.0, 2.0, 3.0], [2.0, 0.0, 0.25], GNSS_PERIOD_NS);
         assert_eq!(held.timestamp_ns(), 0);
@@ -573,7 +615,7 @@ mod tests {
 
     #[test]
     fn synthetic_gnss_marks_nonfinite_input_unusable() {
-        let mut gnss = SyntheticGnss::default();
+        let mut gnss = SyntheticGnss::with_fidelity();
         // Slot 2 emits; the freerun lead is carried on the stamp.
         let fix = gnss.sample([f64::NAN, 0.0, 0.0], [0.0; 3], 2 * GNSS_PERIOD_NS);
         assert_eq!(fix.timestamp_ns(), 2 * GNSS_PERIOD_NS + GNSS_FREERUN_LEAD_NS);

@@ -72,14 +72,43 @@ config RDD2_OPTICAL_FLOW_RANGE_STDDEV_MM
 	  covariance through that product. 50 mm reproduces the 0.0025 m2 the
 	  mission model declares as opticalFlowGroundDistanceVariance_m2.
 
-config RDD2_OPTICAL_FLOW_COMPENSATION_STDDEV_URAD
-	int "Residual rotation-compensation uncertainty in microradians"
-	default 10
-	range 1 100000
+config RDD2_OPTICAL_FLOW_NOMINAL_PERIOD_MS
+	int "Nominal optical-flow sample period in milliseconds"
+	default 25
+	range 1 1000
+	help
+	  The wire OpticalFlowVelocity sample carries no integration time, so the
+	  adapter derives the exposure window from the interval between accepted
+	  samples. This nominal period is used for the first accepted sample after
+	  init and after an interval is rejected. 25 ms matches the roughly 34 Hz
+	  frame rate of the flow sensor.
+
+config RDD2_OPTICAL_FLOW_MIN_INTEGRATION_MS
+	int "Minimum accepted flow integration interval in milliseconds"
+	default 5
+	range 1 1000
+	help
+	  Intervals below this are treated as duplicated or clock-glitched frames
+	  and rejected rather than used to weight the observation.
+
+config RDD2_OPTICAL_FLOW_MAX_INTEGRATION_MS
+	int "Maximum accepted flow integration interval in milliseconds"
+	default 200
+	range 1 5000
+	help
+	  Intervals above this indicate a dropout since the previous fused frame.
+	  The sample is rejected and the interval restarts at the nominal period.
+
+config RDD2_OPTICAL_FLOW_COMPENSATION_RATE_URAD_S_RTHZ
+	int "Gyro rotation-compensation rate-noise density in microrad/s/sqrt(Hz)"
+	default 5000
+	range 1 1000000
 	help
 	  The CSyn producer removes camera rotation before reporting velocity,
-	  so the firmware reports a zero rotation integral. This declares what
-	  is left over. 10 urad matches the 1e-10 rad2 the mission model carries
-	  over a 10 ms exposure.
+	  leaving a residual whose integrated-angle variance grows with the
+	  exposure window. The firmware forms that residual variance as the square
+	  of this rate-noise density times the integration time. 5000 urad/s/sqrt(Hz)
+	  (5e-3 rad/s/sqrt(Hz)) matches the ICM45686 gyro and yields about 6e-7 rad2
+	  over a 25 ms exposure.
 
 endif

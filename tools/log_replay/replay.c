@@ -25,7 +25,7 @@
 #define MAX_DENY 16
 #define GPS_ORIGIN_INITIALIZATION_TIMEOUT_NS UINT64_C(100000000)
 #define TIME_BASE_NS UINT64_C(1000000000)
-#define RDD2_OPTICAL_FLOW_COMPENSATION_VARIANCE_RAD2 (10.0e-6f * 10.0e-6f)
+#define RDD2_OPTICAL_FLOW_COMPENSATION_RATE_NOISE_RAD_S_RTHZ (5.0e-3f)
 #define RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES 2U
 
 struct imu_row { double t; float g[3]; float a[3]; };
@@ -36,7 +36,8 @@ static const struct rdd2_navigation_optical_flow_config g_flow_config = {
     .max_age_ns = 150ULL * 1000000ULL, .min_distance_m = 0.05f, .max_distance_m = 5.0f,
     .max_tilt_rad = 0.7f, .max_speed_m_s = 10.0f, .best_stddev_m_s = 0.1f,
     .worst_stddev_m_s = 1.0f, .range_variance_m2 = 0.05f * 0.05f, .sensor_id = 0,
-    .min_quality = 100, .require_gptp = true,
+    .nominal_integration_time_s = 0.025f, .min_integration_time_s = 0.005f,
+    .max_integration_time_s = 0.200f, .min_quality = 100, .require_gptp = true,
 };
 
 static void *xrealloc(void *p, size_t n) { p = realloc(p, n); if (!p) { perror("realloc"); exit(1); } return p; }
@@ -157,7 +158,7 @@ static void copy_optical_flow_input_to_efmu(NavigationEstimatorState *efmu, cons
   for (size_t axis = 0U; axis < 3U; ++axis) {
     efmu->integratedGyroscopeBodyFlu_rad[axis] = 0.0f;
     for (size_t column = 0U; column < 3U; ++column)
-      efmu->integratedGyroscopeCovariance_rad2[axis][column] = axis == column ? RDD2_OPTICAL_FLOW_COMPENSATION_VARIANCE_RAD2 : 0.0f;
+      efmu->integratedGyroscopeCovariance_rad2[axis][column] = axis == column ? RDD2_OPTICAL_FLOW_COMPENSATION_RATE_NOISE_RAD_S_RTHZ * RDD2_OPTICAL_FLOW_COMPENSATION_RATE_NOISE_RAD_S_RTHZ * integration_time_s : 0.0f;
   }
   efmu->opticalFlow_integrationTime_s = integration_time_s;
   efmu->groundDistance_m = m->ground_distance_m;

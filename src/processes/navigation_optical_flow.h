@@ -33,6 +33,7 @@ enum rdd2_navigation_optical_flow_status {
   RDD2_OPTICAL_FLOW_REJECTED_REPLAY,
   RDD2_OPTICAL_FLOW_REJECTED_CLOCK_ROLLBACK,
   RDD2_OPTICAL_FLOW_EXPIRED,
+  RDD2_OPTICAL_FLOW_REJECTED_INTEGRATION_TIME,
 };
 
 struct rdd2_navigation_optical_flow_config {
@@ -44,6 +45,17 @@ struct rdd2_navigation_optical_flow_config {
   float best_stddev_m_s;
   float worst_stddev_m_s;
   float range_variance_m2;
+  /* Sensor exposure window used to weight the flow observation. The wire
+   * OpticalFlowVelocity sample carries no integration time, so the adapter
+   * derives it from the interval between consecutive accepted source
+   * timestamps (see rdd2_navigation_optical_flow_step). nominal_integration_time_s
+   * is the sensor's nominal frame period, used for the first accepted sample
+   * after init and after a rejected interval. An interval outside
+   * [min_integration_time_s, max_integration_time_s] rejects the sample with
+   * RDD2_OPTICAL_FLOW_REJECTED_INTEGRATION_TIME and restarts the interval. */
+  float nominal_integration_time_s;
+  float min_integration_time_s;
+  float max_integration_time_s;
   uint8_t sensor_id;
   uint8_t min_quality;
   bool require_gptp;
@@ -64,11 +76,14 @@ struct rdd2_navigation_optical_flow_measurement {
 struct rdd2_navigation_optical_flow_adapter {
   synapse_topic_OpticalFlowVelocityData_t sample;
   uint64_t last_source_timestamp_ns;
+  uint64_t last_accepted_source_timestamp_ns;
   uint64_t last_valid_control_timestamp_ns;
+  float integration_time_s;
   uint32_t accepted_count;
   uint32_t rejected_count;
   enum rdd2_navigation_optical_flow_status status;
   bool source_timestamp_observed;
+  bool accepted_timestamp_observed;
   bool sample_valid;
 };
 
@@ -99,6 +114,18 @@ struct rdd2_navigation_optical_flow_diagnostics {
 void rdd2_navigation_optical_flow_init(
     struct rdd2_navigation_optical_flow_adapter *adapter);
 
+/* Validate and hold the latest optical-flow velocity sample and emit the
+ * measurement the estimator adapter consumes.
+ *
+ * measurement->integration_time_s is the sensor exposure window. The wire
+ * sample carries no integration time, so it is derived from the interval
+ * between this accepted source timestamp and the previous accepted source
+ * timestamp. The first accepted sample after init, and the first after an
+ * interval rejection, use config->nominal_integration_time_s. An interval
+ * outside [min_integration_time_s, max_integration_time_s] rejects the sample
+ * with RDD2_OPTICAL_FLOW_REJECTED_INTEGRATION_TIME (counted in rejected_count)
+ * and restarts the interval. Held (non-fresh) measurements reuse the last
+ * accepted sample's integration time. */
 void rdd2_navigation_optical_flow_step(
     struct rdd2_navigation_optical_flow_adapter *adapter,
     struct rdd2_navigation_optical_flow_measurement *measurement,

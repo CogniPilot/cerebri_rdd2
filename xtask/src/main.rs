@@ -438,7 +438,7 @@ where
     }
     let plant = Plant::open(&options.plant_library, &options.plant_description)?;
     let (gyro, accel) = plant.imu_flu();
-    let mut synthetic_gnss = SyntheticGnss::default();
+    let mut synthetic_gnss = SyntheticGnss::from_env();
     let mut channels = [1500; 16];
     channels[2] = 1000;
     channels[4] = 1000;
@@ -497,7 +497,7 @@ where
     let mut simulated_time = 0.0_f64;
     let wall_start = Instant::now();
     let mut firmware_ready = false;
-    let mut synthetic_gnss = SyntheticGnss::default();
+    let mut synthetic_gnss = SyntheticGnss::from_env();
     let mission_plan = protocol::bounded_square_plan(1, 1.0, 0.3)?;
     let mut plan_sent = false;
     let mut mission_epoch = None;

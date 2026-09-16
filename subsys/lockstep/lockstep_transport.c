@@ -205,15 +205,21 @@ int rdd2_lockstep_gps_mission_init(void) {
 bool rdd2_lockstep_handle_gps_mission(const synapse_topic_GnssFixData_t *fix,
                                       const rdd2_waypoint_plan_t *plan,
                                       uint64_t control_now_ns) {
-  bool accepted;
-
   if (!g_lockstep_mission_ready || fix == NULL || plan == NULL) {
     return false;
   }
-  accepted = rdd2_gnss_lockstep_submit(fix, control_now_ns);
-  if (!accepted) {
-    return false;
-  }
+  /*
+   * A GNSS fix that the receiver adapter rejects is a normal runtime event,
+   * not a corrupt transport frame: the future gate drops a fix stamped ahead
+   * of the control clock (a producer whose freerun clock leads the boot clock
+   * before time sync), the ordering gate drops an out-of-order or duplicate
+   * fix, and the accuracy gate drops a degraded early fix. In every case the
+   * estimator simply does not adopt the fix. The lockstep exchange must still
+   * complete this step and respond, so the submit result is advisory here;
+   * tearing the thread down on a legitimately gated fix would stall the whole
+   * co-simulation. Only a structurally invalid mission input below is fatal.
+   */
+  (void)rdd2_gnss_lockstep_submit(fix, control_now_ns);
   g_control_now_ns = control_now_ns;
   if (plan->sequence < 0 ||
       (g_plan_sequence_observed && plan->sequence < g_last_plan_sequence)) {
@@ -224,13 +230,13 @@ bool rdd2_lockstep_handle_gps_mission(const synapse_topic_GnssFixData_t *fix,
   }
   if (plan->sequence != 0) {
     g_lockstep_plan = *plan;
-    accepted = zros_pub_update(&g_lockstep_plan_pub) == 0 && accepted;
-    if (accepted) {
-      g_last_plan_sequence = plan->sequence;
-      g_plan_sequence_observed = true;
+    if (zros_pub_update(&g_lockstep_plan_pub) != 0) {
+      return false;
     }
+    g_last_plan_sequence = plan->sequence;
+    g_plan_sequence_observed = true;
   }
-  return accepted;
+  return true;
 }
 
 void rdd2_lockstep_gps_mission_status_get(

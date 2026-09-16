@@ -42,9 +42,11 @@ _Static_assert(RDD2_NAVIGATION_IMU_HOLD_MAX_RELEASES >= 2U,
 #define GPS_ORIGIN_INITIALIZATION_TIMEOUT_NS UINT64_C(100000000)
 
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
-#define RDD2_OPTICAL_FLOW_COMPENSATION_VARIANCE_RAD2                           \
-  (((float)CONFIG_RDD2_OPTICAL_FLOW_COMPENSATION_STDDEV_URAD * 1.0e-6f) *      \
-   ((float)CONFIG_RDD2_OPTICAL_FLOW_COMPENSATION_STDDEV_URAD * 1.0e-6f))
+/* Rate-noise density of the residual left after the producer removes camera
+ * rotation, in rad/s/sqrt(Hz). The integrated-angle variance grows with the
+ * exposure window as density^2 * integration_time_s (angle random walk). */
+#define RDD2_OPTICAL_FLOW_COMPENSATION_RATE_NOISE_RAD_S_RTHZ                   \
+  ((float)CONFIG_RDD2_OPTICAL_FLOW_COMPENSATION_RATE_URAD_S_RTHZ * 1.0e-6f)
 /* The velocity standard deviation is interpolated between the best-case value
  * at quality 255 and the worst-case value at minimum quality, so the worst
  * case must not be tighter than the best case or the interpolation inverts. */
@@ -131,6 +133,12 @@ static const struct rdd2_navigation_optical_flow_config g_optical_flow_config =
         .range_variance_m2 =
             ((float)CONFIG_RDD2_OPTICAL_FLOW_RANGE_STDDEV_MM * 1.0e-3f) *
             ((float)CONFIG_RDD2_OPTICAL_FLOW_RANGE_STDDEV_MM * 1.0e-3f),
+        .nominal_integration_time_s =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_NOMINAL_PERIOD_MS * 1.0e-3f,
+        .min_integration_time_s =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_MIN_INTEGRATION_MS * 1.0e-3f,
+        .max_integration_time_s =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_MAX_INTEGRATION_MS * 1.0e-3f,
         .sensor_id = CONFIG_RDD2_OPTICAL_FLOW_SENSOR_ID,
         .min_quality = CONFIG_RDD2_OPTICAL_FLOW_MIN_QUALITY,
         .require_gptp = true,
@@ -427,14 +435,22 @@ static void copy_optical_flow_input_to_efmu(
   efmu->integratedLineOfSightCovariance_rad2[1][1] =
       measurement->velocity_covariance_body_m2_s2[0][0] *
       radians_per_velocity * radians_per_velocity;
+  /* The rotation integral has already been removed by the driver, but the
+   * residual compensation error accumulates over the exposure window as an
+   * angle random walk, so its variance scales with the integration time. This
+   * keeps the gyro term commensurate with the line-of-sight covariance, which
+   * the estimator scales by (integration_time / range)^2, instead of letting a
+   * fixed constant dominate the innovation covariance. */
+  float compensation_variance_rad2 =
+      RDD2_OPTICAL_FLOW_COMPENSATION_RATE_NOISE_RAD_S_RTHZ *
+      RDD2_OPTICAL_FLOW_COMPENSATION_RATE_NOISE_RAD_S_RTHZ * integration_time_s;
   for (size_t axis = 0U; axis < 3U; ++axis) {
     efmu->integratedGyroscopeBodyFlu_rad[axis] = 0.0f;
     for (size_t column = 0U; column < 3U; ++column) {
-      /* The rotation integral has already been removed by the driver. The
-       * block still requires a strictly positive diagonal, so declare a
+      /* The block still requires a strictly positive diagonal, so declare the
        * residual compensation uncertainty rather than an impossible zero. */
       efmu->integratedGyroscopeCovariance_rad2[axis][column] =
-          axis == column ? RDD2_OPTICAL_FLOW_COMPENSATION_VARIANCE_RAD2 : 0.0f;
+          axis == column ? compensation_variance_rad2 : 0.0f;
     }
   }
   efmu->opticalFlow_integrationTime_s = integration_time_s;

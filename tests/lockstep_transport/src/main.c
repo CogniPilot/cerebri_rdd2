@@ -193,4 +193,34 @@ ZTEST(lockstep_transport, test_plan_publishes_once_and_replay_is_exact) {
   zassert_equal(rdd2_topic_generation(&topic_waypoint_plan), generation);
 }
 
+ZTEST(lockstep_transport, test_future_gated_fix_does_not_stall_exchange) {
+  /*
+   * A fix stamped ahead of the control clock (a producer whose freerun clock
+   * leads the boot clock before time sync) is rejected by the receiver future
+   * gate, but must not tear down the lockstep exchange: the handler reports
+   * success so the step still completes and responds, while the fix is simply
+   * not adopted and the mission plan continues to be accepted.
+   */
+  synapse_topic_GnssFixData_t leading =
+      usable_fix(UINT64_C(200000000) + UINT64_C(356000000));
+  rdd2_waypoint_plan_t plan = {
+      .sequence = 1,
+      .waypoint_count = 5,
+      .nominal_speed = 0.3f,
+      .min_segment_duration = 2.0f,
+      .valid = true,
+  };
+  uint32_t gnss_generation;
+
+  zassert_ok(rdd2_lockstep_gps_mission_init());
+  gnss_generation = rdd2_topic_generation(&topic_gnss_fix);
+  zassert_true(
+      rdd2_lockstep_handle_gps_mission(&leading, &plan, UINT64_C(200000000)),
+      "a future-gated fix must not stall the lockstep exchange");
+  zassert_equal(rdd2_topic_generation(&topic_gnss_fix), gnss_generation,
+                "a future-gated fix must not be adopted");
+  zassert_equal(rdd2_topic_generation(&topic_waypoint_plan), 1U,
+                "the mission plan is still accepted alongside a gated fix");
+}
+
 ZTEST_SUITE(lockstep_transport, NULL, NULL, NULL, NULL, NULL);
