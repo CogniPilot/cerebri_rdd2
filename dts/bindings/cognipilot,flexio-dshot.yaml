@@ -40,3 +40,14 @@ child-binding:
         Enables inverted dshot, where signal level is inverted
         When inverted an DSHOT esc will send back telemetry over 
         the same single wire
+    extended-telemetry:
+      type: boolean
+      description: |
+        Enable Extended DShot Telemetry (EDT) on this channel. Requires
+        bidirectional-dshot on the same channel (ignored otherwise). When set,
+        once the channel comes online the driver sends the DShot
+        extended-telemetry-enable command to the ESC, then decodes the
+        temperature/voltage/current EDT frames interleaved with the eRPM
+        responses. Exposed through SENSOR_CHAN_DIE_TEMP, SENSOR_CHAN_VOLTAGE and
+        SENSOR_CHAN_CURRENT.
+
