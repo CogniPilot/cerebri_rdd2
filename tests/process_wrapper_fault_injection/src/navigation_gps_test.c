@@ -104,17 +104,34 @@ ZTEST(process_wrapper_fault_injection,
   zexpect_within(measurement.position_enu_m[1], -111.31901f, 0.002f);
   zexpect_within(measurement.position_enu_m[2], -10.0f, 1.0e-5f);
 
+  /*
+   * A CourseValid-only fix (the vehicle's GNSS receiver never sets
+   * VelocityUpValid) yields a usable horizontal velocity: vz is forced to zero
+   * and its variance is the large unobserved-vertical-velocity value, while the
+   * horizontal components come from course and ground speed.
+   */
   fix = valid_fix(TEST_NS_FROM_US(UINT64_C(7000000)));
   fix.flags = synapse_topic_GnssFixFlags_CourseValid;
+  fix.velocity_up_cm_s = INT16_C(150);
   zexpect_false(step(&adapter, &measurement, &fix, true, &health, false,
                      fix.timestamp_ns));
   zexpect_true(measurement.valid);
   zexpect_true(measurement.position_valid);
-  zexpect_false(measurement.velocity_valid);
-  zexpect_equal(measurement.velocity_enu_m_s[0], 0.0f);
-  zexpect_equal(measurement.velocity_enu_m_s[1], 0.0f);
+  zexpect_true(measurement.velocity_valid);
+  zexpect_within(measurement.velocity_enu_m_s[0], 1.0f, 1.0e-5f);
+  zexpect_within(measurement.velocity_enu_m_s[1], 0.0f, 1.0e-5f);
   zexpect_equal(measurement.velocity_enu_m_s[2], 0.0f);
+  zexpect_within(measurement.velocity_covariance_enu_m2_s2[0][0], 0.01f,
+                 1.0e-6f);
+  zexpect_within(measurement.velocity_covariance_enu_m2_s2[1][1], 0.01f,
+                 1.0e-6f);
+  zexpect_within(measurement.velocity_covariance_enu_m2_s2[2][2], 25.0f,
+                 1.0e-4f);
 
+  /*
+   * VelocityUpValid without CourseValid carries no horizontal velocity, so the
+   * measurement remains velocity-invalid.
+   */
   fix = valid_fix(TEST_NS_FROM_US(UINT64_C(8000000)));
   fix.flags = synapse_topic_GnssFixFlags_VelocityUpValid;
   fix.velocity_up_cm_s = INT16_C(150);
@@ -125,6 +142,73 @@ ZTEST(process_wrapper_fault_injection,
   zexpect_equal(measurement.velocity_enu_m_s[0], 0.0f);
   zexpect_equal(measurement.velocity_enu_m_s[1], 0.0f);
   zexpect_equal(measurement.velocity_enu_m_s[2], 0.0f);
+
+  /*
+   * A fix with neither velocity flag is velocity-invalid.
+   */
+  fix = valid_fix(TEST_NS_FROM_US(UINT64_C(9000000)));
+  fix.flags = 0U;
+  zexpect_false(step(&adapter, &measurement, &fix, true, &health, false,
+                     fix.timestamp_ns));
+  zexpect_true(measurement.position_valid);
+  zexpect_false(measurement.velocity_valid);
+  zexpect_equal(measurement.velocity_enu_m_s[0], 0.0f);
+  zexpect_equal(measurement.velocity_enu_m_s[1], 0.0f);
+  zexpect_equal(measurement.velocity_enu_m_s[2], 0.0f);
+}
+
+/*
+ * The vehicle's GNSS receiver reports course over ground and ground speed but
+ * no vertical velocity, so every wire fix carries CourseValid without
+ * VelocityUpValid. Such a fix must fuse as a horizontal velocity measurement:
+ * horizontal components from course and speed, vertical velocity forced to zero
+ * with the large unobserved-vertical-velocity variance, and the horizontal
+ * variances still following the accuracy floor rule. A fix that additionally
+ * reports VelocityUpValid keeps the full 3D velocity with the accuracy-derived
+ * vertical variance.
+ */
+ZTEST(process_wrapper_fault_injection,
+      test_navigation_gps_course_only_velocity) {
+  struct rdd2_navigation_gps_adapter adapter;
+  struct rdd2_navigation_gps_measurement measurement;
+  synapse_topic_GnssFixData_t fix =
+      valid_fix(TEST_NS_FROM_US(UINT64_C(1000000)));
+  synapse_topic_VehicleHealthData_t health = disarmed_health(fix.timestamp_ns);
+
+  /* Course 135 deg, ground speed 2 m/s: east +1.41421, north -1.41421. */
+  fix.flags = synapse_topic_GnssFixFlags_CourseValid;
+  fix.course_over_ground_cdeg = UINT16_C(13500);
+  fix.ground_speed_cm_s = UINT16_C(200);
+  fix.velocity_up_cm_s = INT16_C(300);
+  fix.velocity_accuracy_mm_s = UINT16_C(300);
+  rdd2_navigation_gps_init(&adapter);
+  zexpect_true(step(&adapter, &measurement, &fix, true, &health, true,
+                    fix.timestamp_ns));
+  zexpect_true(measurement.velocity_valid);
+  zexpect_within(measurement.velocity_enu_m_s[0], 1.41421f, 1.0e-4f);
+  zexpect_within(measurement.velocity_enu_m_s[1], -1.41421f, 1.0e-4f);
+  zexpect_equal(measurement.velocity_enu_m_s[2], 0.0f);
+  zexpect_within(measurement.velocity_covariance_enu_m2_s2[0][0], 0.09f,
+                 1.0e-5f);
+  zexpect_within(measurement.velocity_covariance_enu_m2_s2[1][1], 0.09f,
+                 1.0e-5f);
+  zexpect_within(measurement.velocity_covariance_enu_m2_s2[2][2], 25.0f,
+                 1.0e-4f);
+
+  /* Same fix but with VelocityUpValid: vertical velocity and variance return. */
+  fix = valid_fix(TEST_NS_FROM_US(UINT64_C(2000000)));
+  fix.flags = synapse_topic_GnssFixFlags_CourseValid |
+              synapse_topic_GnssFixFlags_VelocityUpValid;
+  fix.course_over_ground_cdeg = UINT16_C(13500);
+  fix.ground_speed_cm_s = UINT16_C(200);
+  fix.velocity_up_cm_s = INT16_C(300);
+  fix.velocity_accuracy_mm_s = UINT16_C(300);
+  zexpect_false(step(&adapter, &measurement, &fix, true, &health, false,
+                     fix.timestamp_ns));
+  zexpect_true(measurement.velocity_valid);
+  zexpect_within(measurement.velocity_enu_m_s[2], 3.0f, 1.0e-5f);
+  zexpect_within(measurement.velocity_covariance_enu_m2_s2[2][2], 0.09f,
+                 1.0e-5f);
 }
 
 ZTEST(process_wrapper_fault_injection, test_navigation_gps_flight_site_vector) {

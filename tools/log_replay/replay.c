@@ -78,6 +78,13 @@ static size_t load_flow(const char *path, struct flow_row **out) {
 static uint64_t to_ns(double t) { return TIME_BASE_NS + (uint64_t)llround(t * 1e9); }
 static uint16_t sat_u16(double v) { return v >= 65535.0 ? 65535U : (uint16_t)llround(v); }
 
+/*
+ * When set, the replay omits the VelocityUpValid flag even for fixes whose
+ * host-derived velocity is valid, reproducing the vehicle's GNSS receiver which
+ * reports course over ground and ground speed but no vertical velocity.
+ */
+static bool g_no_vertical_velocity = false;
+
 static void gps_to_fix(const struct gps_row *g, synapse_topic_GnssFixData_t *fix) {
   double course = atan2(g->ve, g->vn) * 180.0 / M_PI; if (course < 0) course += 360.0;
   memset(fix, 0, sizeof *fix);
@@ -92,7 +99,13 @@ static void gps_to_fix(const struct gps_row *g, synapse_topic_GnssFixData_t *fix
   fix->ground_speed_cm_s = sat_u16(hypot(g->vn, g->ve) * 100.0);
   fix->course_over_ground_cdeg = (uint16_t)(llround(course * 100.0) % 36000);
   fix->velocity_up_cm_s = (int16_t)llround(-g->vd * 100.0);
-  fix->flags = g->vel_valid ? (synapse_topic_GnssFixFlags_CourseValid | synapse_topic_GnssFixFlags_VelocityUpValid) : 0U;
+  if (!g->vel_valid) {
+    fix->flags = 0U;
+  } else if (g_no_vertical_velocity) {
+    fix->flags = synapse_topic_GnssFixFlags_CourseValid;
+  } else {
+    fix->flags = synapse_topic_GnssFixFlags_CourseValid | synapse_topic_GnssFixFlags_VelocityUpValid;
+  }
   fix->fix_type = (uint8_t)g->fix;
   fix->satellites_used = (uint8_t)g->sats;
   fix->time_status = synapse_types_TimeStatus_GptpSynced;
@@ -192,6 +205,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--gps-deny") && i + 1 < argc && ndeny < MAX_DENY) { sscanf(argv[++i], "%lf:%lf", &deny0[ndeny], &deny1[ndeny]); ndeny++; }
     else if (!strcmp(argv[i], "--no-flow")) use_flow = false;
     else if (!strcmp(argv[i], "--no-gps")) use_gps = false;
+    else if (!strcmp(argv[i], "--no-vertical-velocity")) g_no_vertical_velocity = true;
     else if (!strcmp(argv[i], "--verbose")) verbose = 1;
     else if (!strcmp(argv[i], "--gyro-noise") && i + 1 < argc) q_gyro = atof(argv[++i]);
     else if (!strcmp(argv[i], "--accel-noise") && i + 1 < argc) q_accel = atof(argv[++i]);

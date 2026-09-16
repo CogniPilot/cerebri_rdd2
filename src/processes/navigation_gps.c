@@ -18,6 +18,14 @@
 #define GPS_MAX_LOCAL_COMPONENT_M 10000.0f
 #define GPS_POSITION_SIGMA_FLOOR_M 0.5f
 #define GPS_VELOCITY_SIGMA_FLOOR_M_S 0.1f
+/*
+ * The vehicle GNSS receiver reports course over ground and ground speed but no
+ * vertical velocity, so a fix can carry a valid horizontal velocity while
+ * leaving the vertical component unobserved. When that happens the vertical
+ * velocity is reported as zero with this large declared sigma, so the block's
+ * 3D velocity correction is effectively horizontal only. (5 m/s)^2.
+ */
+#define GPS_UNOBSERVED_VERTICAL_VELOCITY_SIGMA_M_S 5.0f
 
 static bool timestamp_due(uint64_t timestamp_ns, uint64_t now_ns) {
   return timestamp_ns <= now_ns;
@@ -57,13 +65,20 @@ static bool position_usable(const synapse_topic_GnssFixData_t *fix) {
          fix->vertical_accuracy_mm <= GPS_MAX_VERTICAL_ACC_MM;
 }
 
+/*
+ * A CourseValid fix carries a usable horizontal velocity derived from course
+ * over ground and ground speed. VelocityUpValid is not required: a receiver
+ * that omits it still yields a valid horizontal-only velocity measurement.
+ */
 static bool velocity_usable(const synapse_topic_GnssFixData_t *fix) {
-  const uint8_t required = synapse_topic_GnssFixFlags_CourseValid |
-                           synapse_topic_GnssFixFlags_VelocityUpValid;
-
-  return (fix->flags & required) == required &&
+  return (fix->flags & synapse_topic_GnssFixFlags_CourseValid) != 0U &&
          fix->course_over_ground_cdeg < UINT16_C(36000) &&
          fix->velocity_accuracy_mm_s <= GPS_MAX_VELOCITY_ACC_MM_S;
+}
+
+static bool
+vertical_velocity_usable(const synapse_topic_GnssFixData_t *fix) {
+  return (fix->flags & synapse_topic_GnssFixFlags_VelocityUpValid) != 0U;
 }
 
 static bool
@@ -156,7 +171,11 @@ fill_covariances(struct rdd2_navigation_gps_measurement *measurement,
   measurement->position_covariance_enu_m2[2][2] = vertical;
   measurement->velocity_covariance_enu_m2_s2[0][0] = velocity;
   measurement->velocity_covariance_enu_m2_s2[1][1] = velocity;
-  measurement->velocity_covariance_enu_m2_s2[2][2] = velocity;
+  measurement->velocity_covariance_enu_m2_s2[2][2] =
+      vertical_velocity_usable(fix)
+          ? velocity
+          : GPS_UNOBSERVED_VERTICAL_VELOCITY_SIGMA_M_S *
+                GPS_UNOBSERVED_VERTICAL_VELOCITY_SIGMA_M_S;
 }
 
 static void fill_velocity(struct rdd2_navigation_gps_measurement *measurement,
@@ -166,7 +185,8 @@ static void fill_velocity(struct rdd2_navigation_gps_measurement *measurement,
 
   measurement->velocity_enu_m_s[0] = ground_speed_m_s * sinf(course_rad);
   measurement->velocity_enu_m_s[1] = ground_speed_m_s * cosf(course_rad);
-  measurement->velocity_enu_m_s[2] = (float)fix->velocity_up_cm_s * 0.01f;
+  measurement->velocity_enu_m_s[2] =
+      vertical_velocity_usable(fix) ? (float)fix->velocity_up_cm_s * 0.01f : 0.0f;
 }
 
 void rdd2_navigation_gps_init(struct rdd2_navigation_gps_adapter *adapter) {

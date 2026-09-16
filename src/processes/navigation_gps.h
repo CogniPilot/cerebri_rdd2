@@ -8,6 +8,18 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/*
+ * A GNSS measurement projected into the local ENU frame.
+ *
+ * velocity_valid is set when the fix reports a usable horizontal velocity
+ * (course over ground and ground speed). The vertical component of
+ * velocity_enu_m_s is populated only when the fix also reports a valid vertical
+ * velocity; otherwise it is zero and its variance in
+ * velocity_covariance_enu_m2_s2[2][2] is set to a large declared value
+ * (unobserved vertical velocity), leaving the velocity correction effectively
+ * horizontal only. The horizontal velocity variances follow the accuracy
+ * floor-with-sigma rule regardless.
+ */
 struct rdd2_navigation_gps_measurement {
   bool valid;
   bool fresh;
