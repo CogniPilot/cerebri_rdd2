@@ -33,6 +33,50 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME, CONFIG_LOG_DEFAULT_LEVEL);
 #define NIBBLES_SIZE             4u
 #define DSHOT_NUMBER_OF_NIBBLES  3u
 
+/*
+ * Bidirectional DShot receive-baud training.
+ *
+ * The eRPM response is sent back by the ESC on the same wire at 5/4 of the
+ * output bitrate, but the exact turnaround timing varies from ESC to ESC. To
+ * lock onto it reliably the driver sweeps a small offset applied to the receive
+ * timer compare value, records which offsets decode cleanly, and settles on the
+ * center of the widest good window.
+ */
+#define BDSHOT_OFFLINE_COUNT    200 /* No responses for this many cycles -> offline */
+#define BDSHOT_RETRAIN_COUNT    (2 * BDSHOT_OFFLINE_COUNT)
+#define BDSHOT_TCMP_MIN_OFFSET  (-16)
+#define BDSHOT_TCMP_MAX_OFFSET  15
+#define BDSHOT_TCMP_TO_MASK(x)  ((x) - BDSHOT_TCMP_MIN_OFFSET)
+#define BDSHOT_TRAINING_TRIES   25
+#define BDSHOT_TRAINING_SUCCESS 24
+
+/*
+ * Extended DShot Telemetry (EDT).
+ *
+ * When enabled, the ESC interleaves telemetry frames with the eRPM responses.
+ * The 12-bit payload is eRPM when the 9-bit mantissa MSB is set; otherwise, if
+ * EDT is enabled, it is an EDT frame carrying a type nibble and an 8-bit value.
+ * The ESC only starts emitting EDT once it receives the enable command, which
+ * the driver sends (repeated) after a channel first comes online.
+ */
+#define DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE 13
+#define BDSHOT_EDT_ENABLE_REPEATS           10
+
+#define BDSHOT_EDT_MANTISSA_MSB 0x0100 /* Set -> eRPM frame, clear -> EDT frame */
+#define BDSHOT_EDT_TYPE_MASK    0x0F00
+#define BDSHOT_EDT_TYPE_SHIFT   8
+#define BDSHOT_EDT_VALUE_MASK   0x00FF
+
+/* EDT frame type nibbles */
+#define DSHOT_EDT_TEMPERATURE 0x02 /* degrees C, 1 C per step */
+#define DSHOT_EDT_VOLTAGE     0x04 /* 0.25 V per step */
+#define DSHOT_EDT_CURRENT     0x06 /* 1 A per step */
+
+/* Freshness bits for the per-channel EDT sub-values */
+#define BDSHOT_EDT_VALID_TEMPERATURE BIT(0)
+#define BDSHOT_EDT_VALID_VOLTAGE     BIT(1)
+#define BDSHOT_EDT_VALID_CURRENT     BIT(2)
+
 static const uint32_t gcr_decode[32] = {0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9, 0xA,
 					0xB, 0x0, 0xD, 0xE, 0xF, 0x0, 0x0, 0x2, 0x3, 0x0, 0x5,
 					0x6, 0x7, 0x0, 0x0, 0x8, 0x1, 0x0, 0x4, 0xC, 0x0};
@@ -65,7 +109,6 @@ struct nxp_flexio_dshot_config {
 struct nxp_flexio_dshot_data {
 	uint32_t flexio_clk;
 	uint32_t dshot_tcmp;
-	uint32_t bdshot_tcmp;
 	uint32_t dshot_mask;
 	uint32_t dshot_timer_mask;
 	uint32_t bdshot_recv_mask;
@@ -81,13 +124,50 @@ struct nxp_flexio_dshot_channel_config {
 	uint32_t irq_data;
 	dshot_state state;
 	bool bdshot;
+	bool edt;
 	uint32_t raw_response;
 	uint16_t erpm;
 	uint32_t crc_error_cnt;
 	uint32_t frame_error_cnt;
 	uint32_t no_response_cnt;
 	uint32_t last_no_response_cnt;
+
+	/* Per-channel bidirectional DShot receive-baud training state */
+	uint32_t bdshot_tcmp;            /* Trained receive timer compare value */
+	int8_t bdshot_tcmp_offset;       /* Current sweep offset applied to tcmp */
+	uint32_t bdshot_training_mask;   /* Bit set per offset that decoded cleanly */
+	uint8_t bdshot_training_count;   /* Frames sampled at current offset */
+	uint8_t bdshot_training_success; /* Clean decodes at current offset */
+	bool bdshot_training_done;       /* Set once a good offset was locked in */
+	bool online;                     /* ESC currently responding */
+	uint16_t consecutive_successes;
+	uint16_t consecutive_failures;
+
+	/* Extended DShot Telemetry (EDT) state, only used when this channel's edt is set */
+	uint8_t edt_enable_repeats; /* Remaining enable commands to send to the ESC */
+	uint8_t edt_valid;          /* BDSHOT_EDT_VALID_* bits that have been decoded */
+	uint8_t edt_temperature;    /* degrees C */
+	uint8_t edt_voltage;        /* raw, 0.25 V per step */
+	uint8_t edt_current;        /* amps */
 };
+
+/*
+
+ * Recompute a channel's receive timer compare from the base bdshot timing and
+ * its current training offset. The low byte holds the baud divider that the
+ * training sweep nudges to align sampling with the ESC's actual turnaround.
+ */
+static void nxp_flexio_dshot_set_tcmp(const struct device *dev, uint32_t channel)
+{
+	const struct nxp_flexio_dshot_config *config = dev->config;
+	struct nxp_flexio_dshot_data *data = dev->data;
+	struct nxp_flexio_dshot_channel_config *dshot_info = &config->channel->dshot_info[channel];
+	const int dshot_pwm_freq = config->speed * 1000;
+
+	dshot_info->bdshot_tcmp = 0x2900 | (((data->flexio_clk / (dshot_pwm_freq * 5 / 4) / 2) +
+					     dshot_info->bdshot_tcmp_offset) &
+					    0xFF);
+}
 
 static void nxp_flexio_dshot_output(const struct device *dev, uint32_t channel)
 {
@@ -148,7 +228,6 @@ static void nxp_flexio_dshot_output(const struct device *dev, uint32_t channel)
 static void nxp_flexio_bdshot_input(const struct device *dev, uint32_t channel)
 {
 	const struct nxp_flexio_dshot_config *config = dev->config;
-	struct nxp_flexio_dshot_data *data = dev->data;
 	FLEXIO_Type *flexio_base = (FLEXIO_Type *)(config->flexio_base);
 	struct nxp_flexio_child *child = (struct nxp_flexio_child *)(config->child);
 	struct nxp_flexio_dshot_channel_config *dshot_info = &config->channel->dshot_info[channel];
@@ -177,9 +256,12 @@ static void nxp_flexio_bdshot_input(const struct device *dev, uint32_t channel)
 	/* Make sure there no shifter flags high from transmission */
 	FLEXIO_ClearShifterStatusFlags(flexio_base, 1 << child->res.shifter_index[channel]);
 
-	/* Enable on pin transition, resychronize through reset on rising
-	 * edge */
-	timerConfig.timerOutput = kFLEXIO_TimerOutputOneAffectedByReset;
+	/* Enable on pin transition, resynchronize through reset on the rising
+	 * edge. Output must start low (Zero) so the first shift lands mid-bit
+	 * rather than a full baud period after the start edge, otherwise every
+	 * sample sits on a bit boundary and only an ESC-faster baud decodes.
+	 */
+	timerConfig.timerOutput = kFLEXIO_TimerOutputZeroAffectedByReset;
 	timerConfig.timerDecrement = kFLEXIO_TimerDecSrcOnFlexIOClockShiftTimerOutput;
 	timerConfig.timerReset = kFLEXIO_TimerResetOnTimerPinRisingEdge;
 	timerConfig.timerDisable = kFLEXIO_TimerDisableOnTimerCompare;
@@ -187,14 +269,15 @@ static void nxp_flexio_bdshot_input(const struct device *dev, uint32_t channel)
 	timerConfig.timerStop = kFLEXIO_TimerStopBitEnableOnTimerDisable;
 	timerConfig.timerStart = kFLEXIO_TimerStartBitEnabled;
 
-	timerConfig.timerCompare = data->bdshot_tcmp;
+	/* Per-channel receive compare, seeded at init and nudged by training */
+	timerConfig.timerCompare = dshot_info->bdshot_tcmp;
 
 	/* Baud mode, Trigger on shifter write */
 	timerConfig.triggerSelect = FLEXIO_TIMER_TRIGGER_SEL_PININPUT(dshot_info->pin_id);
 	timerConfig.triggerPolarity = kFLEXIO_TimerTriggerPolarityActiveHigh;
 	timerConfig.triggerSource = kFLEXIO_TimerTriggerSourceInternal;
 	timerConfig.pinConfig = kFLEXIO_PinConfigOutputDisabled;
-	timerConfig.pinSelect = 0;
+	timerConfig.pinSelect = dshot_info->pin_id;
 	timerConfig.pinPolarity = kFLEXIO_PinActiveLow;
 	timerConfig.timerMode = kFLEXIO_TimerModeDual8BitBaudBit;
 
@@ -272,8 +355,6 @@ static int nxp_flexio_dshot_init(const struct device *dev)
 
 	/* Calculate dshot timings based on dshot_pwm_freq */
 	data->dshot_tcmp = 0x2F00 | (((data->flexio_clk / (dshot_pwm_freq * 3) / 2) - 1) & 0xFF);
-	data->bdshot_tcmp =
-		0x2900 | (((data->flexio_clk / (dshot_pwm_freq * 5 / 4) / 2) - 3) & 0xFF);
 
 	err = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
 	if (err) {
@@ -291,8 +372,19 @@ static int nxp_flexio_dshot_init(const struct device *dev)
 	data->dshot_timer_mask = 0;
 
 	for (channel = 0; channel < config->channel->dshot_channel_count; channel++) {
+		struct nxp_flexio_dshot_channel_config *dshot_info =
+			&config->channel->dshot_info[channel];
+
+		/* Seed the receive-baud sweep so the first responses drive
+		 * training. The rest of the training state is zero-initialised.
+		 */
+		if (dshot_info->bdshot) {
+			dshot_info->bdshot_tcmp_offset = BDSHOT_TCMP_MIN_OFFSET;
+			nxp_flexio_dshot_set_tcmp(dev, channel);
+		}
+
 		nxp_flexio_dshot_output(dev, channel);
-		config->channel->dshot_info[channel].init = true;
+		dshot_info->init = true;
 		data->dshot_mask |= (1 << child->res.shifter_index[channel]);
 		data->dshot_timer_mask |= (1 << child->res.timer_index[channel]);
 	}
@@ -389,6 +481,17 @@ static void nxp_flexio_dshot_hw_data_set(const struct device *dev, unsigned chan
 		uint16_t packet = 0;
 		uint16_t checksum = 0;
 
+		/* Once a channel comes online with EDT enabled, spend a few
+		 * frames sending the extended-telemetry-enable command (with the
+		 * telemetry request bit set) before resuming throttle, so the
+		 * ESC starts emitting EDT frames.
+		 */
+		if (dshot_info->edt_enable_repeats > 0) {
+			dshot_info->edt_enable_repeats--;
+			throttle = DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE;
+			telemetry = true;
+		}
+
 		packet |= throttle << DSHOT_THROTTLE_POSITION;
 		packet |= ((uint16_t)telemetry & 0x01) << DSHOT_TELEMETRY_POSITION;
 
@@ -426,90 +529,298 @@ static void nxp_flexio_dshot_hw_data_set(const struct device *dev, unsigned chan
 	}
 }
 
-int up_bdshot_decode_erpm(const struct device *dev)
+/*
+ * Decode a raw 20-bit GCR response into the 12-bit DShot payload.
+ * Returns true and stores the payload when framing, RLL/GCR and the nibble
+ * checksum all pass, false otherwise. Kept side-effect free so it can be used
+ * both by the training sweep and the normal eRPM decode.
+ */
+static bool nxp_flexio_bdshot_decode_gcr(uint32_t value, uint16_t *payload)
+{
+	uint32_t decode_data;
+	uint32_t csum_data;
+
+	/* if lowest significant bit isn't 1 we've got a framing error */
+	if ((value & 0x1) == 0) {
+		return false;
+	}
+
+	/* Decode RLL */
+	value = value ^ (value >> 1);
+
+	/* Decode GCR */
+	decode_data = gcr_decode[value & 0x1fU];
+	decode_data |= gcr_decode[(value >> 5U) & 0x1fU] << 4U;
+	decode_data |= gcr_decode[(value >> 10U) & 0x1fU] << 8U;
+	decode_data |= gcr_decode[(value >> 15U) & 0x1fU] << 12U;
+
+	/* Calculate checksum */
+	csum_data = decode_data;
+	csum_data = csum_data ^ (csum_data >> 8U);
+	csum_data = csum_data ^ (csum_data >> NIBBLES_SIZE);
+
+	if ((csum_data & 0xFU) != 0xFU) {
+		return false;
+	}
+
+	*payload = (decode_data >> 4) & 0xFFF;
+	return true;
+}
+
+/* Convert a decoded 12-bit payload into eRPM. */
+static uint16_t nxp_flexio_bdshot_payload_to_erpm(uint16_t payload)
+{
+	uint8_t exponent;
+	uint16_t period;
+
+	if (payload == 0xFFF) {
+		return 0;
+	}
+
+	exponent = (payload >> 9U) & 0x7U; /* 3 bit: exponent */
+	period = payload & 0x1ffU;         /* 9 bit: period base */
+	period = period << exponent;       /* Period in usec */
+
+	if (period == 0) {
+		return 0;
+	}
+
+	return (uint16_t)((1000000U * 60U / 100U + period / 2U) / period);
+}
+
+/* An ESC that stops responding goes offline but never forces a re-sweep. */
+static void nxp_flexio_bdshot_note_success(struct nxp_flexio_dshot_channel_config *ch)
+{
+	bool was_online = ch->online;
+
+	ch->consecutive_failures = 0;
+
+	if (ch->consecutive_successes < BDSHOT_OFFLINE_COUNT) {
+		ch->consecutive_successes++;
+	}
+
+	if (ch->consecutive_successes >= BDSHOT_OFFLINE_COUNT) {
+		ch->online = true;
+	}
+
+	/* On the offline->online edge, (re)arm the EDT enable command so the
+	 * ESC starts emitting telemetry frames.
+	 */
+	if (ch->edt && ch->online && !was_online) {
+		ch->edt_enable_repeats = BDSHOT_EDT_ENABLE_REPEATS;
+	}
+}
+
+static void nxp_flexio_bdshot_restart_training(const struct device *dev, uint32_t channel)
+{
+	struct nxp_flexio_dshot_channel_config *ch =
+		&((const struct nxp_flexio_dshot_config *)dev->config)
+			 ->channel->dshot_info[channel];
+
+	ch->bdshot_training_done = false;
+	ch->bdshot_training_mask = 0;
+	ch->bdshot_training_count = 0;
+	ch->bdshot_training_success = 0;
+	ch->bdshot_tcmp_offset = BDSHOT_TCMP_MIN_OFFSET;
+	ch->consecutive_successes = 0;
+	ch->consecutive_failures = 0;
+	ch->online = false;
+	nxp_flexio_dshot_set_tcmp(dev, channel);
+}
+
+/*
+ * A missing response means the ESC is gone, not that the baud is wrong: it
+ * takes the channel offline but never restarts the sweep. Only frames that
+ * arrive and fail to decode can, after a second offline period, retrigger it.
+ */
+static void nxp_flexio_bdshot_note_failure(const struct device *dev, uint32_t channel,
+					   bool decoded_wrong)
+{
+	struct nxp_flexio_dshot_channel_config *ch =
+		&((const struct nxp_flexio_dshot_config *)dev->config)
+			 ->channel->dshot_info[channel];
+
+	if (!ch->bdshot_training_done) {
+		return;
+	}
+
+	ch->consecutive_successes = 0;
+	uint16_t limit = decoded_wrong ? BDSHOT_RETRAIN_COUNT : BDSHOT_OFFLINE_COUNT;
+
+	if (ch->consecutive_failures < limit) {
+		ch->consecutive_failures++;
+	}
+
+	if (ch->consecutive_failures >= BDSHOT_OFFLINE_COUNT) {
+		ch->online = false;
+	}
+
+	if (decoded_wrong && ch->consecutive_failures >= BDSHOT_RETRAIN_COUNT) {
+		nxp_flexio_bdshot_restart_training(dev, channel);
+	}
+}
+
+/*
+ * Sweep the receive-baud offset and settle on the centre of the range that
+ * decodes cleanly. Called once per response while training is not yet done.
+ */
+static void nxp_flexio_bdshot_train(const struct device *dev, uint32_t channel, uint32_t value)
+{
+	struct nxp_flexio_dshot_channel_config *ch =
+		&((const struct nxp_flexio_dshot_config *)dev->config)
+			 ->channel->dshot_info[channel];
+	uint16_t payload;
+
+	if (nxp_flexio_bdshot_decode_gcr(value, &payload)) {
+		/* Count successful responses at this offset */
+		ch->bdshot_training_success++;
+
+	} else if ((value & 0x1) == 0) {
+		/* Framing error invalidates this offset immediately */
+		ch->bdshot_training_count = BDSHOT_TRAINING_TRIES - 1;
+	}
+
+	ch->bdshot_training_count++;
+
+	if (ch->bdshot_training_count < BDSHOT_TRAINING_TRIES) {
+		return;
+	}
+
+	if (ch->bdshot_training_success >= BDSHOT_TRAINING_SUCCESS) {
+		ch->bdshot_training_mask |= (1u << BDSHOT_TCMP_TO_MASK(ch->bdshot_tcmp_offset));
+	}
+
+	ch->bdshot_training_count = 0;
+	ch->bdshot_training_success = 0;
+	ch->bdshot_tcmp_offset++;
+
+	if (ch->bdshot_tcmp_offset > BDSHOT_TCMP_MAX_OFFSET) {
+		if (ch->bdshot_training_mask == 0) {
+			/* No good offsets found, sweep again */
+			ch->bdshot_tcmp_offset = BDSHOT_TCMP_MIN_OFFSET;
+
+		} else {
+			/* Lock onto the centre of the good window */
+			int low = __builtin_ctz(ch->bdshot_training_mask);
+			int high = 31 - __builtin_clz(ch->bdshot_training_mask);
+
+			ch->bdshot_tcmp_offset = ((low + high) / 2) + BDSHOT_TCMP_MIN_OFFSET;
+			ch->bdshot_training_done = true;
+			ch->consecutive_failures = 0;
+			ch->consecutive_successes = BDSHOT_OFFLINE_COUNT;
+			ch->online = true;
+		}
+	}
+
+	nxp_flexio_dshot_set_tcmp(dev, channel);
+}
+
+/*
+ * Store an EDT frame's value into the matching per-channel field. Frames that
+ * are not eRPM carry a type nibble and an 8-bit value; unknown types (debug,
+ * state/event) are ignored. Returns true if the frame was a recognised EDT
+ * sub-value.
+ */
+static bool nxp_flexio_bdshot_store_edt(struct nxp_flexio_dshot_channel_config *ch,
+					uint16_t payload)
+{
+	uint8_t type = (payload & BDSHOT_EDT_TYPE_MASK) >> BDSHOT_EDT_TYPE_SHIFT;
+	uint8_t value = payload & BDSHOT_EDT_VALUE_MASK;
+
+	switch (type) {
+	case DSHOT_EDT_TEMPERATURE:
+		ch->edt_temperature = value;
+		ch->edt_valid |= BDSHOT_EDT_VALID_TEMPERATURE;
+		return true;
+	case DSHOT_EDT_VOLTAGE:
+		ch->edt_voltage = value;
+		ch->edt_valid |= BDSHOT_EDT_VALID_VOLTAGE;
+		return true;
+	case DSHOT_EDT_CURRENT:
+		ch->edt_current = value;
+		ch->edt_valid |= BDSHOT_EDT_VALID_CURRENT;
+		return true;
+	default:
+		return false;
+	}
+}
+
+/*
+ * Decode captured responses for every channel and, while a channel is still
+ * training, feed its sweep. Publishes eRPM through SENSOR_CHAN_RPM. Called from
+ * the sensor sample_fetch handler.
+ */
+static int nxp_flexio_bdshot_decode_erpm(const struct device *dev)
+
 {
 	const struct nxp_flexio_dshot_config *config = dev->config;
 	struct nxp_flexio_dshot_data *data = dev->data;
 	struct nxp_flexio_child *child = (struct nxp_flexio_child *)(config->child);
 	uint32_t value;
-	uint32_t decode_data;
-	uint32_t csum_data;
-	uint8_t exponent;
-	uint16_t period;
-	uint16_t erpm;
+	uint16_t payload;
 	uint32_t shifter_flag;
 
 	data->bdshot_parsed_recv_mask = 0;
 
 	// Decode each individual channel
 	for (uint8_t channel = 0; (channel < config->channel->dshot_channel_count); channel++) {
+		struct nxp_flexio_dshot_channel_config *dshot_info =
+			&config->channel->dshot_info[channel];
+
 		shifter_flag = 1 << child->res.shifter_index[channel];
-		if (data->bdshot_recv_mask & shifter_flag) {
-			value = ~config->channel->dshot_info[channel].raw_response & 0xFFFFF;
 
-			/* if lowest significant isn't 1 we've got a framing error */
-			if (value & 0x1) {
-				/* Decode RLL */
-				value = (value ^ (value >> 1));
-
-				/* Decode GCR */
-				decode_data = gcr_decode[value & 0x1fU];
-				decode_data |= gcr_decode[(value >> 5U) & 0x1fU] << 4U;
-				decode_data |= gcr_decode[(value >> 10U) & 0x1fU] << 8U;
-				decode_data |= gcr_decode[(value >> 15U) & 0x1fU] << 12U;
-
-				/* Calculate checksum */
-				csum_data = decode_data;
-				csum_data = csum_data ^ (csum_data >> 8U);
-				csum_data = csum_data ^ (csum_data >> NIBBLES_SIZE);
-
-				if ((csum_data & 0xFU) != 0xFU) {
-					config->channel->dshot_info[channel].crc_error_cnt++;
-
-				} else {
-					decode_data = (decode_data >> 4) & 0xFFF;
-
-					if (decode_data == 0xFFF) {
-						erpm = 0;
-
-					} else {
-						/* 3 bit: exponent */
-						exponent = ((decode_data >> 9U) & 0x7U);
-						/* 9 bit: period base */
-						period = (decode_data & 0x1ffU);
-						period = period << exponent; /* Period in usec */
-						erpm = ((1000000U * 60U / 100U + period / 2U) /
-							period);
-					}
-
-					config->channel->dshot_info[channel].erpm = erpm;
-					data->bdshot_parsed_recv_mask |= (1 << channel);
-					config->channel->dshot_info[channel].last_no_response_cnt =
-						config->channel->dshot_info[channel]
-							.no_response_cnt;
-				}
-
-			} else {
-				config->channel->dshot_info[channel].frame_error_cnt++;
+		if ((data->bdshot_recv_mask & shifter_flag) == 0) {
+			/* No response captured on this channel this cycle */
+			if (dshot_info->bdshot) {
+				nxp_flexio_bdshot_note_failure(dev, channel, false);
 			}
+			continue;
+		}
+
+		value = ~dshot_info->raw_response & 0xFFFFF;
+
+		/* While the receive baud has not been trained yet, feed the
+		 * sweep instead of publishing eRPM.
+		 */
+		if (dshot_info->bdshot && !dshot_info->bdshot_training_done) {
+			nxp_flexio_bdshot_train(dev, channel, value);
+			continue;
+		}
+
+		if (!nxp_flexio_bdshot_decode_gcr(value, &payload)) {
+			if ((value & 0x1) == 0) {
+				dshot_info->frame_error_cnt++;
+			} else {
+				dshot_info->crc_error_cnt++;
+			}
+
+			if (dshot_info->bdshot) {
+				nxp_flexio_bdshot_note_failure(dev, channel, true);
+			}
+			continue;
+		}
+
+		/* An EDT frame carries temperature/voltage/current instead of
+		 * eRPM (mantissa MSB clear). Store it and, since it is still a
+		 * valid decode, count it toward link health but do not touch
+		 * the eRPM value or the parsed mask.
+		 */
+		if (dshot_info->edt && (payload & BDSHOT_EDT_MANTISSA_MSB) == 0) {
+			nxp_flexio_bdshot_store_edt(dshot_info, payload);
+			nxp_flexio_bdshot_note_success(dshot_info);
+			continue;
+		}
+
+		dshot_info->erpm = nxp_flexio_bdshot_payload_to_erpm(payload);
+		data->bdshot_parsed_recv_mask |= (1 << channel);
+		dshot_info->last_no_response_cnt = dshot_info->no_response_cnt;
+
+		if (dshot_info->bdshot) {
+			nxp_flexio_bdshot_note_success(dshot_info);
 		}
 	}
 
 	return data->bdshot_parsed_recv_mask != 0;
-}
-
-// TEMP helper function before moving over to sensor api
-int up_bdshot_get_erpm(const struct device *dev, uint8_t channel, int *erpm)
-{
-	const struct nxp_flexio_dshot_config *config = dev->config;
-	struct nxp_flexio_dshot_data *data = dev->data;
-
-	if (data->bdshot_parsed_recv_mask & (1 << channel)) {
-		*erpm = (int)config->channel->dshot_info[channel].erpm;
-		return 0;
-	}
-
-	return -1;
 }
 
 static int nxp_flexio_dshot_isr(void *user_data)
@@ -593,17 +904,27 @@ static int nxp_flexio_dshot_isr(void *user_data)
 	return 0;
 }
 
+/*
+ * Fetch decodes the captured bdshot responses (and drives training). Link
+ * health is reported through the sensor read return code: -ENODATA means no
+ * bidirectional channel produced a valid eRPM this cycle (all offline or still
+ * training), so a caller polling sensor_sample_fetch() sees the read fail while
+ * the ESCs are offline and succeed once they come online.
+ */
 static int nxp_flexio_dshot_sample_fetch(const struct device *dev, enum sensor_channel chan)
 {
-	up_bdshot_decode_erpm(dev);
+	if (chan != SENSOR_CHAN_ALL && chan != SENSOR_CHAN_RPM) {
+		return -ENOTSUP;
+	}
 
-	return 0;
+	return nxp_flexio_bdshot_decode_erpm(dev) ? 0 : -ENODATA;
 }
 
 static int nxp_flexio_dshot_channel_get(const struct device *dev, enum sensor_channel chan,
 					struct sensor_value *val)
 {
 	const struct nxp_flexio_dshot_config *config = dev->config;
+	struct nxp_flexio_dshot_data *data = dev->data;
 
 	switch (chan) {
 	case SENSOR_CHAN_RPM:
@@ -611,7 +932,76 @@ static int nxp_flexio_dshot_channel_get(const struct device *dev, enum sensor_ch
 			val[i].val1 = (int32_t)config->channel->dshot_info[i].erpm;
 			val[i].val2 = 0;
 		}
+
+		/* Report link health as a read failure: if no bidirectional
+		 * channel decoded a fresh eRPM, the ESCs are offline.
+		 */
+		if (data->bdshot_parsed_recv_mask == 0) {
+			return -ENODATA;
+		}
 		break;
+
+	/*
+	 * Extended DShot Telemetry channels, one sensor_value per output.
+	 * Values are reported in real units (degrees C, volts, amps). A channel
+	 * without a fresh EDT sub-value reads zero; the read returns -ENODATA if
+	 * no channel has ever decoded that sub-value.
+	 */
+	case SENSOR_CHAN_DIE_TEMP: {
+		bool any = false;
+
+		for (uint32_t i = 0; i < config->channel->dshot_channel_count; i++) {
+			struct nxp_flexio_dshot_channel_config *ch =
+				&config->channel->dshot_info[i];
+
+			val[i].val1 = (int32_t)ch->edt_temperature;
+			val[i].val2 = 0;
+			any |= (ch->edt_valid & BDSHOT_EDT_VALID_TEMPERATURE) != 0;
+		}
+
+		if (!any) {
+			return -ENODATA;
+		}
+		break;
+	}
+
+	case SENSOR_CHAN_VOLTAGE: {
+		bool any = false;
+
+		for (uint32_t i = 0; i < config->channel->dshot_channel_count; i++) {
+			struct nxp_flexio_dshot_channel_config *ch =
+				&config->channel->dshot_info[i];
+
+			/* 0.25 V per step -> volts in val1, remainder as micro-volts */
+			val[i].val1 = ch->edt_voltage / 4;
+			val[i].val2 = (ch->edt_voltage % 4) * 250000;
+			any |= (ch->edt_valid & BDSHOT_EDT_VALID_VOLTAGE) != 0;
+		}
+
+		if (!any) {
+			return -ENODATA;
+		}
+		break;
+	}
+
+	case SENSOR_CHAN_CURRENT: {
+		bool any = false;
+
+		for (uint32_t i = 0; i < config->channel->dshot_channel_count; i++) {
+			struct nxp_flexio_dshot_channel_config *ch =
+				&config->channel->dshot_info[i];
+
+			val[i].val1 = (int32_t)ch->edt_current;
+			val[i].val2 = 0;
+			any |= (ch->edt_valid & BDSHOT_EDT_VALID_CURRENT) != 0;
+		}
+
+		if (!any) {
+			return -ENODATA;
+		}
+		break;
+	}
+
 	default:
 		return -EINVAL;
 	}
@@ -631,10 +1021,12 @@ static const struct nxp_flexio_dshot_driver_api nxp_flexio_dshot_api_funcs = {
 	.channel_count = nxp_flexio_dshot_hw_channel_count,
 };
 
+/* EDT requires bidirectional dshot; ignore the property otherwise. */
 #define _FLEXIO_DSHOT_GEN_CONFIG(n)                                                                \
 	{                                                                                          \
 		.pin_id = DT_PROP(n, pin_id),                                                      \
 		.bdshot = DT_PROP(n, bidirectional_dshot),                                         \
+		.edt = DT_PROP(n, bidirectional_dshot) && DT_PROP(n, extended_telemetry),          \
 	},
 
 #define FLEXIO_DSHOT_GEN_CONFIG(n)                                                                 \
