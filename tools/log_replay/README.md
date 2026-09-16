@@ -195,3 +195,103 @@ the remaining carrier and binding checks require the emulator's networking
 link-local addresses) to be provisioned so the source address and interface
 match. Start the target first, then start the replay promptly so the
 boot-relative GNSS stamps stay inside the GPS adapter's staleness window.
+
+## Raw optical-flow bench (indoor, no GPS)
+
+`flow_bench.py` checks the flow node's raw product (the `optical_flow` channel,
+synapse `OpticalFlowData`, decoded to `flow_raw.csv`) against the flight
+controller IMU, so the axis convention, sign, gyro compensation and
+sensitivity of the raw channel can be verified indoors with no position
+reference. It is meant for a hand-carry test over a textured floor at roughly
+1 m range.
+
+It reads `flow_raw.csv` and `imu.csv` from an interchange directory (or decodes
+an MCAP first). Both streams are on the flight-controller control-IMU boot
+clock: `mcap_to_interchange.py` re-stamps the wire flow payloads onto that clock
+(`wire_to_boot`) and rebases IMU and flow to the first IMU sample, so the flow
+window times and the IMU times share one domain and are differenced directly.
+
+The check follows the convention in `src/processes/navigation_optical_flow_raw.c`:
+`flow_rad` is the integrated angular image flow in body FLU in the same
+rotational sense as the body rotation, `delta_angle_flu` is the genuine
+`+integral` of the body rate, the translation flow is `tau = flow_rad -
+delta_angle` (x, y), and body velocity is `v_forward = range*tau_y/dt`,
+`v_left = -range*tau_x/dt`. So a pure rotation gives `flow_rad = delta_angle`
+(tau near zero), a forward `+x` translation gives `flow_rad.y > 0`, and a left
+`+y` translation gives `flow_rad.x < 0`. The node forms `flow_rad` from PAA3905
+counts through `VOF_SENS` (480.24 counts/rad); a sensitivity error there shows
+as a distance-scale error on the walk.
+
+### Test procedure
+
+Record one log with the vehicle level, about 1 m over a textured floor. Hold a
+few seconds of rest between segments; each moving segment 10 to 20 s.
+
+- A. static rest.
+- B. pure translation forward along body `+x` and back, walking pace, no
+  rotation.
+- C. pure translation left along body `+y` and back.
+- D. rotation in place about body `z` (yaw), both directions.
+- E. rotation in place about body `x` (roll) and about `y` (pitch), small
+  amplitude, both directions, with a short rest between roll and pitch.
+- F. a hallway walk of a known paced length, out and back; note the length in
+  metres.
+- G. optional: the same walk at a different height.
+
+### Run
+
+    nix shell --impure --expr 'with import <nixpkgs> {}; \
+        python3.withPackages (ps: [ps.numpy ps.matplotlib ps.scipy ps.pandas])' \
+        -c python3 ./flow_bench.py INPUT [--walk-length METRES] [options]
+
+`INPUT` is an interchange directory or an MCAP log (decoded first with
+`--fill-gaps`). Options:
+
+- `--walk-length METRES` the paced length of segment F, for the scale check.
+- `--walk-segment LABEL` which segment is the hallway walk (default: the
+  longest translation segment).
+- `--segment LABEL:T0:T1` an explicit segment override (repeatable); when any
+  is given it replaces the automatic segmentation. A label containing `roll`,
+  `pitch`, `yaw`, `rot` or `spin` is treated as rotation, one containing `rest`,
+  `static` or `still` as rest, otherwise as translation. A clean
+  single-direction translation window gives the crispest axis map.
+- segmentation tuning: `--rest-gyro`, `--rest-speed`, `--rot-gyro`,
+  `--trans-speed` (thresholds), `--min-seg` (minimum duration), `--smooth`
+  (feature smoothing) and `--bridge` (gap-close radius that keeps an
+  oscillating rotation one segment).
+- lag sweep: `--lag-min-ms`, `--lag-max-ms`, `--lag-step-ms` (default -200 to
+  +200 ms in 5 ms steps).
+
+### Output
+
+A timeline of the detected segments, then per analysis:
+
+- rotation: for each rotation segment the best flow-to-IMU lag, the node's own
+  gyro gain on the rotated axis (node `delta_angle` against the FC gyro
+  integrated over each flow window), and for an in-plane roll or pitch the
+  flow-vs-gyro gain and cross-axis term. The compensation verdict flags
+  consistent, doubled, missing, sign-flipped or cross-leaked, and the residual
+  is reported before and after the adapter compensation (`tau = flow_rad -
+  delta_angle`), which should approach zero for a consistent in-plane rotation.
+  For a yaw the in-plane flow should stay near zero.
+- translation: the best 2x2 signed-permutation map from body velocity (from the
+  high-pass accelerometer-integrated velocity) to the flow axes, with the fitted
+  scale and residual for all eight candidates, whether it matches the adapter
+  convention and whether a reflection (mirrored axis) is present.
+- hallway walk: the compensated flow times range integrated into a body-frame
+  distance, compared with `--walk-length` to give the sensitivity correction
+  factor and the implied `VOF_SENS`, plus a dead-reckoned 2D track (yaw from the
+  integrated gyro) written to `flow_bench_track.csv` and `flow_bench_track.png`.
+- static: flow noise, the rate of false motion, and quality and range
+  statistics over the rest segments.
+
+A summary is written to `flow_bench_summary.json` and a text report to
+`flow_bench_report.txt`. The tool exits nonzero when `flow_raw.csv` is absent,
+which means the node did not send the raw `OpticalFlowData` topic.
+
+The translation axis map relies on the accelerometer-integrated velocity as its
+direction reference, which is valid only while the vehicle stays roughly level
+(so gravity stays on the z axis). It is intended for the level hand-carry above;
+on data with sustained tilts the body-velocity reference degrades and the map
+candidates tie, at which point the segment overrides and the rotation and walk
+checks remain the reliable diagnostics.
