@@ -45,6 +45,9 @@ ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(control_loop_metrics,
 /* Direct-wire optical-flow input. */
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(optical_flow_vel,
                                    synapse_topic_OpticalFlowVelocityData_t);
+/* Direct-wire raw optical-flow input for the tightly coupled estimator path. */
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(optical_flow,
+                                   synapse_topic_OpticalFlowData_t);
 /* Single-publisher home of the selected GNSS source. */
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(gnss_fix, synapse_topic_GnssFixData_t);
 

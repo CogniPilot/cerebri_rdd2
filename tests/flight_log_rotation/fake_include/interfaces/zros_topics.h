@@ -18,6 +18,7 @@ extern struct zros_topic topic_attitude_command;
 extern struct zros_topic topic_rate_command;
 extern struct zros_topic topic_manual_input;
 extern struct zros_topic topic_optical_flow_vel;
+extern struct zros_topic topic_optical_flow;
 extern struct zros_topic topic_gnss_fix;
 
 #endif /* RDD2_TEST_FAKE_ZROS_TOPICS_H_ */

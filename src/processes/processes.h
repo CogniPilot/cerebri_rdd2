@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 struct rdd2_navigation_optical_flow_diagnostics;
+struct rdd2_navigation_optical_flow_raw_diagnostics;
 
 /*
  * Zephyr deployment boundary for the generated eFMUs.
@@ -28,6 +29,8 @@ bool rdd2_navigation_origin_valid_get(void);
 bool rdd2_navigation_gyroscope_bias_get(float bias_body_flu_rad_s[3]);
 bool rdd2_navigation_optical_flow_diagnostics_get(
     struct rdd2_navigation_optical_flow_diagnostics *diagnostics);
+bool rdd2_navigation_optical_flow_raw_diagnostics_get(
+    struct rdd2_navigation_optical_flow_raw_diagnostics *diagnostics);
 uint8_t rdd2_waypoint_mission_state_get(void);
 
 /* Navigation keeps finite attitude/rate output usable during estimator

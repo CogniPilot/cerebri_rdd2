@@ -19,6 +19,7 @@
 #include "interfaces/data.h"
 #include "navigation_gps.h"
 #include "navigation_optical_flow.h"
+#include "navigation_optical_flow_raw.h"
 #include "Vehicles_Rdd2_NavigationEstimator.h"
 
 #define IMU_RATE_HZ 800.0f
@@ -31,6 +32,7 @@
 struct imu_row { double t; float g[3]; float a[3]; };
 struct gps_row { double t, lat, lon, alt, alte, vn, ve, vd, hacc, vacc, sacc; int fix, sats, pos_valid, vel_valid; };
 struct flow_row { double t, vx, vy, dist, q; int valid; };
+struct flow_raw_row { double t, fx, fy, dax, day, daz, integ, dist, dq, q, flags; };
 
 static const struct rdd2_navigation_optical_flow_config g_flow_config = {
     .max_age_ns = 150ULL * 1000000ULL, .min_distance_m = 0.05f, .max_distance_m = 5.0f,
@@ -38,6 +40,23 @@ static const struct rdd2_navigation_optical_flow_config g_flow_config = {
     .worst_stddev_m_s = 1.0f, .range_variance_m2 = 0.05f * 0.05f, .sensor_id = 0,
     .nominal_integration_time_s = 0.025f, .min_integration_time_s = 0.005f,
     .max_integration_time_s = 0.200f, .min_quality = 100, .require_gptp = true,
+};
+
+/*
+ * Default tightly coupled optical-flow raw config, matching the Kconfig
+ * defaults in subsys/optical_flow_source/Kconfig
+ * (RDD2_OPTICAL_FLOW_RAW_*): 150 ms staleness, 0.05 to 5.0 m range gate, 5 to
+ * 200 ms integration window, line-of-sight noise floor 300 urad with a 5% to
+ * 25% sensitivity fraction, ICM45686 rate-noise density 3800 urad/s/rtHz,
+ * range stddev 30 to 150 mm, mount yaw 0 degrees, min quality 100.
+ */
+static const struct rdd2_navigation_optical_flow_raw_config g_flow_raw_config = {
+    .max_age_ns = 150ULL * 1000000ULL, .min_distance_m = 0.05f, .max_distance_m = 5.0f,
+    .min_integration_time_s = 0.005f, .max_integration_time_s = 0.200f,
+    .los_floor_rad = 300.0e-6f, .los_sens_best_frac = 0.05f, .los_sens_worst_frac = 0.25f,
+    .gyro_rate_noise_rad_s_rthz = 3800.0e-6f, .range_best_stddev_m = 0.03f,
+    .range_worst_stddev_m = 0.15f, .mount_yaw_deg = 0, .sensor_id = 0,
+    .min_quality = 100, .require_gptp = true,
 };
 
 static void *xrealloc(void *p, size_t n) { p = realloc(p, n); if (!p) { perror("realloc"); exit(1); } return p; }
@@ -71,6 +90,18 @@ static size_t load_flow(const char *path, struct flow_row **out) {
     if (n == cap) { cap = cap ? cap * 2 : 256; r = xrealloc(r, cap * sizeof *r); }
     struct flow_row *w = &r[n];
     if (sscanf(line, "%lf,%lf,%lf,%lf,%lf,%d", &w->t, &w->vx, &w->vy, &w->dist, &w->q, &w->valid) == 6) n++;
+  }
+  fclose(f); *out = r; return n;
+}
+
+static size_t load_flow_raw(const char *path, struct flow_raw_row **out) {
+  FILE *f = fopen(path, "r"); if (!f) { perror(path); exit(1); }
+  char line[512]; size_t n = 0, cap = 0; struct flow_raw_row *r = NULL;
+  if (!fgets(line, sizeof line, f)) exit(1);
+  while (fgets(line, sizeof line, f)) {
+    if (n == cap) { cap = cap ? cap * 2 : 256; r = xrealloc(r, cap * sizeof *r); }
+    struct flow_raw_row *w = &r[n];
+    if (sscanf(line, "%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf", &w->t, &w->fx, &w->fy, &w->dax, &w->day, &w->daz, &w->integ, &w->dist, &w->dq, &w->q, &w->flags) == 11) n++;
   }
   fclose(f); *out = r; return n;
 }
@@ -119,6 +150,21 @@ static void flow_to_sample(const struct flow_row *w, synapse_topic_OpticalFlowVe
   s->quality = (uint8_t)llround(w->q * 255.0);
   s->flags = w->valid ? 7U : 0U;
   s->time_status = synapse_types_TimeStatus_GptpSynced;
+}
+
+static void flow_raw_to_sample(const struct flow_raw_row *w, synapse_topic_OpticalFlowData_t *s) {
+  memset(s, 0, sizeof *s);
+  s->timestamp_ns = to_ns(w->t);
+  s->timestamp_sample_ns = s->timestamp_ns;
+  s->flow_rad.x = (float)w->fx; s->flow_rad.y = (float)w->fy;
+  s->delta_angle_flu_rad.x = (float)w->dax; s->delta_angle_flu_rad.y = (float)w->day; s->delta_angle_flu_rad.z = (float)w->daz;
+  s->distance_m = (float)w->dist;
+  s->integration_timespan_ns = (uint32_t)llround(w->integ * 1e9);
+  s->distance_quality = (uint8_t)llround(w->dq);
+  s->quality = (uint8_t)llround(w->q);
+  s->flags = (uint8_t)llround(w->flags);
+  s->time_status = synapse_types_TimeStatus_GptpSynced;
+  s->id = 0U;
 }
 
 /* Verbatim wiring from the firmware estimator process. */
@@ -178,6 +224,27 @@ static void copy_optical_flow_input_to_efmu(NavigationEstimatorState *efmu, cons
   efmu->groundDistanceVariance_m2 = m->ground_distance_variance_m2;
   efmu->quality = m->quality;
 }
+/* Verbatim wiring from the firmware estimator process
+ * (navigation_estimator.c copy_optical_flow_raw_input_to_efmu): the raw
+ * measurement is copied into the eFMU inputs field for field, including the
+ * full integrated gyro (no zeroing) and its covariance. */
+static void copy_optical_flow_raw_input_to_efmu(NavigationEstimatorState *efmu, const struct rdd2_navigation_optical_flow_raw_measurement *m) {
+  efmu->opticalFlow_valid = m->valid; efmu->opticalFlow_fresh = m->fresh; efmu->opticalFlow_timestamp_s = (float)m->timestamp_ns * 1.0e-9f;
+  for (size_t row = 0U; row < 2U; ++row) {
+    efmu->integratedLineOfSight_rad[row] = m->integrated_line_of_sight_rad[row];
+    for (size_t column = 0U; column < 2U; ++column)
+      efmu->integratedLineOfSightCovariance_rad2[row][column] = m->integrated_line_of_sight_cov_rad2[row][column];
+  }
+  for (size_t row = 0U; row < 3U; ++row) {
+    efmu->integratedGyroscopeBodyFlu_rad[row] = m->integrated_gyro_body_flu_rad[row];
+    for (size_t column = 0U; column < 3U; ++column)
+      efmu->integratedGyroscopeCovariance_rad2[row][column] = m->integrated_gyro_cov_rad2[row][column];
+  }
+  efmu->opticalFlow_integrationTime_s = m->integration_time_s;
+  efmu->groundDistance_m = m->ground_distance_m;
+  efmu->groundDistanceVariance_m2 = m->ground_distance_variance_m2;
+  efmu->quality = m->quality;
+}
 static bool efmu_estimate_is_finite(const NavigationEstimatorState *efmu) {
   const float values[] = {
       efmu->estimate_quaternionWorldBody[0], efmu->estimate_quaternionWorldBody[1], efmu->estimate_quaternionWorldBody[2], efmu->estimate_quaternionWorldBody[3],
@@ -196,13 +263,14 @@ static void euler_from_quat(const float q[4], double e[3]) {
 }
 
 int main(int argc, char **argv) {
-  const char *input = NULL, *output = NULL; int divisor = 8; bool use_flow = true, use_gps = true; int verbose = 0; double q_gyro = -1, q_accel = -1, q_gbias = -1, q_abias = -1, gate = -1, v_gbias = -1, v_abias = -1, v_att = -1;
+  const char *input = NULL, *output = NULL, *flow_raw_path = NULL; int divisor = 8; bool use_flow = true, use_gps = true; int verbose = 0; double q_gyro = -1, q_accel = -1, q_gbias = -1, q_abias = -1, gate = -1, v_gbias = -1, v_abias = -1, v_att = -1;
   double deny0[MAX_DENY], deny1[MAX_DENY]; int ndeny = 0;
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--input") && i + 1 < argc) input = argv[++i];
     else if (!strcmp(argv[i], "--output") && i + 1 < argc) output = argv[++i];
     else if (!strcmp(argv[i], "--divisor") && i + 1 < argc) divisor = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--gps-deny") && i + 1 < argc && ndeny < MAX_DENY) { sscanf(argv[++i], "%lf:%lf", &deny0[ndeny], &deny1[ndeny]); ndeny++; }
+    else if ((!strcmp(argv[i], "--flow-raw") || !strcmp(argv[i], "--raw-flow")) && i + 1 < argc) flow_raw_path = argv[++i];
     else if (!strcmp(argv[i], "--no-flow")) use_flow = false;
     else if (!strcmp(argv[i], "--no-gps")) use_gps = false;
     else if (!strcmp(argv[i], "--no-vertical-velocity")) g_no_vertical_velocity = true;
@@ -215,21 +283,25 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--init-gyro-bias-var") && i + 1 < argc) v_gbias = atof(argv[++i]);
     else if (!strcmp(argv[i], "--init-accel-bias-var") && i + 1 < argc) v_abias = atof(argv[++i]);
     else if (!strcmp(argv[i], "--init-att-var") && i + 1 < argc) v_att = atof(argv[++i]);
-    else { fprintf(stderr, "usage: %s --input DIR --output FILE [--divisor N] [--gps-deny T0:T1]... [--no-flow] [--no-gps]\n", argv[0]); return 2; }
+    else { fprintf(stderr, "usage: %s --input DIR --output FILE [--divisor N] [--gps-deny T0:T1]... [--flow-raw FILE] [--no-flow] [--no-gps]\n", argv[0]); return 2; }
   }
   if (!input || !output) { fprintf(stderr, "missing --input/--output\n"); return 2; }
   char path[1024]; struct imu_row *imu; struct gps_row *gps; struct flow_row *flow;
+  struct flow_raw_row *flow_raw = NULL; size_t nflow_raw = 0; bool use_flow_raw = flow_raw_path != NULL;
   snprintf(path, sizeof path, "%s/imu.csv", input); size_t nimu = load_imu(path, &imu);
   snprintf(path, sizeof path, "%s/gps.csv", input); size_t ngps = load_gps(path, &gps);
   snprintf(path, sizeof path, "%s/flow.csv", input); size_t nflow = load_flow(path, &flow);
-  fprintf(stderr, "loaded imu %zu gps %zu flow %zu\n", nimu, ngps, nflow);
+  if (use_flow_raw) { nflow_raw = load_flow_raw(flow_raw_path, &flow_raw); use_flow = false; }
+  fprintf(stderr, "loaded imu %zu gps %zu flow %zu flow_raw %zu\n", nimu, ngps, nflow, nflow_raw);
   FILE *out = fopen(output, "w"); if (!out) { perror(output); return 1; }
   fprintf(out, "t_s,e_m,n_m,u_m,ve_m_s,vn_m_s,vu_m_s,qw,qx,qy,qz,roll_rad,pitch_rad,yaw_rad,bgx_rad_s,bgy_rad_s,bgz_rad_s,bax_m_s2,bay_m_s2,baz_m_s2,pos_valid,att_valid,"
                "initialized,recovery_stage,correction_outcome,correction_source,anchor_source,nis,gps_pos_acc,gps_vel_acc,flow_acc,gps_rej,flow_rej,imu_held,sig_e,sig_n,sig_u,sig_ve,sig_vn,sig_vu,sig_att_x,sig_att_y,sig_att_z,step_status\n");
 
   static NavigationEstimatorState efmu; static struct rdd2_imu_preintegrator pre; struct rdd2_imu_packet packet;
   struct rdd2_navigation_gps_adapter gps_adapter; struct rdd2_navigation_optical_flow_adapter flow_adapter;
+  struct rdd2_navigation_optical_flow_raw_adapter flow_raw_adapter;
   rdd2_navigation_gps_init(&gps_adapter); rdd2_navigation_optical_flow_init(&flow_adapter);
+  rdd2_navigation_optical_flow_raw_init(&flow_raw_adapter);
   NavigationEstimator_startup(&efmu);
   for (size_t i = 0U; i < 3U; ++i) { efmu.mocap_positionCovarianceWorld_m2[i][i] = 0.01f; efmu.attitudeCovarianceBody_rad2[i][i] = 0.01f; }
   efmu.samplePeriod = (float)divisor / IMU_RATE_HZ;
@@ -252,7 +324,8 @@ int main(int argc, char **argv) {
           efmu.initialQuaternionWorldBody[0], efmu.initialQuaternionWorldBody[1], efmu.initialQuaternionWorldBody[2], efmu.initialQuaternionWorldBody[3], efmu.minimumOpticalFlowQuality, efmu.minimumOpticalFlowGroundDistance_m);
 
   synapse_topic_GnssFixData_t fix = {0}; synapse_topic_OpticalFlowVelocityData_t flow_sample = {0}; synapse_topic_VehicleHealthData_t health = {0};
-  size_t gi = 0, fi = 0; bool initialized = false, origin_pending = false; uint64_t origin_started_ns = 0;
+  synapse_topic_OpticalFlowData_t flow_raw_sample = {0};
+  size_t gi = 0, fi = 0, ri = 0; bool initialized = false, origin_pending = false; uint64_t origin_started_ns = 0;
   uint16_t hold_count = 0; bool usable_observed = false; unsigned long steps = 0, valid_steps = 0, gps_acc = 0, flow_acc = 0;
   double first_valid_t = -1, first_gps_t = -1;
   for (size_t k = 0; k < nimu; ++k) {
@@ -268,19 +341,26 @@ int main(int argc, char **argv) {
     copy_imu_input_to_efmu(&efmu, &packet);
     efmu.mocap_valid = false; efmu.mocap_fresh = false;
     /* deliver sensor messages whose timestamps have arrived */
-    bool gnss_fresh = false, flow_fresh = false;
+    bool gnss_fresh = false, flow_fresh = false, flow_raw_fresh = false;
     while (gi < ngps && to_ns(gps[gi].t) <= now) {
       bool denied = !use_gps; for (int d = 0; d < ndeny; ++d) if (gps[gi].t >= deny0[d] && gps[gi].t < deny1[d]) denied = true;
       if (!denied) { gps_to_fix(&gps[gi], &fix); gnss_fresh = true; }
       gi++;
     }
     while (fi < nflow && to_ns(flow[fi].t) <= now) { if (use_flow) { flow_to_sample(&flow[fi], &flow_sample); flow_fresh = true; } fi++; }
+    while (ri < nflow_raw && to_ns(flow_raw[ri].t) <= now) { if (use_flow_raw) { flow_raw_to_sample(&flow_raw[ri], &flow_raw_sample); flow_raw_fresh = true; } ri++; }
     health.timestamp_ns = now; health.flags = 0U;
     struct rdd2_navigation_gps_measurement gm; struct rdd2_navigation_optical_flow_measurement fm;
+    struct rdd2_navigation_optical_flow_raw_measurement frm;
     bool origin_captured = rdd2_navigation_gps_step(&gps_adapter, &gm, &fix, gnss_fresh, &health, true, now);
     copy_gps_input_to_efmu(&efmu, &gm);
-    rdd2_navigation_optical_flow_step(&flow_adapter, &fm, &flow_sample, flow_fresh, now, &g_flow_config);
-    copy_optical_flow_input_to_efmu(&efmu, &fm);
+    if (use_flow_raw) {
+      rdd2_navigation_optical_flow_raw_step(&flow_raw_adapter, &frm, &flow_raw_sample, flow_raw_fresh, now, &g_flow_raw_config);
+      copy_optical_flow_raw_input_to_efmu(&efmu, &frm);
+    } else {
+      rdd2_navigation_optical_flow_step(&flow_adapter, &fm, &flow_sample, flow_fresh, now, &g_flow_config);
+      copy_optical_flow_input_to_efmu(&efmu, &fm);
+    }
     if (origin_captured) { origin_pending = true; origin_started_ns = now; if (verbose) fprintf(stderr, "origin captured at t=%.3f lat %.7f lon %.7f alt %.3f\n", imu[k].t, gps_adapter.origin_latitude_deg_e7 * 1e-7, gps_adapter.origin_longitude_deg_e7 * 1e-7, gps_adapter.origin_altitude_msl_mm * 1e-3); }
     efmu.reset = !initialized || origin_pending;
     NavigationEstimator_dostep(&efmu);

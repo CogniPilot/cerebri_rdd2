@@ -58,10 +58,12 @@ target_sources(app PRIVATE
   src/navigation_wrapper_test.c
   src/navigation_gps_test.c
   src/optical_flow_test.c
+  src/optical_flow_raw_test.c
   src/guidance_wrapper_test.c
   "${RDD2_TEST_APP_ROOT}/src/processes/navigation_gps.c"
   "${RDD2_TEST_APP_ROOT}/src/processes/imu_preintegration.c"
   "${RDD2_TEST_APP_ROOT}/src/processes/navigation_optical_flow.c"
+  "${RDD2_TEST_APP_ROOT}/src/processes/navigation_optical_flow_raw.c"
 )
 # The wrapper sources include interfaces/data.h and the optical-flow adapter
 # includes the synapse readers, so the app needs the synapse_fbs C headers on

@@ -19,14 +19,48 @@ rotation) by linear interpolation at the nominal 800 Hz spacing.
 """
 import argparse, json, os, struct
 import numpy as np
-from scipy.signal import butter, filtfilt
 
 from wire_replay import read_channels
+
+try:
+    from scipy.signal import butter, filtfilt
+
+    def _smooth_altitude(alt, cutoff_fraction):
+        b, a = butter(2, cutoff_fraction)
+        return filtfilt(b, a, alt)
+except ImportError:
+    def _smooth_altitude(alt, cutoff_fraction):
+        """Zero-phase low-pass fallback used when scipy is unavailable.
+
+        Approximates the second-order Butterworth filtfilt with a forward and
+        reverse single-pole smoother, matched so that its half-power point sits
+        at the requested normalized cutoff. Reflect-padded to limit edge
+        transients. Only the derived vertical-velocity diagnostic uses this.
+        """
+        alt = np.asarray(alt, dtype=float)
+        if alt.size < 3:
+            return alt.copy()
+        wc = np.tan(np.pi * cutoff_fraction / 2.0)
+        alpha = wc / (1.0 + wc)
+        pad = min(alt.size - 1, max(8, int(round(3.0 / max(alpha, 1e-6)))))
+        ext = np.concatenate((alt[pad:0:-1], alt, alt[-2:-pad - 2:-1]))
+
+        def single_pole(x):
+            y = np.empty_like(x)
+            y[0] = x[0]
+            for i in range(1, x.size):
+                y[i] = y[i - 1] + alpha * (x[i] - y[i - 1])
+            return y
+
+        fwd = single_pole(ext)
+        rev = single_pole(fwd[::-1])[::-1]
+        return rev[pad:pad + alt.size]
 
 LAYOUTS = {
     'control_imu': np.dtype([('ts', '<u8'), ('ax', '<f4'), ('ay', '<f4'), ('az', '<f4'), ('gx', '<f4'), ('gy', '<f4'), ('gz', '<f4'), ('temp', '<f4'), ('flags', 'u1'), ('time_status', 'u1'), ('id', 'u1'), ('pad', 'u1')]),
     'gnss_fix': np.dtype([('ts', '<u8'), ('unix_ns', '<u8'), ('lat_e7', '<i4'), ('lon_e7', '<i4'), ('alt_msl_mm', '<i4'), ('alt_ell_mm', '<i4'), ('hacc_mm', '<u2'), ('vacc_mm', '<u2'), ('sacc_mm_s', '<u2'), ('yawacc_cdeg', '<u2'), ('hdop', '<u2'), ('vdop', '<u2'), ('gspeed_cm_s', '<u2'), ('cog_cdeg', '<u2'), ('yaw_cdeg', '<u2'), ('vup_cm_s', '<i2'), ('flags', 'u1'), ('fix_type', 'u1'), ('sats_used', 'u1'), ('sats_vis', 'u1'), ('time_status', 'u1'), ('id', 'u1'), ('pad', 'V6')]),
     'optical_flow_vel': np.dtype([('ts', '<u8'), ('vx', '<f4'), ('vy', '<f4'), ('dist', '<f4'), ('roll', '<f4'), ('pitch', '<f4'), ('quality', 'u1'), ('flags', 'u1'), ('time_status', 'u1'), ('id', 'u1')]),
+    'optical_flow': np.dtype([('ts', '<u8'), ('ts_sample', '<u8'), ('dist_ts', '<u8'), ('flow_x', '<f4'), ('flow_y', '<f4'), ('da_x', '<f4'), ('da_y', '<f4'), ('da_z', '<f4'), ('dist', '<f4'), ('dist_spread', '<f4'), ('int_ns', '<u4'), ('err', '<u4'), ('max_flow', '<f4'), ('min_gd', '<f4'), ('max_gd', '<f4'), ('fov', '<f4'), ('temp', '<f4'), ('quality', 'u1'), ('dist_quality', 'u1'), ('dist_pixel_ok', 'u1'), ('mode', 'u1'), ('flags', 'u1'), ('time_status', 'u1'), ('id', 'u1'), ('pad', 'u1')]),
     'attitude_estimate': np.dtype([('ts', '<u8'), ('qw', '<f4'), ('qx', '<f4'), ('qy', '<f4'), ('qz', '<f4'), ('wx', '<f4'), ('wy', '<f4'), ('wz', '<f4'), ('flags', 'u1'), ('time_status', 'u1'), ('pad', 'V2')]),
     'time_reference': np.dtype([('ts', '<u8'), ('tai_ns', '<u8'), ('unix_ns', '<u8'), ('unc_ns', '<u4'), ('utc_off', '<i2'), ('time_status', 'u1'), ('clock_class', 'u1'), ('domain', 'u1'), ('id', 'u1'), ('pad', 'V6')]),
 }
@@ -92,7 +126,7 @@ def main():
     hacc = gps['hacc_mm'] / 1e3; vacc = gps['vacc_mm'] / 1e3; sacc = gps['sacc_mm_s'] / 1e3
     speed = gps['gspeed_cm_s'] / 100.0; cog = np.deg2rad(gps['cog_cdeg'] / 100.0)
     vn = speed * np.cos(cog); ve = speed * np.sin(cog)
-    b, a = butter(2, 0.3 / (5.0 / 2)); vd = -np.gradient(filtfilt(b, a, alt), tg)
+    vd = -np.gradient(_smooth_altitude(alt, 0.3 / (5.0 / 2)), tg)
     pos_valid = (gps['fix_type'] >= 3) & (hacc <= 10.0) & (vacc <= 15.0)
     vel_valid = ((gps['flags'] & 2) != 0) & (sacc <= 5.0)
     first = int(np.flatnonzero(pos_valid)[0])
@@ -105,9 +139,21 @@ def main():
                header='t_s,lat_deg,lon_deg,alt_msl_m,alt_ell_m,vn_m_s,ve_m_s,vd_m_s,hacc_m,vacc_m,sacc_m_s,fix_type,sats_used,pos_valid,vel_valid,vd_derived,e_m,n_m,u_m', comments='')
     tf = (wire_to_boot(flow['ts'], flow_lt, flow['time_status']) - t0) / 1e9
     np.savetxt(f'{out}/flow.csv', np.c_[tf, flow['vx'], flow['vy'], flow['dist'], flow['quality'] / 255.0, (flow['flags'] & 7) == 7], delimiter=',', fmt=['%.6f', '%.4f', '%.4f', '%.4f', '%.4f', '%d'], header='t_s,vx_flu_m_s,vy_flu_m_s,dist_m,quality,valid', comments='')
+    raw = log.get('optical_flow')
+    if raw is not None:
+        of, of_lt = raw
+        tr_raw = (wire_to_boot(of['ts'], of_lt, of['time_status']) - t0) / 1e9
+        np.savetxt(f'{out}/flow_raw.csv',
+                   np.c_[tr_raw, of['flow_x'], of['flow_y'], of['da_x'], of['da_y'], of['da_z'],
+                         of['int_ns'] / 1e9, of['dist'], of['dist_quality'], of['quality'], of['flags']],
+                   delimiter=',',
+                   fmt=['%.6f', '%.7f', '%.7f', '%.7f', '%.7f', '%.7f', '%.6f', '%.4f', '%d', '%d', '%d'],
+                   header='t_s,flow_rad_x,flow_rad_y,delta_angle_x,delta_angle_y,delta_angle_z,integration_s,dist_m,dist_quality,quality,flags',
+                   comments='')
     ta = (att['ts'].astype(np.int64) - t0) / 1e9
     np.savetxt(f'{out}/onboard.csv', np.c_[ta, att['qw'], att['qx'], att['qy'], att['qz'], att['wx'], att['wy'], att['wz']], delimiter=',', fmt='%.6f', header='t_s,qw,qx,qy,qz,wx,wy,wz', comments='')
-    print(f'imu {len(rows)} rows, gps {len(tg)} ({int(pos_valid.sum())} usable), flow {len(tf)}, origin {origin}')
+    nraw = 0 if raw is None else len(raw[0])
+    print(f'imu {len(rows)} rows, gps {len(tg)} ({int(pos_valid.sum())} usable), flow {len(tf)}, flow_raw {nraw}, origin {origin}')
 
 
 if __name__ == '__main__':

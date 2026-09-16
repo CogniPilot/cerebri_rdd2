@@ -37,6 +37,7 @@ RDD2_FAKE_PAYLOAD(synapse_topic_AttitudeCommandData_t, 48U);
 RDD2_FAKE_PAYLOAD(synapse_topic_RateCommandData_t, 32U);
 RDD2_FAKE_PAYLOAD(synapse_topic_ManualControlData_t, 40U);
 RDD2_FAKE_PAYLOAD(synapse_topic_OpticalFlowVelocityData_t, 32U);
+RDD2_FAKE_PAYLOAD(synapse_topic_OpticalFlowData_t, 88U);
 RDD2_FAKE_PAYLOAD(synapse_topic_GnssFixData_t, 64U);
 
 typedef enum {
@@ -83,6 +84,7 @@ typedef struct __attribute__((packed)) {
 	RDD2_FAKE_TOPIC(9, "synapse.topic.ManualControlCommand", 40U)
 #define SYNAPSE_MCAP_TOPIC_OpticalFlowVelocity                                                     \
 	RDD2_FAKE_TOPIC(10, "synapse.topic.OpticalFlowVelocity", 32U)
+#define SYNAPSE_MCAP_TOPIC_OpticalFlow RDD2_FAKE_TOPIC(13, "synapse.topic.OpticalFlow", 88U)
 #define SYNAPSE_MCAP_TOPIC_GnssFix RDD2_FAKE_TOPIC(11, "synapse.topic.GnssFix", 64U)
 #define SYNAPSE_MCAP_TOPIC_TimeReference RDD2_FAKE_TOPIC(12, "synapse.topic.TimeReference", 40U)
 

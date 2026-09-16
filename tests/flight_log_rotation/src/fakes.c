@@ -49,6 +49,7 @@ struct zros_topic topic_attitude_command;
 struct zros_topic topic_rate_command;
 struct zros_topic topic_manual_input;
 struct zros_topic topic_optical_flow_vel;
+struct zros_topic topic_optical_flow;
 struct zros_topic topic_gnss_fix;
 
 /* ---- boot clock ---- */
@@ -89,6 +90,7 @@ static const double g_source_rate_hz[] = {
 	200.0, /* rate cmd       */
 	380.0, /* manual         */
 	34.0,  /* optical flow   */
+	34.0,  /* optical flow raw */
 	6.0,   /* gnss           */
 };
 

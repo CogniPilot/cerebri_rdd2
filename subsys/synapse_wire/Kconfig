@@ -41,6 +41,31 @@ config RDD2_SYNAPSE_WIRE_OPTICAL_PORT
 	range 1 65535
 	default 46010
 
+config RDD2_SYNAPSE_WIRE_OPTICAL_RAW_SOURCE_ADDRESS
+	string "Raw optical-flow source IPv6 address"
+	# Same flow node as the derived velocity stream (node 12), which publishes
+	# both the raw OpticalFlowData and the derived OpticalFlowVelocity.
+	default "fe80::4:9fff:fe00:120"
+
+config RDD2_SYNAPSE_WIRE_OPTICAL_RAW_SOURCE_NODE_ID
+	int "Raw optical-flow source node ID"
+	range 1 4294967295
+	default 12
+
+config RDD2_SYNAPSE_WIRE_OPTICAL_RAW_PORT
+	int "Raw optical-flow UDP port"
+	range 1 65535
+	default 46011
+	help
+	  Own UDP port for the raw OpticalFlowData stream, one above the derived
+	  optical-flow velocity port so the two flow streams from the same node do
+	  not share a socket.
+
+config RDD2_SYNAPSE_WIRE_OPTICAL_RAW_MAX_AGE_MS
+	int "Maximum raw optical-flow age"
+	range 1 1000
+	default 100
+
 config RDD2_SYNAPSE_WIRE_GNSS_SOURCE_ADDRESS
 	string "GNSS source IPv6 address"
 	# Role-derived, not silicon-derived: node 11 resolves to

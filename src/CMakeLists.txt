@@ -51,6 +51,16 @@ if(CONFIG_SHELL AND CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
   )
 endif()
 
+target_sources_ifdef(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW app PRIVATE
+  processes/navigation_optical_flow_raw.c
+)
+
+if(CONFIG_SHELL AND CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+  target_sources(app PRIVATE
+    interfaces/optical_flow_raw_shell.c
+  )
+endif()
+
 target_sources_ifdef(CONFIG_TOP_SHELL app PRIVATE
   diagnostics/top_shell.c
 )

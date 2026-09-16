@@ -7,6 +7,7 @@
 #include "interfaces/zros_topics.h"
 #include "navigation_gps.h"
 #include "navigation_optical_flow.h"
+#include "navigation_optical_flow_raw.h"
 #include "scheduling.h"
 
 #include <stdbool.h>
@@ -64,6 +65,9 @@ struct navigation_estimator_process {
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
   synapse_topic_OpticalFlowVelocityData_t optical_flow;
 #endif
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+  synapse_topic_OpticalFlowData_t optical_flow_raw;
+#endif
   synapse_topic_VehicleHealthData_t health;
   synapse_topic_OdometryEstimateData_t odometry;
   synapse_topic_AttitudeEstimateData_t attitude;
@@ -75,12 +79,20 @@ struct navigation_estimator_process {
   uint64_t optical_flow_last_fusion_control_timestamp_ns;
   uint32_t optical_flow_fusion_accepted_count;
 #endif
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+  struct rdd2_navigation_optical_flow_raw_adapter optical_flow_raw_adapter;
+  uint64_t optical_flow_last_fusion_control_timestamp_ns;
+  uint32_t optical_flow_fusion_accepted_count;
+#endif
   struct zros_node node;
   struct zros_sub imu_sub;
   struct zros_sub external_odometry_sub;
   struct zros_sub gnss_sub;
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
   struct zros_sub optical_flow_sub;
+#endif
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+  struct zros_sub optical_flow_raw_sub;
 #endif
   struct zros_sub health_sub;
   struct zros_pub odometry_pub;
@@ -110,6 +122,11 @@ static atomic_t g_gyroscope_bias_valid;
 static struct k_spinlock g_optical_flow_diagnostics_lock;
 static struct rdd2_navigation_optical_flow_diagnostics
     g_optical_flow_diagnostics;
+#endif
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+static struct k_spinlock g_optical_flow_raw_diagnostics_lock;
+static struct rdd2_navigation_optical_flow_raw_diagnostics
+    g_optical_flow_raw_diagnostics;
 #endif
 static struct k_thread g_thread;
 K_THREAD_STACK_DEFINE(g_navigation_stack, NAVIGATION_STACK_SIZE);
@@ -141,6 +158,40 @@ static const struct rdd2_navigation_optical_flow_config g_optical_flow_config =
             (float)CONFIG_RDD2_OPTICAL_FLOW_MAX_INTEGRATION_MS * 1.0e-3f,
         .sensor_id = CONFIG_RDD2_OPTICAL_FLOW_SENSOR_ID,
         .min_quality = CONFIG_RDD2_OPTICAL_FLOW_MIN_QUALITY,
+        .require_gptp = true,
+};
+#endif
+
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+static const struct rdd2_navigation_optical_flow_raw_config
+    g_optical_flow_raw_config = {
+        .max_age_ns = (uint64_t)CONFIG_RDD2_OPTICAL_FLOW_RAW_MAX_AGE_MS *
+                      UINT64_C(1000000),
+        .min_distance_m =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_RAW_MIN_DISTANCE_MM * 1.0e-3f,
+        .max_distance_m =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_RAW_MAX_DISTANCE_MM * 1.0e-3f,
+        .min_integration_time_s =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_RAW_MIN_INTEGRATION_MS * 1.0e-3f,
+        .max_integration_time_s =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_RAW_MAX_INTEGRATION_MS * 1.0e-3f,
+        .los_floor_rad =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_RAW_LOS_FLOOR_URAD * 1.0e-6f,
+        .los_sens_best_frac =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_RAW_LOS_SENS_BEST_PERMILLE * 1.0e-3f,
+        .los_sens_worst_frac =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_RAW_LOS_SENS_WORST_PERMILLE *
+            1.0e-3f,
+        .gyro_rate_noise_rad_s_rthz =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_RAW_GYRO_RATE_NOISE_URAD_S_RTHZ *
+            1.0e-6f,
+        .range_best_stddev_m =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_RAW_RANGE_BEST_STDDEV_MM * 1.0e-3f,
+        .range_worst_stddev_m =
+            (float)CONFIG_RDD2_OPTICAL_FLOW_RAW_RANGE_WORST_STDDEV_MM * 1.0e-3f,
+        .mount_yaw_deg = CONFIG_RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_DEG,
+        .sensor_id = CONFIG_RDD2_OPTICAL_FLOW_RAW_SENSOR_ID,
+        .min_quality = CONFIG_RDD2_OPTICAL_FLOW_RAW_MIN_QUALITY,
         .require_gptp = true,
 };
 #endif
@@ -461,6 +512,46 @@ static void copy_optical_flow_input_to_efmu(
 }
 #endif
 
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+/*
+ * The tightly coupled path hands the ESKF the raw integrated flow, the raw
+ * integrated rotation and the range with their own covariances; the estimator
+ * forms the body velocity itself. Every field is copied through and the gyro
+ * integral is NOT zeroed: the estimator subtracts the rotation with its own
+ * covariance rather than trusting a pre-compensated velocity.
+ */
+static void copy_optical_flow_raw_input_to_efmu(
+    struct navigation_estimator_process *process,
+    const struct rdd2_navigation_optical_flow_raw_measurement *measurement) {
+  NavigationEstimatorState *efmu = &process->efmu;
+
+  efmu->opticalFlow_valid = measurement->valid;
+  efmu->opticalFlow_fresh = measurement->fresh;
+  efmu->opticalFlow_timestamp_s =
+      filter_relative_time_s(process, measurement->timestamp_ns);
+  for (size_t row = 0U; row < 2U; ++row) {
+    efmu->integratedLineOfSight_rad[row] =
+        measurement->integrated_line_of_sight_rad[row];
+    for (size_t column = 0U; column < 2U; ++column) {
+      efmu->integratedLineOfSightCovariance_rad2[row][column] =
+          measurement->integrated_line_of_sight_cov_rad2[row][column];
+    }
+  }
+  for (size_t row = 0U; row < 3U; ++row) {
+    efmu->integratedGyroscopeBodyFlu_rad[row] =
+        measurement->integrated_gyro_body_flu_rad[row];
+    for (size_t column = 0U; column < 3U; ++column) {
+      efmu->integratedGyroscopeCovariance_rad2[row][column] =
+          measurement->integrated_gyro_cov_rad2[row][column];
+    }
+  }
+  efmu->opticalFlow_integrationTime_s = measurement->integration_time_s;
+  efmu->groundDistance_m = measurement->ground_distance_m;
+  efmu->groundDistanceVariance_m2 = measurement->ground_distance_variance_m2;
+  efmu->quality = measurement->quality;
+}
+#endif
+
 static void
 health_use_control_time(synapse_topic_VehicleHealthData_t *health,
                         const synapse_topic_InertialSampleData_t *imu,
@@ -691,6 +782,59 @@ static void update_optical_flow_diagnostics(
 }
 #endif
 
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+static void update_optical_flow_raw_diagnostics(
+    const struct navigation_estimator_process *process,
+    const struct rdd2_navigation_optical_flow_raw_measurement *measurement) {
+  const struct rdd2_navigation_optical_flow_raw_adapter *adapter =
+      &process->optical_flow_raw_adapter;
+  struct rdd2_navigation_optical_flow_raw_diagnostics diagnostics = {
+      .control_timestamp_ns = process->imu.timestamp_ns,
+      .source_timestamp_ns = process->optical_flow_raw.timestamp_ns,
+      .source_generation = rdd2_topic_generation(&topic_optical_flow),
+      .accepted_count = adapter->accepted_count,
+      .rejected_count = adapter->rejected_count,
+      .fusion_accepted_count = process->optical_flow_fusion_accepted_count,
+      .last_fusion_control_timestamp_ns =
+          process->optical_flow_last_fusion_control_timestamp_ns,
+      .consecutive_estimator_rejections =
+          process->efmu.opticalFlowConsecutiveRejections,
+      .line_of_sight_rad =
+          {
+              measurement->integrated_line_of_sight_rad[0],
+              measurement->integrated_line_of_sight_rad[1],
+          },
+      .gyro_body_flu_rad =
+          {
+              measurement->integrated_gyro_body_flu_rad[0],
+              measurement->integrated_gyro_body_flu_rad[1],
+          },
+      .integration_time_s = measurement->integration_time_s,
+      .ground_distance_m = measurement->ground_distance_m,
+      .quality = measurement->quality,
+      .flags = process->optical_flow_raw.flags,
+      .time_status = process->optical_flow_raw.time_status,
+      .correction_outcome = process->efmu.status_correctionOutcome,
+      .correction_source = process->efmu.status_correctionSource,
+      .recovery_stage = process->efmu.status_recoveryStage,
+      .adapter_status = adapter->status,
+      .measurement_valid = measurement->valid,
+      .measurement_fresh = measurement->fresh,
+      .correction_accepted = process->efmu.status_opticalFlowCorrectionAccepted,
+  };
+  k_spinlock_key_t key;
+
+  if (adapter->sample_valid &&
+      process->imu.timestamp_ns >= adapter->last_valid_control_timestamp_ns) {
+    diagnostics.accepted_age_ns =
+        process->imu.timestamp_ns - adapter->last_valid_control_timestamp_ns;
+  }
+  key = k_spin_lock(&g_optical_flow_raw_diagnostics_lock);
+  g_optical_flow_raw_diagnostics = diagnostics;
+  k_spin_unlock(&g_optical_flow_raw_diagnostics_lock, key);
+}
+#endif
+
 static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
   struct navigation_estimator_process *process = arg1;
 
@@ -702,11 +846,18 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
     struct rdd2_navigation_optical_flow_measurement optical_flow_measurement;
 #endif
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+    struct rdd2_navigation_optical_flow_raw_measurement
+        optical_flow_raw_measurement;
+#endif
     bool external_fresh;
     bool gnss_fresh;
     bool health_fresh;
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
     bool optical_flow_fresh;
+#endif
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+    bool optical_flow_raw_fresh;
 #endif
     bool origin_captured;
     bool estimate_valid;
@@ -731,6 +882,10 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
     optical_flow_fresh = zros_sub_update(&process->optical_flow_sub) == 0;
 #endif
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+    optical_flow_raw_fresh =
+        zros_sub_update(&process->optical_flow_raw_sub) == 0;
+#endif
     health_use_control_time(&process->health, &process->imu, health_fresh);
     copy_imu_input_to_efmu(process, &process->imu_packet);
     if (external_odometry_source_allowed(
@@ -754,6 +909,12 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
         &process->optical_flow, optical_flow_fresh, process->imu.timestamp_ns,
         &g_optical_flow_config);
     copy_optical_flow_input_to_efmu(process, &optical_flow_measurement);
+#elif defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+    rdd2_navigation_optical_flow_raw_step(
+        &process->optical_flow_raw_adapter, &optical_flow_raw_measurement,
+        &process->optical_flow_raw, optical_flow_raw_fresh,
+        process->imu.timestamp_ns, &g_optical_flow_raw_config);
+    copy_optical_flow_raw_input_to_efmu(process, &optical_flow_raw_measurement);
 #else
     process->efmu.opticalFlow_valid = false;
     process->efmu.opticalFlow_fresh = false;
@@ -785,6 +946,13 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
           process->imu.timestamp_ns;
     }
     update_optical_flow_diagnostics(process, &optical_flow_measurement);
+#elif defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+    if (process->efmu.status_opticalFlowCorrectionAccepted) {
+      process->optical_flow_fusion_accepted_count++;
+      process->optical_flow_last_fusion_control_timestamp_ns =
+          process->imu.timestamp_ns;
+    }
+    update_optical_flow_raw_diagnostics(process, &optical_flow_raw_measurement);
 #endif
     step_ok =
         rdd2_generated_step_ok(process->efmu.rumoca_galec_error_signal_status);
@@ -829,6 +997,24 @@ bool rdd2_navigation_optical_flow_diagnostics_get(
 #endif
 }
 
+bool rdd2_navigation_optical_flow_raw_diagnostics_get(
+    struct rdd2_navigation_optical_flow_raw_diagnostics *diagnostics) {
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+  k_spinlock_key_t key;
+
+  if (diagnostics == NULL) {
+    return false;
+  }
+  key = k_spin_lock(&g_optical_flow_raw_diagnostics_lock);
+  *diagnostics = g_optical_flow_raw_diagnostics;
+  k_spin_unlock(&g_optical_flow_raw_diagnostics_lock, key);
+  return true;
+#else
+  ARG_UNUSED(diagnostics);
+  return false;
+#endif
+}
+
 static void set_default_mocap_covariance(NavigationEstimatorState *efmu) {
   for (size_t i = 0U; i < 3U; ++i) {
     efmu->mocap_positionCovarianceWorld_m2[i][i] = 0.01f;
@@ -847,6 +1033,14 @@ int rdd2_navigation_estimator_process_start(void) {
   if (!rdd2_navigation_optical_flow_config_valid(&g_optical_flow_config)) {
     LOG_ERR("optical-flow configuration is invalid; every flow sample will be "
             "rejected until the Kconfig limits are corrected");
+  }
+#endif
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+  rdd2_navigation_optical_flow_raw_init(&process->optical_flow_raw_adapter);
+  if (!rdd2_navigation_optical_flow_raw_config_valid(
+          &g_optical_flow_raw_config)) {
+    LOG_ERR("optical-flow raw configuration is invalid; every flow sample will "
+            "be rejected until the Kconfig limits are corrected");
   }
 #endif
   NavigationEstimator_startup(&process->efmu);
@@ -885,6 +1079,12 @@ int rdd2_navigation_estimator_process_start(void) {
     rc = zros_sub_init(&process->optical_flow_sub, &process->node,
                        &topic_optical_flow_vel, &process->optical_flow,
                        0.0);
+  }
+#endif
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+  if (rc == 0) {
+    rc = zros_sub_init(&process->optical_flow_raw_sub, &process->node,
+                       &topic_optical_flow, &process->optical_flow_raw, 0.0);
   }
 #endif
   if (rc == 0) {

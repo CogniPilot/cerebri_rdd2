@@ -46,5 +46,6 @@ exec "$cc" -O2 -w \
   "$processes/imu_preintegration.c" \
   "$processes/navigation_gps.c" \
   "$processes/navigation_optical_flow.c" \
+  "$processes/navigation_optical_flow_raw.c" \
   "$efmu/Vehicles_Rdd2_NavigationEstimator.c" \
   "$efmu/rumoca_galec_kernels.c" -lm

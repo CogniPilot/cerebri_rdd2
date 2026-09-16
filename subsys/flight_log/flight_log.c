@@ -98,6 +98,7 @@ enum log_channel {
 	LOG_CH_RATE_CMD,
 	LOG_CH_MANUAL,
 	LOG_CH_OPTICAL,
+	LOG_CH_OPTICAL_RAW,
 	LOG_CH_GNSS,
 	LOG_CH_TIMEREF,
 	LOG_CH_SELF_STATUS,
@@ -179,6 +180,11 @@ static struct log_source g_sources[] = {
 #endif
 	{&topic_optical_flow_vel, LOG_CH_OPTICAL,
 	 sizeof(synapse_topic_OpticalFlowVelocityData_t), 0.0},
+	/* Raw integrated flow product for the tightly coupled path. Capped at 50 Hz,
+	 * comfortably above the flow frame rate, so every window is logged without
+	 * letting a runaway producer flood the ring. */
+	{&topic_optical_flow, LOG_CH_OPTICAL_RAW,
+	 sizeof(synapse_topic_OpticalFlowData_t), 50.0},
 	{&topic_gnss_fix, LOG_CH_GNSS, sizeof(synapse_topic_GnssFixData_t), 0.0},
 };
 
@@ -299,6 +305,8 @@ static int register_channels(void)
 #endif
 	rc |= register_channel(SYNAPSE_MCAP_TOPIC_OpticalFlowVelocity, "optical_flow_vel",
 			       LOG_CH_OPTICAL);
+	rc |= register_channel(SYNAPSE_MCAP_TOPIC_OpticalFlow, "optical_flow",
+			       LOG_CH_OPTICAL_RAW);
 	rc |= register_channel(SYNAPSE_MCAP_TOPIC_GnssFix, "gnss_fix", LOG_CH_GNSS);
 	rc |= register_channel(SYNAPSE_MCAP_TOPIC_TimeReference, "time_reference",
 			       LOG_CH_TIMEREF);

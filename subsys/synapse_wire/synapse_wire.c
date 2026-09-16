@@ -42,6 +42,7 @@ LOG_MODULE_REGISTER(rdd2_synapse_wire, CONFIG_RDD2_SYNAPSE_WIRE_LOG_LEVEL);
 
 #define SYNAPSE_SCHEMA_SET_WIRE_ID UINT64_C(0x232721f0ee5b6c32)
 #define OPTICAL_FLAGS_MASK         UINT8_C(0x07)
+#define OPTICAL_RAW_FLAGS_MASK     UINT8_C(0x0f)
 #define GNSS_FLAGS_MASK            UINT8_C(0x0f)
 #define GNSS_CANONICAL_SIZE        58U
 #define GNSS_STABLE_SAMPLES        5U
@@ -51,14 +52,19 @@ LOG_MODULE_REGISTER(rdd2_synapse_wire, CONFIG_RDD2_SYNAPSE_WIRE_LOG_LEVEL);
 #define GNSS_MAX_SACC_MM_S         5000U
 #define SOCKET_RETRY_MS            1000
 #define SOCKET_POLL_MS             1000
-#define WIRE_BUFFER_SIZE (SYNAPSE_WIRE_V1_HEADER_SIZE + sizeof(synapse_topic_GnssFixData_t))
+/* The raw OpticalFlowData is the largest fixed payload the receiver accepts, so
+ * the shared receive buffer is sized to it. */
+#define WIRE_BUFFER_SIZE                                                        \
+	(SYNAPSE_WIRE_V1_HEADER_SIZE + sizeof(synapse_topic_OpticalFlowData_t))
 
 BUILD_ASSERT(sizeof(synapse_topic_OpticalFlowVelocityData_t) == 32U);
+BUILD_ASSERT(sizeof(synapse_topic_OpticalFlowData_t) == 88U);
 BUILD_ASSERT(sizeof(synapse_topic_GnssFixData_t) == 64U);
 BUILD_ASSERT(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__);
 
 enum stream_kind {
 	STREAM_OPTICAL = 0,
+	STREAM_OPTICAL_RAW,
 	STREAM_GNSS,
 	STREAM_COUNT,
 };
@@ -106,8 +112,10 @@ struct gnss_readiness {
 struct receiver_context {
 	struct zros_node node;
 	struct zros_pub optical_pub;
+	struct zros_pub optical_raw_pub;
 	struct zros_pub gnss_pub;
 	synapse_topic_OpticalFlowVelocityData_t optical;
+	synapse_topic_OpticalFlowData_t optical_raw;
 	synapse_topic_GnssFixData_t gnss;
 	struct stream_context streams[STREAM_COUNT];
 	struct net_in6_addr local_address;
@@ -121,6 +129,7 @@ struct receiver_context {
 
 union received_payload {
 	synapse_topic_OpticalFlowVelocityData_t optical;
+	synapse_topic_OpticalFlowData_t optical_raw;
 	synapse_topic_GnssFixData_t gnss;
 };
 
@@ -180,6 +189,28 @@ static bool optical_payload_read(const synapse_wire_datagram_view_t *view,
 	       float_is_finite(sample->velocity_flu_m_s.y) && float_is_finite(sample->distance_m) &&
 	       sample->distance_m >= 0.0f && float_is_finite(sample->roll_rad) &&
 	       float_is_finite(sample->pitch_rad) && (sample->flags & ~OPTICAL_FLAGS_MASK) == 0U &&
+	       time_status_valid(sample->time_status);
+}
+
+static bool optical_raw_payload_read(const synapse_wire_datagram_view_t *view,
+				     synapse_topic_OpticalFlowData_t *sample,
+				     bool *flag_semantics_valid)
+{
+	if (view->payload_size != sizeof(*sample)) {
+		return false;
+	}
+
+	memcpy(sample, view->payload, sizeof(*sample));
+	*flag_semantics_valid =
+		header_payload_time_valid(&view->header, sample->timestamp_ns, sample->time_status);
+
+	return sample->timestamp_ns != 0U && float_is_finite(sample->flow_rad.x) &&
+	       float_is_finite(sample->flow_rad.y) &&
+	       float_is_finite(sample->delta_angle_flu_rad.x) &&
+	       float_is_finite(sample->delta_angle_flu_rad.y) &&
+	       float_is_finite(sample->delta_angle_flu_rad.z) &&
+	       float_is_finite(sample->distance_m) && sample->distance_m >= 0.0f &&
+	       (sample->flags & ~OPTICAL_RAW_FLAGS_MASK) == 0U &&
 	       time_status_valid(sample->time_status);
 }
 
@@ -485,6 +516,9 @@ static bool payload_read(const struct stream_context *stream,
 	if (stream->kind == STREAM_OPTICAL) {
 		return optical_payload_read(view, &payload->optical, flag_semantics_valid);
 	}
+	if (stream->kind == STREAM_OPTICAL_RAW) {
+		return optical_raw_payload_read(view, &payload->optical_raw, flag_semantics_valid);
+	}
 	return gnss_payload_read(view, &payload->gnss, flag_semantics_valid);
 }
 
@@ -501,6 +535,10 @@ static void payload_restamp_to_local_boot(const struct stream_context *stream,
 		payload->optical.timestamp_ns = rdd2_synapse_wire_local_boot_timestamp_ns(
 			payload->optical.timestamp_ns, payload->optical.time_status,
 			receive_monotonic_ns, receiver_time_status, offset_ns, latency_ns);
+	} else if (stream->kind == STREAM_OPTICAL_RAW) {
+		payload->optical_raw.timestamp_ns = rdd2_synapse_wire_local_boot_timestamp_ns(
+			payload->optical_raw.timestamp_ns, payload->optical_raw.time_status,
+			receive_monotonic_ns, receiver_time_status, offset_ns, latency_ns);
 	} else {
 		payload->gnss.timestamp_ns = rdd2_synapse_wire_local_boot_timestamp_ns(
 			payload->gnss.timestamp_ns, payload->gnss.time_status,
@@ -515,6 +553,10 @@ static bool payload_publish(const struct stream_context *stream,
 	if (stream->kind == STREAM_OPTICAL) {
 		g_receiver.optical = payload->optical;
 		return zros_pub_update(&g_receiver.optical_pub) == 0;
+	}
+	if (stream->kind == STREAM_OPTICAL_RAW) {
+		g_receiver.optical_raw = payload->optical_raw;
+		return zros_pub_update(&g_receiver.optical_raw_pub) == 0;
 	}
 
 	g_receiver.gnss = payload->gnss;
@@ -764,6 +806,17 @@ static int receiver_init(void)
 		return result;
 	}
 	result = stream_configure(
+		&g_receiver.streams[STREAM_OPTICAL_RAW], STREAM_OPTICAL_RAW, "optical_flow_raw",
+		CONFIG_RDD2_SYNAPSE_WIRE_OPTICAL_RAW_SOURCE_ADDRESS,
+		synapse_topic_TopicId_OpticalFlow,
+		(uint16_t)sizeof(synapse_topic_OpticalFlowData_t),
+		CONFIG_RDD2_SYNAPSE_WIRE_OPTICAL_RAW_PORT,
+		CONFIG_RDD2_SYNAPSE_WIRE_OPTICAL_RAW_SOURCE_NODE_ID,
+		CONFIG_RDD2_SYNAPSE_WIRE_OPTICAL_RAW_MAX_AGE_MS);
+	if (result != 0) {
+		return result;
+	}
+	result = stream_configure(
 		&g_receiver.streams[STREAM_GNSS], STREAM_GNSS, "gnss_fix",
 		CONFIG_RDD2_SYNAPSE_WIRE_GNSS_SOURCE_ADDRESS, synapse_topic_TopicId_GnssFix,
 		(uint16_t)sizeof(synapse_topic_GnssFixData_t), CONFIG_RDD2_SYNAPSE_WIRE_GNSS_PORT,
@@ -776,6 +829,13 @@ static int receiver_init(void)
 	zros_node_init(&g_receiver.node, "synapse_wire_rx");
 	result = zros_pub_init(&g_receiver.optical_pub, &g_receiver.node, &topic_optical_flow_vel,
 			       &g_receiver.optical);
+	if (result != 0) {
+		return result;
+	}
+	memset(&g_receiver.optical_raw, 0, sizeof(g_receiver.optical_raw));
+	g_receiver.optical_raw.time_status = synapse_types_TimeStatus_LocalFreerun;
+	result = zros_pub_init(&g_receiver.optical_raw_pub, &g_receiver.node, &topic_optical_flow,
+			       &g_receiver.optical_raw);
 	if (result != 0) {
 		return result;
 	}
@@ -830,6 +890,7 @@ void rdd2_synapse_wire_stats_snapshot(struct rdd2_synapse_wire_snapshot *out)
 
 	key = k_spin_lock(&g_receiver.lock);
 	snapshot_stream(&out->optical, &g_receiver.streams[STREAM_OPTICAL].stats);
+	snapshot_stream(&out->optical_raw, &g_receiver.streams[STREAM_OPTICAL_RAW].stats);
 	snapshot_stream(&out->gnss, &g_receiver.streams[STREAM_GNSS].stats);
 	k_spin_unlock(&g_receiver.lock, key);
 }

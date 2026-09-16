@@ -22,9 +22,10 @@ struct rdd2_synapse_wire_stream_stats {
 	uint8_t last_receiver_time_status;
 };
 
-/* Snapshot of both direct-wire sensor streams. */
+/* Snapshot of the direct-wire sensor streams. */
 struct rdd2_synapse_wire_snapshot {
 	struct rdd2_synapse_wire_stream_stats optical;
+	struct rdd2_synapse_wire_stream_stats optical_raw;
 	struct rdd2_synapse_wire_stream_stats gnss;
 };
 

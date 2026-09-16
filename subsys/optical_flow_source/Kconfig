@@ -112,3 +112,141 @@ config RDD2_OPTICAL_FLOW_COMPENSATION_RATE_URAD_S_RTHZ
 	  over a 25 ms exposure.
 
 endif
+
+config RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW
+	bool "Fuse the raw Synapse OpticalFlowData over the wire (tightly coupled)"
+	depends on RDD2_SYNAPSE_WIRE
+	depends on !RDD2_OPTICAL_FLOW_SOURCE_WIRE
+	default n
+	help
+	  Subscribe to the fixed-layout Synapse OpticalFlowData topic (integrated
+	  flow angles, the node's integrated delta angle over the same window,
+	  integration time, range and quality) that the direct wire receiver
+	  publishes, and feed it to the generated navigation estimator. The
+	  estimator forms the body velocity itself from the gyro-compensated
+	  line-of-sight integral, so it weights the flow, the rotation compensation
+	  and the range independently rather than trusting the node's pre-computed
+	  velocity. Mutually exclusive with RDD2_OPTICAL_FLOW_SOURCE_WIRE, which
+	  fuses the node's derived velocity instead. GPS remains enabled and
+	  provides the position anchor.
+
+if RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW
+
+config RDD2_OPTICAL_FLOW_RAW_SENSOR_ID
+	int "Accepted optical-flow sensor id"
+	default 0
+	range 0 255
+
+config RDD2_OPTICAL_FLOW_RAW_MIN_QUALITY
+	int "Minimum accepted flow quality (0 to 255)"
+	default 100
+	range 1 255
+
+config RDD2_OPTICAL_FLOW_RAW_MAX_AGE_MS
+	int "Maximum time since a valid flow sample arrived"
+	default 150
+	range 10 1000
+	help
+	  Age is measured in the VMU control clock from receipt, because the
+	  producer timestamp is in the gPTP domain while the IMU timestamp is in
+	  the local sensor-clock domain.
+
+config RDD2_OPTICAL_FLOW_RAW_MIN_DISTANCE_MM
+	int "Minimum trusted ground distance in millimeters"
+	default 50
+	range 1 10000
+
+config RDD2_OPTICAL_FLOW_RAW_MAX_DISTANCE_MM
+	int "Maximum trusted ground distance in millimeters"
+	default 5000
+	range 100 20000
+
+config RDD2_OPTICAL_FLOW_RAW_MIN_INTEGRATION_MS
+	int "Minimum accepted flow integration interval in milliseconds"
+	default 5
+	range 1 1000
+	help
+	  The window is carried in the sample as integration_timespan_ns. Windows
+	  shorter than this are treated as duplicated or clock-glitched frames.
+
+config RDD2_OPTICAL_FLOW_RAW_MAX_INTEGRATION_MS
+	int "Maximum accepted flow integration interval in milliseconds"
+	default 200
+	range 1 5000
+	help
+	  Windows longer than this indicate a dropout since the previous frame and
+	  are rejected.
+
+config RDD2_OPTICAL_FLOW_RAW_LOS_FLOOR_URAD
+	int "Line-of-sight noise floor in microradians"
+	default 300
+	range 0 100000
+	help
+	  The per-window line-of-sight standard deviation is this floor plus a
+	  sensitivity fraction times the flow angle. The floor keeps a very small
+	  flow angle from claiming an unrealistically tight variance.
+
+config RDD2_OPTICAL_FLOW_RAW_LOS_SENS_BEST_PERMILLE
+	int "Line-of-sight sensitivity uncertainty at quality 255, per mille"
+	default 50
+	range 0 1000
+	help
+	  Fractional per-count sensitivity uncertainty applied to the flow angle at
+	  the best reported quality, in parts per thousand (50 is five percent).
+
+config RDD2_OPTICAL_FLOW_RAW_LOS_SENS_WORST_PERMILLE
+	int "Line-of-sight sensitivity uncertainty at minimum quality, per mille"
+	default 250
+	range 0 2000
+	help
+	  Fractional per-count sensitivity uncertainty applied to the flow angle at
+	  the minimum accepted quality, in parts per thousand.
+
+config RDD2_OPTICAL_FLOW_RAW_GYRO_RATE_NOISE_URAD_S_RTHZ
+	int "Integrated-gyro rate-noise density in microrad/s/sqrt(Hz)"
+	default 3800
+	range 1 1000000
+	help
+	  The ICM45686 gyro rate-noise density. The integrated-angle variance grows
+	  with the exposure window as an angle random walk, so the firmware forms
+	  it as the square of this density times the integration time.
+
+config RDD2_OPTICAL_FLOW_RAW_RANGE_BEST_STDDEV_MM
+	int "Downward range standard deviation at distance quality 255, millimeters"
+	default 30
+	range 0 5000
+
+config RDD2_OPTICAL_FLOW_RAW_RANGE_WORST_STDDEV_MM
+	int "Downward range standard deviation at distance quality 0, millimeters"
+	default 150
+	range 0 10000
+
+choice
+	prompt "Flow carrier mount yaw from vehicle FLU to carrier FLU"
+	default RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_0
+	help
+	  Applied to both the flow angles and the delta angle. Determine it with
+	  tools/log_replay/flow_calibrate.py.
+
+config RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_0
+	bool "0 degrees"
+
+config RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_90
+	bool "90 degrees"
+
+config RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_180
+	bool "180 degrees"
+
+config RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_270
+	bool "270 degrees"
+
+endchoice
+
+config RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_DEG
+	int
+	default 0 if RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_0
+	default 90 if RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_90
+	default 180 if RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_180
+	default 270 if RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_270
+
+endif
