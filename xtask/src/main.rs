@@ -191,6 +191,7 @@ fn rc_channels(
     plant: &Plant,
     arm_confirmed: bool,
     throttle_ramp_start: Option<f64>,
+    defer_disarm_until_landed: bool,
 ) -> [i32; 16] {
     let mut channels = [1500; 16];
     let Some(time) = mission_time else {
@@ -203,7 +204,22 @@ fn rc_channels(
     // gate only closes while throttle is idle, so the arm request is asserted
     // first with throttle down; the climb command is withheld until the vehicle
     // reports it is armed.
-    let arm_requested = (MISSION_ARM_DELAY_S..MISSION_DISARM_S).contains(&time);
+    let disarm_time = if defer_disarm_until_landed {
+        // Keep the arm switch asserted past the nominal disarm time until the
+        // vehicle has actually settled onto the ground, so the motors are not
+        // cut while the aircraft is still airborne and descending. Cutting
+        // thrust in mid-air leaves the plant in free fall and drives its
+        // integrator into an invalid state on ground contact.
+        let landed = plant.altitude() < 0.2 && plant.vertical_speed().abs() < 0.3;
+        if time >= MISSION_DISARM_S && !landed {
+            f64::INFINITY
+        } else {
+            MISSION_DISARM_S
+        }
+    } else {
+        MISSION_DISARM_S
+    };
+    let arm_requested = time >= MISSION_ARM_DELAY_S && time < disarm_time;
     channels[4] = if arm_requested { 2000 } else { 1000 };
     channels[5] = if (MISSION_POSITION_START_S..MISSION_POSITION_END_S).contains(&time) {
         2000
@@ -506,6 +522,10 @@ where
     let mut vehicle_origin: Option<[f64; 2]> = None;
     let mut arm_confirmed = false;
     let mut throttle_ramp_start: Option<f64> = None;
+    // Optional host-side accommodation: hold the arm switch until the aircraft
+    // has settled on the ground rather than dropping it at the fixed nominal
+    // time, so the plant is never left in free fall by a mid-air motor cut.
+    let defer_disarm_until_landed = env::var_os("RDD2_MISSION_DEFER_DISARM").is_some();
     let mut navigation_truth_origin: Option<[f64; 2]> = None;
     let mut trajectory = trajectory_writer(&options.trajectory)?;
 
@@ -527,7 +547,13 @@ where
         if arm_confirmed && throttle_ramp_start.is_none() {
             throttle_ramp_start = mission_time;
         }
-        let channels = rc_channels(mission_time, &plant, arm_confirmed, throttle_ramp_start);
+        let channels = rc_channels(
+            mission_time,
+            &plant,
+            arm_confirmed,
+            throttle_ramp_start,
+            defer_disarm_until_landed,
+        );
         let (gyro, accel) = plant.imu_flu();
         let target_time = ((simulated_time + options.plant_dt) * 1.0e9).round() as u64;
         let fix = synthetic_gnss.sample(plant.position(), plant.velocity(), target_time);
