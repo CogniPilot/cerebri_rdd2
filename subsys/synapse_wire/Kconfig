@@ -83,6 +83,23 @@ config RDD2_SYNAPSE_WIRE_GNSS_MAX_AGE_MS
 	range 10 5000
 	default 500
 
+config RDD2_SYNAPSE_WIRE_TRANSPORT_LATENCY_US
+	int "Assumed producer-to-receiver transport latency in microseconds"
+	range 0 100000
+	default 2000
+	help
+	  Wire payload timestamps are produced in the sensor node's clock, which is
+	  a different domain from the control IMU clock the estimator adapters
+	  compare against: the producer's own freerun boot clock before it is gPTP
+	  synchronized, and the TAI grandmaster timescale afterward. Neither shares a
+	  reference with the flight controller's LocalFreerun IMU boot clock, so the
+	  receiver re-expresses every accepted sample in the local boot domain. When
+	  no shared reference exists the sample is stamped with the local receive
+	  time minus this latency, the median datagram transport delay measured once
+	  the link is synchronized. When both the producer and the receiver are gPTP
+	  disciplined the sample is instead mapped through the receiver's own time
+	  offset, which preserves the capture instant exactly and ignores this value.
+
 config RDD2_SYNAPSE_WIRE_FUTURE_SKEW_MS
 	int "Allowed synchronized timestamp future skew"
 	range 0 1000

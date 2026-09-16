@@ -7,6 +7,7 @@
  */
 
 #include "synapse_wire.h"
+#include "synapse_wire_restamp.h"
 
 #include "interfaces/synapse_time_status.h"
 #include "interfaces/zros_topics.h"
@@ -487,6 +488,26 @@ static bool payload_read(const struct stream_context *stream,
 	return gnss_payload_read(view, &payload->gnss, flag_semantics_valid);
 }
 
+static void payload_restamp_to_local_boot(const struct stream_context *stream,
+					  union received_payload *payload,
+					  uint64_t receive_monotonic_ns,
+					  synapse_types_TimeStatus_enum_t receiver_time_status,
+					  int64_t offset_ns)
+{
+	const uint64_t latency_ns =
+		(uint64_t)CONFIG_RDD2_SYNAPSE_WIRE_TRANSPORT_LATENCY_US * UINT64_C(1000);
+
+	if (stream->kind == STREAM_OPTICAL) {
+		payload->optical.timestamp_ns = rdd2_synapse_wire_local_boot_timestamp_ns(
+			payload->optical.timestamp_ns, payload->optical.time_status,
+			receive_monotonic_ns, receiver_time_status, offset_ns, latency_ns);
+	} else {
+		payload->gnss.timestamp_ns = rdd2_synapse_wire_local_boot_timestamp_ns(
+			payload->gnss.timestamp_ns, payload->gnss.time_status,
+			receive_monotonic_ns, receiver_time_status, offset_ns, latency_ns);
+	}
+}
+
 static bool payload_publish(const struct stream_context *stream,
 			    const union received_payload *payload, bool session_changed,
 			    int64_t now_ms)
@@ -591,6 +612,12 @@ static void datagram_process(struct stream_context *stream, const uint8_t *datag
 		return;
 	}
 
+	/* Validation above ran against the original producer-domain timestamps and
+	 * the wire transport freshness; re-express the accepted sample in the local
+	 * boot (control IMU) domain only now, so what reaches the estimator adapters
+	 * shares their clock. */
+	payload_restamp_to_local_boot(stream, &payload, receive_monotonic_ns,
+				      receiver_time_status, offset_ns);
 	published = payload_publish(stream, &payload, session_changed, now_ms);
 	if (!published) {
 		publish_failure_record(stream);

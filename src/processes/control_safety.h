@@ -8,7 +8,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define RDD2_GUIDANCE_COMMAND_TIMEOUT_NS UINT64_C(25000000)
+/*
+ * RDD2_GUIDANCE_COMMAND_TIMEOUT_NS lives in scheduling.h, where it is derived
+ * from the guidance period: it is a rate-scaled failsafe deadline, not a
+ * control-law constant, and keeping it beside the rate it scales with prevents
+ * this header from having to pull in the scheduling rates (which host tooling
+ * such as the log-replay build does not define). Consumers that need the
+ * timeout include scheduling.h alongside this header.
+ */
 
 static inline bool rdd2_control_timestamp_is_fresh(bool observed,
                                                    uint64_t timestamp_ns,

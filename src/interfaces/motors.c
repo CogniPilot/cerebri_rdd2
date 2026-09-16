@@ -213,10 +213,15 @@ bool rdd2_motor_test_get(rdd2_motor_values_t *motors) {
   bool active;
   unsigned int key = irq_lock();
 
-  for (size_t i = 0; i < 4U; i++) {
-    motor_values[i] = test_values[i];
-  }
   active = atomic_get(&g_motor_test_active) != 0;
+  /* Only overwrite the caller's motor buffer while a manual motor test is
+   * active. Copying the (idle) test values unconditionally would discard the
+   * live allocator output that the caller uses when no test is running. */
+  if (active) {
+    for (size_t i = 0; i < 4U; i++) {
+      motor_values[i] = test_values[i];
+    }
+  }
 
   irq_unlock(key);
 

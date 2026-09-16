@@ -23,6 +23,9 @@ const DEFAULT_PLANT_DT: f64 = 0.005;
 const CONTROLLER_DT: f64 = 0.001_25;
 const TAKEOFF_ALTITUDE_M: f64 = 1.5;
 const MISSION_ARM_DELAY_S: f64 = 0.5;
+/// Interval over which throttle is raised from idle to the altitude-hold
+/// command once the firmware confirms it is armed, so the climb begins smoothly.
+const THROTTLE_RAMP_S: f64 = 0.5;
 const MISSION_POSITION_START_S: f64 = 4.0;
 const MISSION_POSITION_END_S: f64 = 22.0;
 const MISSION_DISARM_S: f64 = 28.0;
@@ -183,7 +186,12 @@ fn desired_altitude(time: f64) -> f64 {
     }
 }
 
-fn rc_channels(mission_time: Option<f64>, plant: &Plant) -> [i32; 16] {
+fn rc_channels(
+    mission_time: Option<f64>,
+    plant: &Plant,
+    arm_confirmed: bool,
+    throttle_ramp_start: Option<f64>,
+) -> [i32; 16] {
     let mut channels = [1500; 16];
     let Some(time) = mission_time else {
         channels[2] = 1000;
@@ -191,21 +199,35 @@ fn rc_channels(mission_time: Option<f64>, plant: &Plant) -> [i32; 16] {
         channels[5] = 1000;
         return channels;
     };
-    let armed = (MISSION_ARM_DELAY_S..MISSION_DISARM_S).contains(&time);
-    channels[4] = if armed { 2000 } else { 1000 };
+    // Hold the arm switch up across the whole flight window. The firmware arm
+    // gate only closes while throttle is idle, so the arm request is asserted
+    // first with throttle down; the climb command is withheld until the vehicle
+    // reports it is armed.
+    let arm_requested = (MISSION_ARM_DELAY_S..MISSION_DISARM_S).contains(&time);
+    channels[4] = if arm_requested { 2000 } else { 1000 };
     channels[5] = if (MISSION_POSITION_START_S..MISSION_POSITION_END_S).contains(&time) {
         2000
-    } else if armed {
+    } else if arm_requested {
         1500
     } else {
         1000
     };
-    if !armed {
+    if !arm_requested || !arm_confirmed {
+        // Idle throttle while requesting the arm and until the firmware
+        // acknowledges arming; commanding hover thrust here would keep the arm
+        // gate open-circuit and the vehicle would never arm.
         channels[2] = 1000;
     } else {
         let error = desired_altitude(time) - plant.altitude();
         let normalized = (0.688 + 0.10 * error - 0.075 * plant.vertical_speed()).clamp(0.38, 0.82);
-        channels[2] = (1000.0 + normalized * 1000.0).round() as i32;
+        let hover_us = 1000.0 + normalized * 1000.0;
+        // Ramp throttle from idle up to the hover command over a short interval
+        // measured from the moment arming was confirmed, so takeoff starts
+        // smoothly instead of stepping straight to hover thrust.
+        let ramp = throttle_ramp_start
+            .map(|start| ((time - start) / THROTTLE_RAMP_S).clamp(0.0, 1.0))
+            .unwrap_or(1.0);
+        channels[2] = (1000.0 + ramp * (hover_us - 1000.0)).round() as i32;
     }
     if (2.0..2.75).contains(&time) {
         channels[0] = 1625;
@@ -297,7 +319,11 @@ fn evaluate(report: &mut Report) {
             report.maximum_plan_generation
         ));
     }
-    let expected_gnss_generations = (report.simulated_seconds * 10.0).floor() as u32 + 1;
+    // The lockstep GNSS driver publishes two cold-start NoFix generations (the
+    // topic-init publish and the pre-first-epoch placeholder ahead of the fix
+    // clock) before the 10 Hz stream begins, so the exact count is the number
+    // of 10 Hz fixes over the run plus those two.
+    let expected_gnss_generations = (report.simulated_seconds * 10.0).floor() as u32 + 2;
     if report.maximum_gnss_generation != expected_gnss_generations {
         report.failures.push(format!(
             "GNSS generation was {}, expected exactly {}",
@@ -478,6 +504,8 @@ where
     let mut last_outputs: Option<LockstepOutputs> = None;
     let mut planner_origin: Option<[f64; 2]> = None;
     let mut vehicle_origin: Option<[f64; 2]> = None;
+    let mut arm_confirmed = false;
+    let mut throttle_ramp_start: Option<f64> = None;
     let mut navigation_truth_origin: Option<[f64; 2]> = None;
     let mut trajectory = trajectory_writer(&options.trajectory)?;
 
@@ -493,7 +521,13 @@ where
             plan_sent = true;
         }
         let mission_time = mission_epoch.map(|epoch| simulated_time - epoch);
-        let channels = rc_channels(mission_time, &plant);
+        // Start the throttle ramp on the first tick after the firmware confirms
+        // it is armed, so the climb is timed from actual arming rather than from
+        // the earlier arm-switch assertion.
+        if arm_confirmed && throttle_ramp_start.is_none() {
+            throttle_ramp_start = mission_time;
+        }
+        let channels = rc_channels(mission_time, &plant, arm_confirmed, throttle_ramp_start);
         let (gyro, accel) = plant.imu_flu();
         let target_time = ((simulated_time + options.plant_dt) * 1.0e9).round() as u64;
         let fix = synthetic_gnss.sample(plant.position(), plant.velocity(), target_time);
@@ -527,6 +561,7 @@ where
         report.firmware_attitude_observed |= state.flight_mode == 1;
         report.firmware_position_observed |= state.flight_mode == 2;
         report.firmware_armed_observed |= state.armed;
+        arm_confirmed |= state.armed;
         let status = outputs.mission_status;
         report.mission_status_current &= status.timestamp_ns == target_time;
         report.gnss_source_ready_observed |= status.flags & MissionStatusWire::SOURCE_READY != 0;
@@ -805,7 +840,7 @@ mod tests {
             navigation_estimate_finite: true,
             max_navigation_horizontal_error_m: 0.1,
             simulated_seconds: 32.0,
-            maximum_gnss_generation: 321,
+            maximum_gnss_generation: 322,
             maximum_reference_generation: 100,
             maximum_plan_generation: 1,
             flight_state_messages: 100,

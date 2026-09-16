@@ -47,6 +47,7 @@ fetch_rev() {
 # Build the pinned upstream FlatBuffers flatc.
 fetch_rev "$FLATBUFFERS_DIR" "$FLATBUFFERS_REMOTE" "$FLATBUFFERS_REV"
 cmake -S "$FLATBUFFERS_DIR" -B "$FLATBUFFERS_DIR/out" \
+	-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DFLATBUFFERS_BUILD_TESTS=OFF
 cmake --build "$FLATBUFFERS_DIR/out" --target flatc --parallel
@@ -56,6 +57,7 @@ export SYNAPSE_FBS_FLATC="$FLATBUFFERS_DIR/out/flatc"
 # C archive embeds.
 fetch_rev "$FLATCC_DIR" "$FLATCC_REMOTE" "$FLATCC_REV"
 cmake -S "$FLATCC_DIR" -B "$FLATCC_DIR/out" \
+	-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DFLATCC_TEST=OFF \
 	-DFLATCC_INSTALL=OFF
@@ -63,15 +65,22 @@ cmake --build "$FLATCC_DIR/out" --target flatcc_cli --parallel
 export SYNAPSE_FBS_FLATCC="$FLATCC_DIR/bin/flatcc"
 export SYNAPSE_FBS_FLATCC_SOURCE="$FLATCC_DIR"
 
-# Generate and package the C archive with the pinned synapse_fbs xtask.
+# Generate the portable C package with the pinned synapse_fbs xtask. The
+# generator resolves its repository root from the working directory, so it must
+# run from inside the checkout.
 fetch_rev "$SYNAPSE_DIR" "$SYNAPSE_FBS_REMOTE" "$SYNAPSE_FBS_REV"
-cargo run --locked --manifest-path "$SYNAPSE_DIR/xtask/Cargo.toml" -- build
+(cd "$SYNAPSE_DIR" && cargo run --locked --manifest-path xtask/Cargo.toml -- build)
 
-# Extract the portable C package. The archive carries a top-level synapse_fbs-c
-# directory, so extraction lands it at "$OUTPUT_DIR/synapse_fbs-c".
-ARCHIVE="$SYNAPSE_DIR/target/xtask/artifacts/synapse_fbs-c.tar.gz"
+# The generator stages the complete C package tree (Zephyr module manifest,
+# CMake package files, headers, sources, and the embedded FlatCC runtime) under
+# its work directory. Copy it out as the portable package root.
+STAGED_PACKAGE="$SYNAPSE_DIR/target/xtask/artifacts-work/synapse_fbs-c"
 PACKAGE_DIR="$OUTPUT_DIR/synapse_fbs-c"
+if [ ! -d "$STAGED_PACKAGE" ]; then
+	echo "synapse_fbs generator did not stage $STAGED_PACKAGE" >&2
+	exit 1
+fi
 rm -rf "$PACKAGE_DIR"
-tar -xzf "$ARCHIVE" -C "$OUTPUT_DIR"
+cp -a "$STAGED_PACKAGE" "$PACKAGE_DIR"
 
 printf 'RDD2_SYNAPSE_FBS_ROOT=%s\n' "$PACKAGE_DIR"

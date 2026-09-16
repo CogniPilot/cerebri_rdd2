@@ -1,5 +1,8 @@
 [workspace]
 members = ["xtask"]
+# Provisioned dependency checkouts (for example the synapse_fbs generator) are
+# built under .devenv; keep their crates out of this workspace.
+exclude = [".devenv"]
 resolver = "3"
 
 [profile.release]

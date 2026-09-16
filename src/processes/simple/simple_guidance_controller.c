@@ -406,7 +406,12 @@ static void guidance_controller_thread(void *arg1, void *arg2, void *arg3) {
     reference_valid =
         reference_inputs_are_valid(&process->reference, process->have_reference,
                                    process->attitude.timestamp_ns);
-    position_capable = rdd2_position_source_ready_get() && reference_valid;
+    /* A demoted position estimate keeps attitude and rates usable but must not
+     * be consumed for position hold; withdraw the capability so the mode falls
+     * back to attitude instead of steering on a demoted position. */
+    position_capable = rdd2_position_source_ready_get() && reference_valid &&
+                       rdd2_navigation_position_quality_is_usable(
+                           process->odometry.quality_pct);
     position_arm_blocked =
         position_requested && !position_capable && !health_armed && arm_switch;
     if (manual_update_ok && manual_valid && process->manual.flight_mode <= 1U) {

@@ -79,7 +79,8 @@ static bool odometry_is_current(
       process->odometry.velocity_enu_m_s.z,
   };
 
-  return process->odometry.quality_pct > 0 &&
+  return rdd2_navigation_position_quality_is_usable(
+             process->odometry.quality_pct) &&
          rdd2_control_values_are_finite(values, ARRAY_SIZE(values)) &&
          rdd2_control_timestamp_is_fresh(
              process->odometry_observed, process->odometry.timestamp_ns,

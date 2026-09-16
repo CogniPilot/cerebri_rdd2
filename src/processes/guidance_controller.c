@@ -3,6 +3,7 @@
 #include "processes.h"
 
 #include "control_safety.h"
+#include "hotpath_memory.h"
 #include "interfaces/zros_topics.h"
 #include "scheduling.h"
 
@@ -32,6 +33,7 @@ struct guidance_controller_process {
   synapse_topic_ManualControlData_t manual;
   synapse_topic_VehicleHealthData_t health;
   synapse_topic_AttitudeEstimateData_t attitude;
+  synapse_topic_InertialSampleData_t control_clock;
   synapse_topic_OdometryEstimateData_t odometry;
   synapse_topic_LocalPositionCommandData_t reference;
   synapse_topic_RateCommandData_t rate_command;
@@ -40,6 +42,7 @@ struct guidance_controller_process {
   struct zros_sub manual_sub;
   struct zros_sub health_sub;
   struct zros_sub attitude_sub;
+  struct zros_sub control_clock_sub;
   struct zros_sub odometry_sub;
   struct zros_sub reference_sub;
   struct zros_pub rate_command_pub;
@@ -51,7 +54,7 @@ struct guidance_controller_process {
   bool awaiting_disarmed_health;
 };
 
-static struct guidance_controller_process g_process;
+static RDD2_HOTPATH_DTCM_BSS struct guidance_controller_process g_process;
 static struct k_thread g_thread;
 K_THREAD_STACK_DEFINE(g_guidance_stack, GUIDANCE_STACK_SIZE);
 
@@ -79,6 +82,26 @@ copy_manual_inputs_to_efmu(GuidanceControllerState *efmu,
   efmu->stick[1] = 0.001f * (float)manual->pitch_milli;
   efmu->stick[2] = 0.001f * (float)manual->yaw_milli;
   efmu->throttle = 0.001f * (float)manual->throttle_milli;
+}
+
+/*
+ * Guidance no longer runs on the estimator's clock, so nothing else would
+ * notice a stalled estimator: it would keep steering on the last estimate for
+ * as long as the estimator stayed down. The age check is what the old
+ * coupling provided implicitly, made explicit and bounded. The deadline is
+ * five estimator periods, long enough that a single missed release is
+ * invisible and short enough that dead reckoning on a frozen estimate cannot
+ * accumulate.
+ */
+#define GUIDANCE_NAVIGATION_MAX_AGE_NS                                         \
+  ((UINT64_C(5) * UINT64_C(1000000000)) / RDD2_NAVIGATION_ESTIMATOR_RATE_HZ)
+
+static bool navigation_estimate_is_fresh(
+    const synapse_topic_AttitudeEstimateData_t *attitude,
+    uint64_t control_now_ns) {
+  return attitude->timestamp_ns != 0U && control_now_ns >= attitude->timestamp_ns &&
+         (control_now_ns - attitude->timestamp_ns) <=
+             GUIDANCE_NAVIGATION_MAX_AGE_NS;
 }
 
 static bool navigation_inputs_are_valid(
@@ -167,9 +190,14 @@ static void copy_reference_inputs_to_efmu(
   efmu->yaw_rad = inputs_valid ? reference->yaw_rad : 0.0f;
 }
 
-static void publish_efmu_outputs(struct guidance_controller_process *process) {
+static void publish_efmu_outputs(struct guidance_controller_process *process,
+                                uint64_t control_now_ns) {
   GuidanceControllerState *efmu = &process->efmu;
-  uint64_t timestamp_ns = process->attitude.timestamp_ns;
+  /* Stamped with the control clock, not with the estimate it consumed: the
+   * rate loop times the command out against the same clock, so a stalled
+   * estimator now expires the command instead of leaving the rate loop
+   * tracking a command whose timestamp never advances. */
+  uint64_t timestamp_ns = control_now_ns;
 
   process->rate_command = (synapse_topic_RateCommandData_t){
       .timestamp_ns = timestamp_ns,
@@ -223,16 +251,26 @@ static void guidance_controller_thread(void *arg1, void *arg2, void *arg3) {
     bool position_requested;
     bool reference_valid;
     bool step_ok;
+    uint64_t control_now_ns;
 
-    if (zros_sub_wait(&process->attitude_sub, K_FOREVER) != 0 ||
-        zros_sub_update(&process->attitude_sub) != 0) {
+    /*
+     * Released by dividing the control tick, not by the estimator's
+     * publication. Clocking guidance off the estimator made a stalled
+     * estimator stop guidance dead, silently and with no age check anywhere,
+     * and it made the guidance rate a hostage of the estimator rate. The
+     * model states these as independent sample() clocks; this brings the
+     * firmware's process graph into agreement with it.
+     */
+    if (zros_sub_wait(&process->control_clock_sub, K_FOREVER) != 0 ||
+        zros_sub_update(&process->control_clock_sub) != 0) {
       continue;
     }
-    if (!rdd2_release_due(&process->release_scheduler,
-                          RDD2_NAVIGATION_ESTIMATOR_RATE_HZ,
+    if (!rdd2_release_due(&process->release_scheduler, RDD2_CONTROL_RATE_HZ,
                           RDD2_GUIDANCE_RATE_HZ)) {
       continue;
     }
+    control_now_ns = process->control_clock.timestamp_ns;
+    (void)zros_sub_update(&process->attitude_sub);
 
     manual_update_ok = zros_sub_update(&process->manual_sub) == 0;
     health_update_ok = zros_sub_update(&process->health_sub) == 0;
@@ -242,7 +280,8 @@ static void guidance_controller_thread(void *arg1, void *arg2, void *arg3) {
     }
 
     navigation_valid =
-        navigation_inputs_are_valid(&process->attitude, &process->odometry);
+        navigation_inputs_are_valid(&process->attitude, &process->odometry) &&
+        navigation_estimate_is_fresh(&process->attitude, control_now_ns);
     manual_valid =
         (process->manual.flags & (synapse_topic_ManualControlFlags_Valid |
                                   synapse_topic_ManualControlFlags_Active)) ==
@@ -279,8 +318,10 @@ static void guidance_controller_thread(void *arg1, void *arg2, void *arg3) {
     position_requested = process->efmu.mode == 2;
     reference_valid =
         reference_inputs_are_valid(&process->reference, process->have_reference,
-                                   process->attitude.timestamp_ns);
-    position_capable = rdd2_position_source_ready_get() && reference_valid;
+                                   control_now_ns);
+    position_capable = rdd2_position_source_ready_get() && reference_valid &&
+                       rdd2_navigation_position_quality_is_usable(
+                           process->odometry.quality_pct);
     position_arm_blocked =
         position_requested && !position_capable && !health_armed && arm_switch;
     if (manual_update_ok && manual_valid && process->manual.flight_mode <= 1U) {
@@ -306,11 +347,17 @@ static void guidance_controller_thread(void *arg1, void *arg2, void *arg3) {
     outputs_finite = efmu_outputs_are_finite(&process->efmu);
     current_fault = !navigation_valid || position_arm_blocked || !step_ok ||
                     !outputs_finite;
+    if (current_fault && arm_switch && !process->control_fault_latched) {
+      LOG_ERR("Guidance fault: navigation=%d position_arm_blocked=%d "
+              "generated_status=%u outputs_finite=%d",
+              navigation_valid, position_arm_blocked,
+              process->efmu.rumoca_galec_error_signal_status, outputs_finite);
+    }
     process->control_fault_latched = rdd2_control_fault_latch(
         process->control_fault_latched, arm_switch_ack_valid, arm_switch,
         current_fault);
     if (!current_fault && !process->control_fault_latched) {
-      publish_efmu_outputs(process);
+      publish_efmu_outputs(process, control_now_ns);
     }
   }
 }
@@ -337,6 +384,11 @@ int rdd2_guidance_controller_process_start(void) {
   }
   rc = zros_sub_init(&process->attitude_sub, &process->node,
                      &topic_attitude_estimate, &process->attitude, 0.0);
+  if (rc != 0) {
+    return rc;
+  }
+  rc = zros_sub_init(&process->control_clock_sub, &process->node,
+                     &topic_control_imu, &process->control_clock, 0.0);
   if (rc != 0) {
     return rc;
   }

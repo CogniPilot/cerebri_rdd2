@@ -1,0 +1,9 @@
+tests:
+  rdd2.generated_navigation_fault_injection:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - rdd2
+      - safety
+      - generated
+      - navigation

@@ -4,6 +4,7 @@
 #include "zros_topics.h"
 
 #include "gnss_source.h"
+#include "processes/processes.h"
 
 #include <errno.h>
 #include <math.h>
@@ -85,7 +86,8 @@ navigation_is_valid(const synapse_topic_OdometryEstimateData_t *navigation,
   const uint8_t attitude_required =
       synapse_topic_AttitudeEstimateFlags_AttitudeValid;
 
-  if (navigation->timestamp_ns == 0U || navigation->quality_pct <= 0 ||
+  if (navigation->timestamp_ns == 0U ||
+      !rdd2_navigation_position_quality_is_usable(navigation->quality_pct) ||
       attitude->timestamp_ns == 0U ||
       (attitude->flags & attitude_required) != attitude_required ||
       navigation->timestamp_ns > attitude->timestamp_ns ||

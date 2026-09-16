@@ -58,7 +58,7 @@ manifest:
       path: modules/lib/cerebri_lockstep
     - name: modelica_models
       remote: cognipilot
-      revision: a9e5037ab3e57b3fac6ca783c0bdbfdd2b6dd98e
+      revision: 7a6f02253b6786a9972e9dfc0e40c678bc5bbe24 # eskf-automatic-reseed: adds status.reseeded/status.reseedCount and the automatic re-seed recovery stage
       path: models/modelica_models
     - name: fastdyn
       url: https://github.com/jgoppert/FastDyn.git

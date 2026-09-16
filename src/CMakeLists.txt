@@ -32,8 +32,10 @@ else()
     interfaces/rc.c
     interfaces/motors.c
     processes/guidance_controller.c
+    processes/imu_preintegration.c
     processes/navigation_estimator.c
     processes/navigation_gps.c
+    processes/navigation_optical_flow.c
     processes/rate_control_allocator.c
     processes/waypoint_trajectory_planner.c
   )
@@ -42,6 +44,12 @@ endif()
 target_sources_ifdef(CONFIG_SHELL app PRIVATE
   interfaces/mission_shell.c
 )
+
+if(CONFIG_SHELL AND CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
+  target_sources(app PRIVATE
+    interfaces/optical_flow_shell.c
+  )
+endif()
 
 target_sources_ifdef(CONFIG_TOP_SHELL app PRIVATE
   diagnostics/top_shell.c
@@ -92,8 +100,10 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
         interfaces/rc.c
         interfaces/motors.c
         processes/guidance_controller.c
+        processes/imu_preintegration.c
         processes/navigation_estimator.c
         processes/navigation_gps.c
+        processes/navigation_optical_flow.c
         processes/rate_control_allocator.c
         processes/waypoint_trajectory_planner.c
       LOCATION ITCM_TEXT_RODATA
