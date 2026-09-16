@@ -661,3 +661,37 @@ ZTEST(process_wrapper_fault_injection,
     zexpect_true(adapter.origin_valid);
   }
 }
+
+/*
+ * Health that trails the control tick by more than HEALTH_MAX_AGE_NS (25 ms)
+ * must not seed a GNSS origin. The lockstep and same-image BIL paths otherwise
+ * present health stamped at the current control tick, so this disarmed-origin
+ * age gate is never exercised there. Drive it to its edge: a fix that arrives
+ * with 30 ms-old health is deferred (no origin, no valid measurement, no
+ * fault), and a later fix with in-window health captures the origin, proving
+ * the rejection was a deferral rather than a permanent refusal.
+ */
+ZTEST(process_wrapper_fault_injection,
+      test_navigation_gps_origin_defers_on_stale_health) {
+  struct rdd2_navigation_gps_adapter adapter;
+  struct rdd2_navigation_gps_measurement measurement;
+  const uint64_t first_tick = TEST_NS_FROM_US(UINT64_C(1000000));
+  const uint64_t second_tick = TEST_NS_FROM_US(UINT64_C(1100000));
+  synapse_topic_GnssFixData_t fix = valid_fix(first_tick);
+  synapse_topic_VehicleHealthData_t health =
+      disarmed_health(first_tick - TEST_NS_FROM_US(UINT64_C(30000)));
+
+  rdd2_navigation_gps_init(&adapter);
+  zexpect_false(
+      step(&adapter, &measurement, &fix, true, &health, true, first_tick));
+  zexpect_false(measurement.valid);
+  zexpect_false(adapter.origin_valid);
+  zexpect_false(adapter.pending);
+
+  fix = valid_fix(second_tick);
+  health = disarmed_health(second_tick - TEST_NS_FROM_US(UINT64_C(5000)));
+  zexpect_true(
+      step(&adapter, &measurement, &fix, true, &health, true, second_tick));
+  zexpect_true(measurement.valid);
+  zexpect_true(adapter.origin_valid);
+}

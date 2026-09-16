@@ -5,6 +5,21 @@ use synapse_fbs::{
 };
 
 const GNSS_PERIOD_NS: u64 = 100_000_000;
+// flight0114-derived GNSS fidelity model. The lockstep synthetic source fed a
+// perfect boot-synced 10 Hz stream with constant accuracy, so the firmware
+// GNSS future/age gates and the GPS-denied estimator startup were never
+// exercised. These reproduce the logged reality: a producer freerun clock that
+// led the controller boot clock by ~356 ms until gPTP sync near 95 s, a 5-10 Hz
+// bimodal cadence, and a low-accuracy few-satellite early fix that converges.
+const GNSS_FREERUN_LEAD_NS: u64 = 356_000_000;
+const GNSS_SYNC_AT_NS: u64 = 95_000_000_000;
+const GNSS_ACC_CONVERGE_NS: u64 = 120_000_000_000;
+const GNSS_HACC_MM_EARLY: u16 = 4340;
+const GNSS_HACC_MM_SETTLED: u16 = 400;
+const GNSS_VACC_MM_EARLY: u16 = 7000;
+const GNSS_VACC_MM_SETTLED: u16 = 700;
+const GNSS_SATS_EARLY: u8 = 10;
+const GNSS_SATS_SETTLED: u8 = 16;
 const GNSS_ORIGIN_LATITUDE_DEG: f64 = 40.4237;
 const GNSS_ORIGIN_LONGITUDE_DEG: f64 = -86.9212;
 const GNSS_ORIGIN_ALTITUDE_MSL_M: f64 = 200.0;
@@ -124,12 +139,21 @@ impl SyntheticGnss {
         velocity_enu_m_s: [f64; 3],
         target_boot_time_ns: u64,
     ) -> topic::GnssFixData {
-        let timestamp_ns = target_boot_time_ns / GNSS_PERIOD_NS * GNSS_PERIOD_NS;
-        if timestamp_ns != 0 && timestamp_ns > self.latest.timestamp_ns() {
+        let grid_ts = target_boot_time_ns / GNSS_PERIOD_NS * GNSS_PERIOD_NS;
+        // Before gPTP sync the producer clock led the boot clock; stamp the fix
+        // ahead so the future/age gates (and the GPS-denied startup) are hit.
+        let stamp_ns = if target_boot_time_ns >= GNSS_SYNC_AT_NS {
+            grid_ts
+        } else {
+            grid_ts + GNSS_FREERUN_LEAD_NS
+        };
+        let slot = grid_ts / GNSS_PERIOD_NS;
+        if grid_ts != 0 && stamp_ns > self.latest.timestamp_ns() && gnss_slot_emits(slot) {
+            let (hacc_mm, vacc_mm, sats) = gnss_startup_quality(target_boot_time_ns);
             self.latest = if synthetic_gnss_values_are_usable(position_enu_m, velocity_enu_m_s) {
-                make_gnss_fix(position_enu_m, velocity_enu_m_s, timestamp_ns)
+                make_gnss_fix(position_enu_m, velocity_enu_m_s, stamp_ns, hacc_mm, vacc_mm, sats)
             } else {
-                unusable_gnss_fix(timestamp_ns)
+                unusable_gnss_fix(stamp_ns)
             };
         }
         self.latest
@@ -249,10 +273,34 @@ fn unusable_gnss_fix(timestamp_ns: u64) -> topic::GnssFixData {
     )
 }
 
+// Deterministic 5-10 Hz bimodal cadence: emit on every even 100 ms slot (5 Hz)
+// plus a recurring extra slot, so ~half the slots hold the previous fix. This
+// reproduces the logged 191 ms median spacing with 100 ms bursts rather than a
+// perfect 10 Hz grid, exercising the estimator's variable-cadence GNSS handling.
+fn gnss_slot_emits(slot: u64) -> bool {
+    slot % 2 == 0 || slot % 5 == 0
+}
+
+// Early fix is low-accuracy with few satellites and converges linearly to the
+// settled values over the first GNSS_ACC_CONVERGE_NS of the run.
+fn gnss_startup_quality(target_boot_time_ns: u64) -> (u16, u16, u8) {
+    let frac = (target_boot_time_ns as f64 / GNSS_ACC_CONVERGE_NS as f64).clamp(0.0, 1.0);
+    let lerp_u16 = |a: u16, b: u16| (a as f64 + (b as f64 - a as f64) * frac).round() as u16;
+    let lerp_u8 = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * frac).round() as u8;
+    (
+        lerp_u16(GNSS_HACC_MM_EARLY, GNSS_HACC_MM_SETTLED),
+        lerp_u16(GNSS_VACC_MM_EARLY, GNSS_VACC_MM_SETTLED),
+        lerp_u8(GNSS_SATS_EARLY, GNSS_SATS_SETTLED),
+    )
+}
+
 fn make_gnss_fix(
     position_enu_m: [f64; 3],
     velocity_enu_m_s: [f64; 3],
     timestamp_ns: u64,
+    hacc_mm: u16,
+    vacc_mm: u16,
+    sats_used: u8,
 ) -> topic::GnssFixData {
     let east_m = position_enu_m[0];
     let north_m = position_enu_m[1];
@@ -290,8 +338,8 @@ fn make_gnss_fix(
         (longitude_rad.to_degrees() * 1.0e7).round() as i32,
         ((GNSS_ORIGIN_ALTITUDE_MSL_M + position_enu_m[2]) * 1000.0).round() as i32,
         ((GNSS_ORIGIN_ALTITUDE_MSL_M + position_enu_m[2]) * 1000.0).round() as i32,
-        400,
-        700,
+        hacc_mm,
+        vacc_mm,
         50,
         0,
         100,
@@ -302,7 +350,7 @@ fn make_gnss_fix(
         (velocity_enu_m_s[2] * 100.0).round() as i16,
         flags.bits(),
         GnssFixType::Fix3d,
-        16,
+        sats_used,
         20,
         TimeStatus::LocalFreerun,
         0,
@@ -385,7 +433,10 @@ mod tests {
         channels[4] = 2000;
         channels[5] = 2000;
         let mut synthetic_gnss = SyntheticGnss::default();
-        let gnss_fix = synthetic_gnss.sample([1.0, 2.0, 3.0], [4.0, 0.0, 0.25], GNSS_PERIOD_NS);
+        // Slot 2 is an emitting slot in the bimodal cadence; before gPTP sync
+        // the stamp carries the producer freerun lead.
+        let gnss_fix =
+            synthetic_gnss.sample([1.0, 2.0, 3.0], [4.0, 0.0, 0.25], 2 * GNSS_PERIOD_NS);
         let plan = bounded_square_plan(1, 2.0, 0.3).unwrap();
         let inputs = lockstep_inputs(
             [1.0, 2.0, 3.0],
@@ -399,7 +450,10 @@ mod tests {
         assert_eq!(inputs.inertial_sample.gyro_flu_rad_s().y(), 2.0);
         assert_eq!(inputs.manual_control.throttle_milli(), 250);
         assert_eq!(inputs.manual_control.flight_mode(), 2);
-        assert_eq!(inputs.gnss_fix.timestamp_ns(), GNSS_PERIOD_NS);
+        assert_eq!(
+            inputs.gnss_fix.timestamp_ns(),
+            2 * GNSS_PERIOD_NS + GNSS_FREERUN_LEAD_NS
+        );
         assert_eq!(inputs.gnss_fix.altitude_msl_mm(), 203_000);
         assert_eq!(inputs.waypoint_plan, plan);
         assert!(
@@ -409,43 +463,78 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_gnss_updates_at_exactly_ten_hertz() {
-        let mut gnss = SyntheticGnss::default();
-        let before_first_period = gnss.sample([0.0; 3], [0.0; 3], GNSS_PERIOD_NS - 1);
-        assert_eq!(before_first_period.timestamp_ns(), 0);
+    fn gnss_cadence_is_bimodal_five_to_ten_hertz() {
+        // Emitting slots over one second: 0, 2, 4, 5, 6, 8 -> six fixes per
+        // second with a mix of 100 ms and 200 ms gaps, reproducing the logged
+        // bimodal spacing rather than a perfect 10 Hz grid.
+        let emits: Vec<u64> = (0..10).filter(|slot| gnss_slot_emits(*slot)).collect();
+        assert_eq!(emits, vec![0, 2, 4, 5, 6, 8]);
+    }
 
-        let first = gnss.sample([1.0, 2.0, 3.0], [2.0, 0.0, 0.25], GNSS_PERIOD_NS);
+    #[test]
+    fn gnss_quality_converges_from_early_to_settled() {
+        assert_eq!(
+            gnss_startup_quality(0),
+            (GNSS_HACC_MM_EARLY, GNSS_VACC_MM_EARLY, GNSS_SATS_EARLY)
+        );
+        assert_eq!(
+            gnss_startup_quality(GNSS_ACC_CONVERGE_NS),
+            (GNSS_HACC_MM_SETTLED, GNSS_VACC_MM_SETTLED, GNSS_SATS_SETTLED)
+        );
+        let (hacc_mid, _vacc_mid, sats_mid) = gnss_startup_quality(GNSS_ACC_CONVERGE_NS / 2);
+        assert!(hacc_mid < GNSS_HACC_MM_EARLY && hacc_mid > GNSS_HACC_MM_SETTLED);
+        assert!(sats_mid > GNSS_SATS_EARLY && sats_mid < GNSS_SATS_SETTLED);
+    }
+
+    #[test]
+    fn synthetic_gnss_freerun_lead_clears_at_sync() {
+        let mut gnss = SyntheticGnss::default();
+        // Slot 1 is not an emitting slot, so the fix is held at its default.
+        let held = gnss.sample([1.0, 2.0, 3.0], [2.0, 0.0, 0.25], GNSS_PERIOD_NS);
+        assert_eq!(held.timestamp_ns(), 0);
+
+        // Slot 2 emits. Before gPTP sync the producer clock leads the boot
+        // clock, so the stamp carries GNSS_FREERUN_LEAD_NS ahead of the grid.
+        let freerun = gnss.sample([1.0, 2.0, 3.0], [2.0, 0.0, 0.25], 2 * GNSS_PERIOD_NS);
+        assert_eq!(
+            freerun.timestamp_ns(),
+            2 * GNSS_PERIOD_NS + GNSS_FREERUN_LEAD_NS
+        );
+        assert_eq!(freerun.fix_type(), GnssFixType::Fix3d);
+        assert_eq!(freerun.ground_speed_cm_s(), 200);
+        assert_eq!(freerun.course_over_ground_cdeg(), 9_000);
+        assert_eq!(freerun.velocity_up_cm_s(), 25);
+        assert!(freerun.latitude_deg_e7() > 404_237_000);
+        assert!(freerun.longitude_deg_e7() > -869_212_000);
+        assert_eq!(freerun.altitude_msl_mm(), 203_000);
+        // Early accuracy is degraded relative to the settled values.
+        assert!(freerun.horizontal_accuracy_mm() > GNSS_HACC_MM_SETTLED);
+        assert!(freerun.vertical_accuracy_mm() > GNSS_VACC_MM_SETTLED);
+
+        // A mid-slot resample holds the previously emitted fix.
         let repeated = gnss.sample(
             [99.0, 99.0, 99.0],
             [99.0, 99.0, 99.0],
-            GNSS_PERIOD_NS + GNSS_PERIOD_NS / 2,
+            2 * GNSS_PERIOD_NS + GNSS_PERIOD_NS / 2,
         );
-        let second = gnss.sample([2.0, 4.0, 6.0], [0.0; 3], 2 * GNSS_PERIOD_NS);
+        assert_eq!(freerun, repeated);
 
-        assert_eq!(first, repeated);
-        assert_eq!(first.timestamp_ns(), GNSS_PERIOD_NS);
-        assert_eq!(second.timestamp_ns() - first.timestamp_ns(), GNSS_PERIOD_NS);
-        assert_eq!(first.fix_type(), GnssFixType::Fix3d);
-        assert_eq!(first.ground_speed_cm_s(), 200);
-        assert_eq!(first.course_over_ground_cdeg(), 9_000);
-        assert_eq!(first.velocity_up_cm_s(), 25);
-        assert!(first.latitude_deg_e7() > 404_237_000);
-        assert!(first.longitude_deg_e7() > -869_212_000);
-        assert_eq!(first.altitude_msl_mm(), 203_000);
-        assert_eq!(first.horizontal_accuracy_mm(), 400);
-        assert_eq!(first.vertical_accuracy_mm(), 700);
+        // After the sync instant the lead is dropped: the stamp equals the grid.
+        let synced_ts = (GNSS_SYNC_AT_NS / GNSS_PERIOD_NS + 2) * GNSS_PERIOD_NS;
+        let synced = gnss.sample([2.0, 4.0, 6.0], [0.0; 3], synced_ts);
+        assert_eq!(synced.timestamp_ns(), synced_ts);
     }
 
     #[test]
     fn synthetic_geodesy_round_trips_the_mission_square() {
-        let origin = make_gnss_fix([0.0; 3], [0.0; 3], GNSS_PERIOD_NS);
+        let origin = make_gnss_fix([0.0; 3], [0.0; 3], GNSS_PERIOD_NS, 400, 700, 16);
         for expected in [
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 1.5],
             [1.0, 1.0, 1.5],
             [0.0, 1.0, 1.5],
         ] {
-            let fix = make_gnss_fix(expected, [0.0; 3], 2 * GNSS_PERIOD_NS);
+            let fix = make_gnss_fix(expected, [0.0; 3], 2 * GNSS_PERIOD_NS, 400, 700, 16);
             let latitude_0 = origin.latitude_deg_e7() as f32 * 1.0e-7_f32.to_radians();
             let delta_latitude = (i64::from(fix.latitude_deg_e7())
                 - i64::from(origin.latitude_deg_e7())) as f32
@@ -485,8 +574,9 @@ mod tests {
     #[test]
     fn synthetic_gnss_marks_nonfinite_input_unusable() {
         let mut gnss = SyntheticGnss::default();
-        let fix = gnss.sample([f64::NAN, 0.0, 0.0], [0.0; 3], GNSS_PERIOD_NS);
-        assert_eq!(fix.timestamp_ns(), GNSS_PERIOD_NS);
+        // Slot 2 emits; the freerun lead is carried on the stamp.
+        let fix = gnss.sample([f64::NAN, 0.0, 0.0], [0.0; 3], 2 * GNSS_PERIOD_NS);
+        assert_eq!(fix.timestamp_ns(), 2 * GNSS_PERIOD_NS + GNSS_FREERUN_LEAD_NS);
         assert_eq!(fix.fix_type(), GnssFixType::NoFix);
         assert_eq!(fix.horizontal_accuracy_mm(), u16::MAX);
         assert_eq!(fix.vertical_accuracy_mm(), u16::MAX);

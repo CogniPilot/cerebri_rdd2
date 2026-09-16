@@ -1089,8 +1089,32 @@ static void writer_thread(void *a, void *b, void *c)
 		 * preallocation the file size jumps to the reserved extent at open,
 		 * but bytes_written still climbs from zero as records are written, so
 		 * this triggers at the real data volume and the reservation cannot
-		 * make it fire early. */
-		if (g_stream.bytes_written >= (uint64_t)CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES) {
+		 * make it fire early.
+		 *
+		 * The byte count only arms the size-triggered rotation; the swap then
+		 * waits for a cycle where it can run without dropping frames. Two gates
+		 * define that cycle:
+		 *
+		 *   - the background spare must be settled (READY, so the reopen renames
+		 *     a pre-built extent with no inline f_expand burst; or GIVEUP, where
+		 *     no better state is coming and the inline fallback is the only
+		 *     option). While it is still IDLE or BUILDING the spare is seconds
+		 *     from ready, so waiting avoids forcing the fallback needlessly.
+		 *
+		 *   - the ring must be nearly empty (the same quiet threshold the spare
+		 *     grows on), so its full ~510 ms of headroom is free to absorb the
+		 *     close, f_sync and rename while capture keeps enqueuing.
+		 *
+		 * Deferring to a quiet cycle costs only a few kilobytes past the 256 MiB
+		 * reservation. A manual `flightlog rotate` bypasses these gates and
+		 * rotates immediately through the same request path. */
+		bool spare_settled = (g_spare_state == SPARE_READY ||
+				      g_spare_state == SPARE_GIVEUP);
+		bool ring_quiet = ring_buf_size_get(&g_ring) <=
+				  (CONFIG_RDD2_FLIGHT_LOG_RING_BYTES / 8U);
+
+		if (g_stream.bytes_written >= (uint64_t)CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES &&
+		    spare_settled && ring_quiet) {
 			atomic_set(&g_rotate_request, 1);
 		}
 

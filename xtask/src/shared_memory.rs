@@ -393,7 +393,9 @@ mod tests {
             .magic
             .store(RDD2_LOCKSTEP_MAGIC, Ordering::Release);
         let mut synthetic_gnss = protocol::SyntheticGnss::default();
-        let gnss_fix = synthetic_gnss.sample([0.0; 3], [0.0; 3], 100_000_000);
+        // Slot 2 (200 ms) is an emitting slot in the bimodal cadence; before
+        // gPTP sync the stamp carries the 356 ms producer freerun lead.
+        let gnss_fix = synthetic_gnss.sample([0.0; 3], [0.0; 3], 200_000_000);
         let waypoint_plan = protocol::bounded_square_plan(1, 2.0, 0.3).unwrap();
         let inputs = protocol::lockstep_inputs(
             [0.1, 0.2, 0.3],
@@ -416,7 +418,7 @@ mod tests {
         assert_eq!(outputs.planner_reference.timestamp_ns(), 5_000_000);
         assert_eq!(outputs.mission_status.plan_sequence, 1);
         assert_eq!(outputs.mission_status.mission_state, 2);
-        assert_eq!(firmware.join().unwrap(), (5_000_000, 100_000_000, 1));
+        assert_eq!(firmware.join().unwrap(), (5_000_000, 556_000_000, 1));
         assert_eq!(transport.shared().terminate.load(Ordering::Acquire), 0);
         drop(transport);
 
