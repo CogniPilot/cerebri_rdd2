@@ -4,19 +4,22 @@
  * Flight-log rotation regression suite.
  *
  * Runs the production flight_log.c capture and writer threads, ring, session
- * rotation, and background-spare state machine on native_sim against a fake
- * card that injects a multi-second extent-reservation stall. The offered load
- * mirrors the recorded flight per-channel rates. Two size-triggered rotations
- * are driven with the stall active:
+ * rotation, and standing-reservation pool on native_sim against a fake card that
+ * injects a multi-second extent-reservation stall. The offered load mirrors the
+ * recorded flight per-channel rates. Two size-triggered rotations are driven
+ * with the stall active:
  *
- *   - the deferred build (default) waits for the pre-built spare and a quiet
+ *   - the deferred build (default) waits for a standing reservation and a quiet
  *     ring, rotates by rename, and must drop no frames;
  *   - the eager build (CONFIG_RDD2_FLIGHT_LOG_EAGER_ROTATE) rotates at the byte
  *     threshold, hits the inline reservation stall while the ring is under
  *     load, and must overflow the ring and drop frames.
  *
  * A final phase exercises the manual-rotate path against an idle ring, which
- * must never drop frames regardless of build.
+ * must never drop frames regardless of build, and then the pool contract: the
+ * standing reservations survive a stop, the next start opens its session by
+ * renaming one rather than reserving inline, and the builder refills the
+ * consumed slot in the background with no inline reservation anywhere.
  */
 
 #include "harness.h"
@@ -56,13 +59,41 @@ static bool wait_for_index(uint32_t target, int max_ms)
 			return true;
 		}
 		if ((waited % 1000) == 0) {
-			TC_PRINT("t=%dms index=%u bytes=%llu drops=%u ring_hw=%u spare=%u\n",
+			TC_PRINT("t=%dms index=%u bytes=%llu drops=%u ring_hw=%u "
+				 "reservations=%u/%u\n",
 				 waited, s.session_index, (unsigned long long)s.bytes_written,
-				 s.dropped_frames, s.ring_high_water, s.spare_state);
+				 s.dropped_frames, s.ring_high_water,
+				 rdd2_test_ready_reservations(), s.reservation_slots);
 		}
 		k_sleep(K_MSEC(20));
 	}
 	return snapshot().session_index >= target;
+}
+
+static bool wait_for(bool (*predicate)(void), int max_ms)
+{
+	for (int waited = 0; waited < max_ms; waited += 20) {
+		if (predicate()) {
+			return true;
+		}
+		k_sleep(K_MSEC(20));
+	}
+	return predicate();
+}
+
+static bool session_idle(void)
+{
+	return !snapshot().active;
+}
+
+static bool two_reservations_ready(void)
+{
+	return rdd2_test_ready_reservations() >= 2U;
+}
+
+static bool pool_full(void)
+{
+	return rdd2_test_ready_reservations() >= snapshot().reservation_slots;
 }
 
 ZTEST(flight_log_rotation, test_rotation_ring_integrity)
@@ -70,6 +101,8 @@ ZTEST(flight_log_rotation, test_rotation_ring_integrity)
 	struct rdd2_flight_log_status s;
 	struct rdd2_flight_log_status before;
 	struct rdd2_flight_log_status after;
+	uint32_t expands;
+	uint32_t renames;
 
 	/* Inject a three-second reservation stall, matching a mid-flight f_expand
 	 * burst on a real card, and run the offered load. */
@@ -83,9 +116,10 @@ ZTEST(flight_log_rotation, test_rotation_ring_integrity)
 
 	s = snapshot();
 	TC_PRINT("after >=2 rotations: session_index=%u dropped_frames=%u "
-		 "ring_high_water=%u/%u bytes_written=%llu spare_state=%u\n",
+		 "ring_high_water=%u/%u bytes_written=%llu reservations=%u/%u\n",
 		 s.session_index, s.dropped_frames, s.ring_high_water, RING_BYTES,
-		 (unsigned long long)s.bytes_written, s.spare_state);
+		 (unsigned long long)s.bytes_written, rdd2_test_ready_reservations(),
+		 s.reservation_slots);
 
 #if defined(CONFIG_RDD2_FLIGHT_LOG_EAGER_ROTATE)
 	/* Eager rotation stalls the writer inline while capture keeps producing:
@@ -123,6 +157,48 @@ ZTEST(flight_log_rotation, test_rotation_ring_integrity)
 	zassert_equal(after.dropped_frames, before.dropped_frames,
 		      "idle manual rotate dropped %u frames",
 		      after.dropped_frames - before.dropped_frames);
+
+	/* Standing pool: let the builder put two reservations on the card, then stop.
+	 * Both must survive, and the next start must open its session by renaming one
+	 * instead of paying the inline reservation stall. */
+	zassert_true(wait_for(two_reservations_ready, 60000),
+		     "the pool never reached two standing reservations");
+
+	rdd2_flight_log_request_stop();
+	zassert_true(wait_for(session_idle, 30000), "session never stopped");
+	zassert_true(rdd2_test_ready_reservations() >= 2U,
+		     "stop removed standing reservations, %u left",
+		     rdd2_test_ready_reservations());
+
+	before = snapshot();
+	expands = rdd2_test_prealloc_count;
+	renames = rdd2_test_rename_count;
+
+	rdd2_flight_log_request_start();
+	zassert_true(wait_for_active(30000), "session never restarted");
+
+	TC_PRINT("restart from the pool: index %u->%u expands %u->%u renames %u->%u "
+		 "reservations=%u/%u\n",
+		 before.session_index, snapshot().session_index, expands,
+		 rdd2_test_prealloc_count, renames, rdd2_test_rename_count,
+		 rdd2_test_ready_reservations(), snapshot().reservation_slots);
+
+	zassert_equal(rdd2_test_prealloc_count, expands,
+		      "restart reserved inline instead of renaming a standing one");
+	zassert_equal(rdd2_test_rename_count, renames + 1U,
+		      "restart did not rename a standing reservation into the session");
+
+	/* The consumed slot is refilled in the background, one reservation at a
+	 * time, and the refill never falls back to an inline reservation. */
+	zassert_true(wait_for(pool_full, 120000),
+		     "the pool did not refill, %u of %u standing",
+		     rdd2_test_ready_reservations(), snapshot().reservation_slots);
+	zassert_equal(rdd2_test_prealloc_count, expands,
+		      "refilling the pool reserved inline");
+
+	TC_PRINT("pool refilled to %u/%u with %u inline reservations total\n",
+		 rdd2_test_ready_reservations(), snapshot().reservation_slots,
+		 rdd2_test_prealloc_count);
 }
 
 ZTEST_SUITE(flight_log_rotation, NULL, NULL, NULL, NULL, NULL);

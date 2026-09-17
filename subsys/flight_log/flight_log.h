@@ -17,8 +17,12 @@ struct rdd2_flight_log_status {
 	uint32_t dropped_frames;
 	uint32_t ring_high_water;
 	uint32_t flush_errors;
-	uint8_t spare_state;    /* 0 idle, 1 building, 2 ready, 3 given up */
-	uint64_t spare_reserved; /* bytes reserved so far in the background spare */
+	uint32_t last_sync_ms;   /* duration of the most recent flush sync */
+	uint32_t max_sync_ms;    /* longest flush sync seen this session */
+	uint32_t ready_reservations; /* full-size reservations standing on the card */
+	uint32_t reservation_slots;  /* pool size, RESERVE_BYTES / ROTATE_BYTES */
+	uint8_t reservation_state;   /* build in progress: 0 idle, 1 building, 2 given up */
+	uint64_t reservation_bytes;  /* bytes built so far by the build in progress */
 };
 
 void rdd2_flight_log_status_get(struct rdd2_flight_log_status *out);

@@ -19,15 +19,24 @@
  * data tail as the residual removal risk. Close truncates the unused tail back
  * to the streamed byte count so the reservation frees cleanly.
  *
- * To keep the open-time reservation out of a mid-flight rotation, the writer
- * builds the next session's extent ahead of time. While a session streams, one
- * flush cycle at a time, it grows a disposable spare file (flightspare.pre) to
- * the rotation size in small steps. At rotation the completed spare is renamed
+ * To keep the open-time reservation out of a mid-flight rotation, the extents
+ * are built ahead of time and kept standing on the card as a pool of
+ * reservations, reserve00.pre and up, together about RESERVE_BYTES of pre-built
+ * and pre-erased space. While a session streams, one flush cycle at a time, the
+ * writer grows the reservation of the first free slot to the rotation size in
+ * small steps, so the pool refills in the background one reservation at a time.
+ * A rotation and a boot both take the lowest ready reservation and rename it
  * into the next session index, a directory-entry-only operation that inherits
  * the pre-built cluster chain, so the swap writes no allocation table and does
- * not stall the writer. The first session after boot still reserves inline (its
- * burst is pre-arming and harmless), then spare construction begins. If no spare
- * is ready at rotation, the inline reservation path runs as a fallback.
+ * not stall the writer. The pool survives stop and power cycles, so only a card
+ * that has never recorded reserves inline, and that burst lands before arming
+ * and is harmless. If no reservation is ready, the inline path runs as a
+ * fallback.
+ *
+ * Everything the open path needs about the card comes from one directory pass
+ * (rdd2_flight_log_fs_scan): the next session index, the ready reservations and
+ * the slot to build in. A boot open is therefore one directory read, one rename,
+ * and one file open.
  */
 
 #include "flight_log.h"
@@ -39,6 +48,7 @@
 #include "interfaces/zros_topics.h"
 
 #include <errno.h>
+#include <stddef.h>
 #include <string.h>
 
 #include <zephyr/fs/fs.h>
@@ -125,6 +135,8 @@ struct __packed flight_log_self_record {
 	uint32_t flush_errors;
 	uint8_t state;
 	uint8_t reserved[3];
+	uint32_t last_sync_ms;
+	uint32_t max_sync_ms;
 };
 
 /* Logger-owned direct-wire receiver snapshot, packed little-endian. Carries the
@@ -190,9 +202,29 @@ static struct log_source g_sources[] = {
 
 #define LOG_SOURCE_COUNT ARRAY_SIZE(g_sources)
 
-BUILD_ASSERT(sizeof(synapse_topic_OdometryEstimateData_t) <= FLIGHT_LOG_MAX_PAYLOAD);
-BUILD_ASSERT(sizeof(struct flight_log_self_record) <= FLIGHT_LOG_MAX_PAYLOAD);
-BUILD_ASSERT(sizeof(struct flight_log_wire_record) <= FLIGHT_LOG_MAX_PAYLOAD);
+/* Every logged payload is copied into g_sub_data[][FLIGHT_LOG_MAX_PAYLOAD] and
+ * into the ring frame, and the writer takes each frame's publish time from the
+ * first 8 bytes of its payload, so every logged type has to fit that bound and
+ * lead with timestamp_ns. Checked here for each type the table and the
+ * logger-owned records carry. */
+#define FLIGHT_LOG_ASSERT_PAYLOAD(type)                                                            \
+	BUILD_ASSERT(sizeof(type) <= FLIGHT_LOG_MAX_PAYLOAD);                                      \
+	BUILD_ASSERT(offsetof(type, timestamp_ns) == 0U)
+
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_InertialSampleData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_PwmSignalOutputsData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_OdometryEstimateData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_AttitudeEstimateData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_VehicleHealthData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_ControlLoopMetricsData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_AttitudeCommandData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_RateCommandData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_ManualControlData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_OpticalFlowVelocityData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_OpticalFlowData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_GnssFixData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(struct flight_log_self_record);
+FLIGHT_LOG_ASSERT_PAYLOAD(struct flight_log_wire_record);
 
 RING_BUF_DECLARE(g_ring, CONFIG_RDD2_FLIGHT_LOG_RING_BYTES);
 
@@ -226,7 +258,7 @@ static const uint8_t g_self_status_schema[] =
 	"rdd2.flight_log.LoggerStatus packed-le {"
 	"u64 timestamp_ns; u64 bytes_written; u32 dropped_frames; "
 	"u32 ring_high_water; u32 session_index; u32 flush_errors; "
-	"u8 state; u8 reserved[3];}";
+	"u8 state; u8 reserved[3]; u32 last_sync_ms; u32 max_sync_ms;}";
 
 static synapse_mcap_topic_t logger_status_topic(void)
 {
@@ -469,6 +501,8 @@ static void emit_self_status(uint64_t now_ns)
 	record.session_index = g_session_index;
 	record.flush_errors = g_flush_errors;
 	record.state = (uint8_t)(g_session_active ? 1U : 0U);
+	record.last_sync_ms = g_stream.last_sync_ms;
+	record.max_sync_ms = g_stream.max_sync_ms;
 
 	(void)synapse_mcap_write_fixed(&g_writer, &g_channels[LOG_CH_SELF_STATUS], now_ns,
 				       record.timestamp_ns, &record, sizeof(record));
@@ -514,26 +548,54 @@ static void emit_wire_stats(uint64_t now_ns)
 static bool g_index_exhausted;
 
 /*
- * Background spare lifecycle. While a session streams the writer grows a spare
- * file to the rotation size, so the next rotation renames a ready extent into
- * place instead of reserving one inline.
+ * The one reservation build in progress. Whether a reservation is ready is not a
+ * state: it is a full-size file standing in a pool slot, which the directory
+ * scan reports. Only the build has state.
  *
- *   IDLE     -> no spare yet; the next flush cycle begins one.
- *   BUILDING -> growing one step per flush cycle, spare file open.
- *   READY    -> grown to target and closed; rotation renames it into the
- *               next session and returns to IDLE to build the following spare.
- *   GIVEUP   -> the card could not hold a second full reservation; rotation
- *               falls back to the inline expand path and returns to IDLE.
+ *   IDLE     -> nothing being built; the next flush cycle starts one whenever
+ *               the pool is short of RDD2_FLIGHT_LOG_RESERVE_SLOTS.
+ *   BUILDING -> growing one step per flush cycle, the slot file open.
+ *   GIVEUP   -> the card cannot hold another full reservation, so rotation
+ *               takes the inline expand path. Re-evaluated at the next session
+ *               open, which resets this to IDLE.
  */
-enum spare_state {
-	SPARE_IDLE = 0,
-	SPARE_BUILDING,
-	SPARE_READY,
-	SPARE_GIVEUP,
+enum reservation_state {
+	RESERVATION_IDLE = 0,
+	RESERVATION_BUILDING,
+	RESERVATION_GIVEUP,
 };
 
-static enum spare_state g_spare_state;
-static struct prealloc_spare g_spare;
+static enum reservation_state g_reservation_state;
+static struct prealloc_reservation g_reservation;
+static uint32_t g_reservation_slot; /* pool slot the build in progress owns */
+
+/*
+ * Mount generation whose contiguous reservation came back -ENOSPC, or 0 when
+ * nothing is latched. The f_expand behind it reads the whole FAT looking for a
+ * free run that large, which on a fragmented card is tens of seconds under the
+ * card lock, and the answer cannot change until the card does: nothing is freed
+ * while the logger runs. So it is asked once per mounted volume and every later
+ * session on that same volume goes straight to grow-on-write. Keying it on the
+ * generation rather than a bool means any remount is a new card as far as the
+ * reservation is concerned, including an sd unmount/mount, a reinsert, and the
+ * remount a bench `sd format` does inside the fs layer.
+ */
+static uint32_t g_prealloc_unavailable_gen;
+
+/*
+ * Free bytes on the mounted volume, false when the volume cannot answer. Both
+ * reservation paths size themselves against this. Runs with the card lock held.
+ */
+static bool free_bytes(uint64_t *out)
+{
+	struct fs_statvfs vfs;
+
+	if (fs_statvfs(RDD2_FLIGHT_LOG_MOUNT_POINT, &vfs) != 0) {
+		return false;
+	}
+	*out = (uint64_t)vfs.f_bfree * (uint64_t)vfs.f_frsize;
+	return true;
+}
 
 /*
  * Reserve a contiguous extent for the freshly opened session file so the
@@ -544,27 +606,43 @@ static struct prealloc_spare g_spare;
  *
  * The reservation size is the rotation size when the card has room for it. When
  * free space is tighter than that, shrink the reservation to what remains above
- * the safety margin so a nearly full card still gets a contiguous run rather
- * than falling all the way back to grow-on-write. Below the floor, skip it.
+ * the safety margin, then clamp it to the largest contiguous free run the card
+ * actually has, so a nearly full or fragmented card still gets a contiguous run
+ * rather than falling all the way back to grow-on-write. Below the floor, skip
+ * it.
+ *
+ * A reservation that succeeds is erased before the first write; one that finds
+ * no contiguous run latches this mount's generation so the scan is not repeated
+ * until the volume is remounted. path names the session file for those log lines.
  */
-static void preallocate_session(void)
+static void preallocate_session(const char *path)
 {
 	uint64_t target = (uint64_t)CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES;
-	struct fs_statvfs vfs;
+	uint64_t free_now;
+	uint64_t largest_run;
 	int rc;
 
-	if (fs_statvfs(RDD2_FLIGHT_LOG_MOUNT_POINT, &vfs) == 0) {
-		uint64_t free_bytes =
-			(uint64_t)vfs.f_bfree * (uint64_t)vfs.f_frsize;
+	if (g_prealloc_unavailable_gen == rdd2_flight_log_fs_mount_generation()) {
+		return;
+	}
 
-		if (free_bytes < target + FLIGHT_LOG_PREALLOC_MARGIN_BYTES) {
-			if (free_bytes > (uint64_t)FLIGHT_LOG_PREALLOC_MARGIN_BYTES +
-						 FLIGHT_LOG_PREALLOC_FLOOR_BYTES) {
-				target = free_bytes - FLIGHT_LOG_PREALLOC_MARGIN_BYTES;
-			} else {
-				target = 0U;
-			}
-		}
+	if (free_bytes(&free_now)) {
+		target = MIN(target, free_now > FLIGHT_LOG_PREALLOC_MARGIN_BYTES
+					     ? free_now - FLIGHT_LOG_PREALLOC_MARGIN_BYTES
+					     : 0U);
+	}
+
+	/* Free space is not the same as a free run. A grow-on-write session
+	 * interleaves its clusters with the pool's growth steps, so a card that
+	 * has run one has a free total far larger than anything contiguous left in
+	 * it. Sizing the reservation to the longest run the card really has keeps
+	 * the session on a contiguous extent instead of letting f_expand scan for a
+	 * size it can never satisfy and fall back to grow-on-write, which would
+	 * fragment the card further on every session. */
+	if (rdd2_flight_log_fs_largest_free_run(&largest_run) == 0 && largest_run < target) {
+		LOG_INF("largest contiguous free run is %llu MiB, reserving that",
+			(unsigned long long)(largest_run >> 20));
+		target = largest_run;
 	}
 
 	if (target < FLIGHT_LOG_PREALLOC_FLOOR_BYTES) {
@@ -576,25 +654,31 @@ static void preallocate_session(void)
 	if (rc == 0) {
 		LOG_INF("preallocated %llu bytes for the session file",
 			(unsigned long long)target);
+		/* Erase the reserved extent before the first byte is written, so the
+		 * session streams into known-erased blocks instead of making the card
+		 * controller erase and collect garbage under the writer. */
+		(void)rdd2_flight_log_fs_trim_file(&g_stream.file, path);
 	} else {
 		LOG_WRN("preallocation unavailable (%d), growing session on write", rc);
+		/* No contiguous run that large exists on this card. Do not pay for
+		 * that whole-FAT scan again on every retry and every later session:
+		 * the card would have to change for the answer to. */
+		if (rc == -ENOSPC) {
+			g_prealloc_unavailable_gen = rdd2_flight_log_fs_mount_generation();
+		}
 	}
 }
 
 /*
- * Resolve the next free session index and its path. Runs with the card lock
- * held. Returns 0 with index_out and path filled, -ERANGE when the index space
- * is exhausted, or another negative errno from the directory scan.
+ * Compose the path of the next session file from an already taken directory
+ * scan. Returns 0 with path filled, -ERANGE when the index space is exhausted,
+ * or -ENAMETOOLONG.
  */
-static int resolve_next_index(uint32_t *index_out, char *path, size_t cap)
+static int resolve_next_index(const struct rdd2_flight_log_scan *scan, char *path, size_t cap)
 {
-	uint32_t index = 0U;
+	uint32_t index = scan->next_index;
 	int rc;
 
-	rc = rdd2_flight_log_fs_next_index(&index);
-	if (rc != 0) {
-		return rc;
-	}
 	if (index > RDD2_FLIGHT_LOG_MAX_SESSION_INDEX) {
 		if (!g_index_exhausted) {
 			LOG_ERR("session index space exhausted at flight%04u, "
@@ -607,16 +691,12 @@ static int resolve_next_index(uint32_t *index_out, char *path, size_t cap)
 	g_index_exhausted = false;
 
 	rc = rdd2_flight_log_fs_session_path(index, path, cap);
-	if (rc < 0) {
-		return rc;
-	}
-	*index_out = index;
-	return 0;
+	return rc < 0 ? rc : 0;
 }
 
 /*
  * Attach the MCAP writer to the already-open g_stream and register channels.
- * Shared tail of the inline-open and rename-from-spare paths. Runs with the card
+ * Shared tail of the inline-open and rename paths. Runs with the card
  * lock held. Returns 0 on success or a negative errno, closing the stream on
  * failure so the caller does not have to.
  */
@@ -649,25 +729,17 @@ static int finish_open(uint32_t index, const char *path)
 
 /*
  * Open the next session file with an inline reservation. Runs with the card lock
- * held. Used for the first session after boot and as the rotation fallback when
- * no spare is ready. Does not touch g_active or the session-active flag. Returns
- * 0 on success or a negative errno.
+ * held. Used for the first session on a card that carries no reservation and as
+ * the rotation fallback when none is ready. Does not touch g_active or the
+ * session-active flag. Returns 0 on success or a negative errno.
  */
-static int open_session_file(void)
+static int open_session_file(const struct rdd2_flight_log_scan *scan)
 {
-	uint32_t index = 0U;
 	char path[64];
 	int rc;
 
-	rc = resolve_next_index(&index, path, sizeof(path));
+	rc = resolve_next_index(scan, path, sizeof(path));
 	if (rc != 0) {
-		/* A directory-scan failure most likely means the card was pulled
-		 * between the mount and the scan. Unmount so the next attempt remounts
-		 * cleanly and the low-rate retry can pick up a reinserted card. The
-		 * exhausted-index and name-length cases leave the mount up. */
-		if (rc != -ERANGE && rc != -ENAMETOOLONG) {
-			(void)rdd2_flight_log_fs_unmount();
-		}
 		return rc;
 	}
 
@@ -682,68 +754,31 @@ static int open_session_file(void)
 	/* Reserve the session extent while the file is still empty, before the MCAP
 	 * header write. This is the only point at which the underlying f_expand is
 	 * accepted, so it must precede synapse_mcap_open. */
-	preallocate_session();
+	preallocate_session(path);
 
-	return finish_open(index, path);
-}
-
-/*
- * Open the next session by renaming the ready spare into the next index. Runs
- * with the card lock held and only when g_spare_state is SPARE_READY. The rename
- * is a directory-entry-only FatFs operation, so the spare's pre-built cluster
- * chain carries into the new session untouched and no f_expand runs. The file is
- * reopened without truncation and streamed from offset 0, overwriting the
- * reserved clusters in place. Returns 0 on success or a negative errno; on
- * failure any renamed target is removed so the inline fallback reuses the index.
- */
-static int open_from_spare(uint64_t reserved_bytes)
-{
-	uint32_t index = 0U;
-	char path[64];
-	char spare[64];
-	int rc;
-
-	rc = resolve_next_index(&index, path, sizeof(path));
+	rc = finish_open(scan->next_index, path);
 	if (rc != 0) {
-		return rc;
-	}
-
-	rc = snprintk(spare, sizeof(spare), "%s/%s", RDD2_FLIGHT_LOG_MOUNT_POINT,
-		      RDD2_FLIGHT_LOG_SPARE_NAME);
-	if (rc < 0 || (size_t)rc >= sizeof(spare)) {
-		return -ENAMETOOLONG;
-	}
-
-	rc = fs_rename(spare, path);
-	if (rc != 0) {
-		return rc;
-	}
-
-	memset(&g_stream, 0, sizeof(g_stream));
-	rc = mcap_stream_open_existing(&g_stream, path, reserved_bytes);
-	if (rc != 0) {
-		/* The rename already consumed the spare into this name; if it cannot be
-		 * reopened, remove it so no orphaned full-size file is left and the
-		 * inline fallback reuses this same index. */
+		/* finish_open closed the stream, so remove the zero-byte file it
+		 * leaves behind: otherwise a retry burns the next index every time,
+		 * which on a full card fills the directory with empty sessions. */
 		(void)fs_unlink(path);
-		return rc;
 	}
-
-	return finish_open(index, path);
+	return rc;
 }
 
-/* The spare always reserves the full rotation size. Unlike the inline path it is
- * not shrunk to fit a tight card: a card that cannot hold a live session plus a
- * full spare simply fails the grow and rotation falls back to inline expand. */
-static uint64_t spare_target(void)
+/* One standing reservation is always the full rotation size. Unlike the inline
+ * path it is not shrunk to fit a tight card: a card that cannot hold a live
+ * session plus another reservation simply stops building and rotation falls back
+ * to the inline expand. */
+static uint64_t reservation_target(void)
 {
 	return (uint64_t)CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES;
 }
 
-static int spare_path(char *out, size_t cap)
+static int reservation_path(uint32_t slot, char *out, size_t cap)
 {
-	int written = snprintk(out, cap, "%s/%s", RDD2_FLIGHT_LOG_MOUNT_POINT,
-			       RDD2_FLIGHT_LOG_SPARE_NAME);
+	int written = snprintk(out, cap, "%s/" RDD2_FLIGHT_LOG_RESERVE_PATTERN,
+			       RDD2_FLIGHT_LOG_MOUNT_POINT, (unsigned int)slot);
 
 	if (written < 0 || (size_t)written >= cap) {
 		return -ENAMETOOLONG;
@@ -751,113 +786,196 @@ static int spare_path(char *out, size_t cap)
 	return 0;
 }
 
-/* Close any in-progress build and remove the spare from the card so no dangling
- * reservation is left. Safe in any state; does not change g_spare_state. */
-static void spare_discard(void)
+/*
+ * Open the next session by renaming the lowest ready reservation of the scan
+ * into the next index. Runs with the card lock held. The rename is a
+ * directory-entry-only FatFs operation, so the pre-built cluster chain carries
+ * into the new session untouched and no f_expand runs. The file is reopened
+ * without truncation and streamed from offset 0, overwriting the reserved
+ * clusters in place. Returns 0 on success or a negative errno; on failure any
+ * renamed target is removed so the inline fallback reuses the index.
+ */
+static int open_from_reservation(const struct rdd2_flight_log_scan *scan)
+{
+	char path[64];
+	char reserve[64];
+	int rc;
+
+	rc = resolve_next_index(scan, path, sizeof(path));
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = reservation_path((uint32_t)scan->ready_slot, reserve, sizeof(reserve));
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = fs_rename(reserve, path);
+	if (rc != 0) {
+		return rc;
+	}
+
+	memset(&g_stream, 0, sizeof(g_stream));
+	rc = mcap_stream_open_existing(&g_stream, path, reservation_target());
+	if (rc != 0) {
+		/* The rename already consumed the reservation into this name; if it
+		 * cannot be reopened, remove it so no orphaned full-size file is left
+		 * and the inline fallback reuses this same index. */
+		(void)fs_unlink(path);
+		return rc;
+	}
+
+	rc = finish_open(scan->next_index, path);
+	if (rc != 0) {
+		(void)fs_unlink(path);
+	}
+	return rc;
+}
+
+/* Close the build in progress and remove its partial file, so no dangling
+ * half-reservation is left. A completed reservation is a file in another slot
+ * and is never touched. No-op when nothing is being built; does not change
+ * g_reservation_state. */
+static void reservation_discard(void)
 {
 	char path[64];
 
-	mcap_stream_spare_close(&g_spare);
-	if (spare_path(path, sizeof(path)) == 0) {
+	if (!g_reservation.open) {
+		return;
+	}
+	mcap_stream_reservation_close(&g_reservation);
+	if (reservation_path(g_reservation_slot, path, sizeof(path)) == 0) {
 		(void)fs_unlink(path);
 	}
 }
 
-/* Begin a fresh spare for the current session. A leftover spare of exactly the
- * target size (from a previous run) is adopted as-is, since the next session
- * overwrites it from offset 0; any other leftover is deleted and rebuilt. Runs
- * with the card lock held. */
-static void spare_begin(void)
+/*
+ * Start building the next standing reservation when the pool is short of one.
+ * The directory scan counts what stands on the card, so the pool refills after
+ * every consumption rather than once per session: after four sessions have
+ * consumed four reservations, twelve remain and the writer builds back toward
+ * sixteen, one reservation at a time in the background, whenever free space
+ * allows, so the next boot always finds a ready reservation and opens by rename.
+ * Runs with the card lock held.
+ */
+static void reservation_begin(void)
 {
+	struct rdd2_flight_log_scan scan;
 	char path[64];
-	struct fs_dirent info;
-	uint64_t target = spare_target();
+	uint64_t target = reservation_target();
+	uint64_t free_now;
 	int rc;
 
-	if (spare_path(path, sizeof(path)) != 0) {
-		g_spare_state = SPARE_GIVEUP;
+	if (rdd2_flight_log_fs_scan(&scan) != 0 || scan.free_slot < 0) {
+		/* Card unreadable, or every slot already holds a reservation: the pool
+		 * is full and the builder waits for one to be consumed. */
 		return;
 	}
 
-	if (fs_stat(path, &info) == 0 && info.type == FS_DIR_ENTRY_FILE &&
-	    (uint64_t)info.size == target) {
-		LOG_INF("reusing leftover spare (%llu bytes)", (unsigned long long)target);
-		g_spare_state = SPARE_READY;
+	if (reservation_path((uint32_t)scan.free_slot, path, sizeof(path)) != 0) {
+		g_reservation_state = RESERVATION_GIVEUP;
 		return;
 	}
 
-	(void)fs_unlink(path);
-	rc = mcap_stream_spare_open(&g_spare, path, target);
+	/* A wrong-sized file in that slot is a build a reset or a yank interrupted.
+	 * It is unusable, so remove it before the free-space gate below measures:
+	 * the clusters it holds are exactly the ones this build wants back, and
+	 * leaving it in place makes a card that has room look full. */
+	if (scan.free_slot_used) {
+		(void)fs_unlink(path);
+	}
+
+	/* Do not start a build the card cannot finish. The session reservation
+	 * shrinks to fit a tight card, but a standing one is always full size, so on
+	 * a card with no room for another the build would walk a step at a time into
+	 * the wall and the step that finally fails makes FatFs search the whole FAT
+	 * for a free cluster it will not find, a stall long enough to pin the ring.
+	 * Advisory only: free space can still shrink while the build runs, so the
+	 * -ENOSPC return from reservation_step stays the backstop. */
+	if (free_bytes(&free_now) &&
+	    free_now < target + FLIGHT_LOG_PREALLOC_MARGIN_BYTES) {
+		LOG_INF("%llu bytes free cannot hold another reservation, pool stands "
+			"at %u", (unsigned long long)free_now, scan.ready_count);
+		g_reservation_state = RESERVATION_GIVEUP;
+		return;
+	}
+
+	rc = mcap_stream_reservation_open(&g_reservation, path, target);
 	if (rc != 0) {
-		LOG_WRN("spare open failed (%d), rotation will expand inline", rc);
-		g_spare_state = SPARE_GIVEUP;
+		LOG_WRN("reservation open failed (%d), rotation will expand inline", rc);
+		g_reservation_state = RESERVATION_GIVEUP;
 		return;
 	}
-	g_spare_state = SPARE_BUILDING;
+	g_reservation_slot = (uint32_t)scan.free_slot;
+	g_reservation_state = RESERVATION_BUILDING;
 }
 
-/* Advance the in-progress build by one growth step. Runs with the card lock
- * held. On a full card the grow returns -ENOSPC, so the partial spare is
- * discarded and rotation takes the inline fallback. */
-static void spare_step(void)
+/* Advance the build in progress by one growth step. Runs with the card lock
+ * held. A finished reservation simply stands in its slot, so the builder returns
+ * to idle and the next cycle starts the following slot. On a full card the grow
+ * returns -ENOSPC, so the partial file is discarded and rotation takes the
+ * inline fallback. */
+static void reservation_step(void)
 {
-	int rc = mcap_stream_spare_grow(&g_spare,
-					(uint64_t)CONFIG_RDD2_FLIGHT_LOG_PREALLOC_STEP_BYTES);
+	int rc = mcap_stream_reservation_grow(
+		&g_reservation, (uint64_t)CONFIG_RDD2_FLIGHT_LOG_PREALLOC_STEP_BYTES);
 
 	if (rc == 1) {
-		g_spare_state = SPARE_READY;
-		LOG_INF("spare ready (%llu bytes), next rotation is burst-free",
-			(unsigned long long)g_spare.reserved);
+		LOG_INF("reservation ready (%llu bytes) in slot %u",
+			(unsigned long long)g_reservation.reserved, g_reservation_slot);
+		g_reservation_state = RESERVATION_IDLE;
 	} else if (rc < 0) {
-		LOG_WRN("spare growth stopped (%d), rotation will expand inline", rc);
-		spare_discard();
-		g_spare_state = SPARE_GIVEUP;
+		LOG_WRN("reservation growth stopped (%d), rotation will expand inline", rc);
+		reservation_discard();
+		g_reservation_state = RESERVATION_GIVEUP;
 	}
 	/* rc == 0: more steps remain, stay BUILDING. */
 }
 
 /*
- * One spare action per flush cycle, called from the writer batch under the card
- * lock and between drain batches. The active session file's whole extent is
+ * One reservation action per flush cycle, called from the writer batch under the
+ * card lock and between drain batches. The active session file's whole extent is
  * already built, so this is the only FAT-allocation work the writer does during
- * a session and it lands entirely on the disposable spare. A card yank during a
- * growth step can leave the spare's chain inconsistent, but never the streaming
- * session, whose clusters are all pre-allocated and thus metadata-quiet.
+ * a session and it lands entirely on the disposable file being built. A card
+ * yank during a growth step can leave that file's chain inconsistent, but never
+ * the streaming session, whose clusters are all pre-allocated and thus
+ * metadata-quiet.
  */
-static void spare_maintain(void)
+static void reservation_maintain(void)
 {
 	if (!g_session_active) {
 		return;
 	}
 
-	/* Grow the spare only in genuinely idle cycles: if the ring is holding
-	 * more than a small fraction of its capacity, draining the session comes
-	 * first and the spare waits for a quieter cycle. Rotation arrives after
-	 * roughly seventeen minutes, so even sparse idle cycles finish the build
-	 * with two orders of magnitude of margin. */
+	/* Build only in genuinely idle cycles: if the ring is holding more than a
+	 * small fraction of its capacity, draining the session comes first and the
+	 * pool waits for a quieter cycle. One reservation is seconds of cycles while
+	 * a size-triggered rotation is tens of minutes of streaming away, so even
+	 * sparse idle cycles keep the pool ahead with wide margin. */
 	if (ring_buf_size_get(&g_ring) >
 	    (CONFIG_RDD2_FLIGHT_LOG_RING_BYTES / 8)) {
 		return;
 	}
 
-	switch (g_spare_state) {
-	case SPARE_IDLE:
-		spare_begin();
+	switch (g_reservation_state) {
+	case RESERVATION_IDLE:
+		reservation_begin();
 		break;
-	case SPARE_BUILDING:
-		spare_step();
+	case RESERVATION_BUILDING:
+		reservation_step();
 		break;
-	case SPARE_READY:
-	case SPARE_GIVEUP:
+	case RESERVATION_GIVEUP:
 	default:
-		/* READY waits for rotation to consume it; GIVEUP waits for the next
-		 * session open to reset the state and retry. */
+		/* GIVEUP waits for the next session open to reset the state and
+		 * retry, since only a card that changed can change the answer. */
 		break;
 	}
 }
 
 static int start_session(void)
 {
+	struct rdd2_flight_log_scan scan;
 	int rc;
 
 	rdd2_flight_log_fs_lock();
@@ -870,15 +988,43 @@ static int start_session(void)
 		}
 	}
 
-	rc = open_session_file();
+	rc = rdd2_flight_log_fs_scan(&scan);
 	if (rc != 0) {
+		/* A directory-read failure most likely means the card was pulled
+		 * between the mount and the read. Unmount so the next attempt remounts
+		 * cleanly and the low-rate retry can pick up a reinserted card. */
+		(void)rdd2_flight_log_fs_unmount();
 		rdd2_flight_log_fs_unlock();
 		return rc;
 	}
 
-	/* First session after boot reserved inline above; spare construction starts
-	 * on the next flush cycle now that streaming is about to begin. */
-	g_spare_state = SPARE_IDLE;
+	/*
+	 * The pool that was standing before the last stop is still on the card, so
+	 * this session opens the way a rotation does: a directory-entry rename of an
+	 * extent that was erased as it was reserved. After the first flight no boot
+	 * scans the FAT for a free run, the reservations simply standing on the card
+	 * across power cycles. Only a card that has never recorded falls through to
+	 * the inline reservation below.
+	 */
+	rc = -ENOENT;
+	if (scan.ready_slot >= 0) {
+		rc = open_from_reservation(&scan);
+		if (rc != 0) {
+			LOG_WRN("standing reservation unusable (%d), reserving inline", rc);
+		}
+	}
+	if (rc != 0) {
+		rc = open_session_file(&scan);
+	}
+
+	/* One reservation just became this session's file (or it was reserved
+	 * inline), so the pool is one short and the builder refills it from the next
+	 * flush cycle. This also retries a card that once had no room. */
+	g_reservation_state = RESERVATION_IDLE;
+	if (rc != 0) {
+		rdd2_flight_log_fs_unlock();
+		return rc;
+	}
 	g_session_active = true;
 	atomic_set(&g_active, 1);
 	rdd2_flight_log_fs_unlock();
@@ -925,10 +1071,14 @@ static void stop_session(void)
 	(void)synapse_mcap_close(&g_writer);
 	(void)mcap_stream_close_file(&g_stream);
 	g_session_active = false;
-	/* Stop leaves no dangling reservation: close a spare build in progress and
-	 * remove the spare file so the card carries only the completed sessions. */
-	spare_discard();
-	g_spare_state = SPARE_IDLE;
+	/*
+	 * The standing reservations are the pool the next boot opens from, so they
+	 * stay on the card and the next session renames one in. A build still in
+	 * progress is closed and removed instead: a partial chain left by a yank
+	 * cannot be trusted, and rebuilding one is cheap.
+	 */
+	reservation_discard();
+	g_reservation_state = RESERVATION_IDLE;
 	/* Capture parks on its next loop check, but may have enqueued one more
 	 * batch after g_active cleared. Those frames missed the closed file, so
 	 * count them as dropped rather than lose them uncounted. */
@@ -946,16 +1096,16 @@ static void stop_session(void)
  * that land during the swap window are drained into the next file instead of
  * vanishing uncounted.
  *
- * When a spare is ready the swap is a rename of the pre-built extent: no
- * f_expand, no free-extent scan, so the writer stalls only for the close and the
- * rename, both directory-entry work. When no spare is ready (an early manual
- * rotate, or a build that gave up on a full card) it falls back to the inline
- * expand path, which carries the known open-time burst. Returns 0 on success or
- * a negative errno.
+ * When a reservation stands on the card the swap is a rename of the pre-built
+ * extent: no f_expand, no free-extent scan, so the writer stalls only for the
+ * close and the rename, both directory-entry work. When none is ready (an early
+ * manual rotate on a fresh card, or a build that gave up on a full card) it
+ * falls back to the inline expand path, which carries the known open-time burst.
+ * Returns 0 on success or a negative errno.
  */
 static int rotate_session(void)
 {
-	uint64_t reserved = spare_target();
+	struct rdd2_flight_log_scan scan;
 	int rc;
 
 	rdd2_flight_log_fs_lock();
@@ -968,43 +1118,63 @@ static int rotate_session(void)
 	drain_ring();
 	(void)synapse_mcap_close(&g_writer);
 
-	if (g_spare_state == SPARE_READY) {
-		/* Size-triggered rotation filled the whole reservation, so close
-		 * session N without truncation (the tail is already spent) and rename
-		 * the spare into session N+1. */
-		(void)mcap_stream_close_file_full(&g_stream);
-		rc = open_from_spare(reserved);
-		if (rc == 0) {
-			g_spare_state = SPARE_IDLE; /* build the next spare */
-			rdd2_flight_log_fs_unlock();
-			return 0;
+	rc = rdd2_flight_log_fs_scan(&scan);
+	if (rc == 0) {
+		if (scan.ready_slot >= 0) {
+			/* Size-triggered rotation filled the whole reservation, so close
+			 * session N without truncation (the tail is already spent) and
+			 * rename a standing reservation into session N+1. */
+			(void)mcap_stream_close_file_full(&g_stream);
+			rc = open_from_reservation(&scan);
+			if (rc != 0) {
+				LOG_WRN("reservation rotation failed (%d), expanding "
+					"inline", rc);
+			}
+		} else {
+			/* None ready: close session N normally, freeing its unused
+			 * tail, and reserve the next extent inline. */
+			(void)mcap_stream_close_file(&g_stream);
+			LOG_WRN("no reservation ready at rotation, expanding inline");
+			rc = -ENOENT;
 		}
-		LOG_WRN("spare rotation failed (%d), expanding inline", rc);
-		spare_discard();
+
+		if (rc != 0) {
+			/* Hand the build in progress its clusters back so the inline
+			 * expand has room, then reserve at the same index. */
+			reservation_discard();
+			rc = open_session_file(&scan);
+		}
 	} else {
-		/* No ready spare: close session N normally, freeing its unused tail. */
 		(void)mcap_stream_close_file(&g_stream);
-		if (g_spare_state != SPARE_IDLE) {
-			LOG_WRN("no spare ready at rotation, expanding inline");
-		}
-		spare_discard();
 	}
 
-	rc = open_session_file();
+	/* The pool is one short either way, so the builder refills from the next
+	 * flush cycle. */
+	g_reservation_state = RESERVATION_IDLE;
 	if (rc != 0) {
 		/* Could not open the next file, most likely a pulled card. Park
 		 * capture and drop the mount so the retry path remounts cleanly. */
 		atomic_set(&g_active, 0);
 		g_session_active = false;
 		(void)rdd2_flight_log_fs_unmount();
-		g_spare_state = SPARE_IDLE;
 		rdd2_flight_log_fs_unlock();
 		return rc;
 	}
 
-	g_spare_state = SPARE_IDLE;
 	rdd2_flight_log_fs_unlock();
 	return 0;
+}
+
+/* True when a size-triggered rotation may swap now: a reservation stands on the
+ * card, so the swap is a rename, or the builder gave up and the inline fallback
+ * is all there will be. Reads the card, so the caller asks only once the cheap
+ * gates have passed. Runs with the card lock held. */
+static bool rotation_ready(void)
+{
+	struct rdd2_flight_log_scan scan;
+
+	return g_reservation_state == RESERVATION_GIVEUP ||
+	       (rdd2_flight_log_fs_scan(&scan) == 0 && scan.ready_slot >= 0);
 }
 
 static void writer_thread(void *a, void *b, void *c)
@@ -1016,6 +1186,25 @@ static void writer_thread(void *a, void *b, void *c)
 	ARG_UNUSED(a);
 	ARG_UNUSED(b);
 	ARG_UNUSED(c);
+
+	/*
+	 * Bring the card up before anything else at boot. Identifying the card is
+	 * about 1.3 s on this hardware, and a blank card is also formatted here, so
+	 * at the writer's normal priority that work would queue behind main and the
+	 * flight threads and the session would open long after the vehicle could be
+	 * armed. Priority 1 puts this one mount attempt above main (priority 2) and
+	 * every flight thread; the priority is dropped again before the session
+	 * opens, so the steady-state writer still runs below the control domain. The
+	 * retry loop for an absent card runs at the normal priority, where a missing
+	 * card costs nothing.
+	 *
+	 * The SD stack busy-polls the card while it identifies, so a slow card
+	 * holds the CPU for those polls at priority 1; that is the price of
+	 * having the card up before anything else runs.
+	 */
+	k_thread_priority_set(k_current_get(), 1);
+	(void)rdd2_flight_log_fs_mount();
+	k_thread_priority_set(k_current_get(), CONFIG_RDD2_FLIGHT_LOG_WRITER_PRIORITY);
 
 	while (true) {
 		uint64_t now;
@@ -1075,12 +1264,11 @@ static void writer_thread(void *a, void *b, void *c)
 			if (synapse_mcap_flush(&g_writer) != SYNAPSE_MCAP_OK) {
 				g_flush_errors++;
 			}
-			/* Advance the background spare one step per flush cycle, still
+			/* Advance the reservation pool one step per flush cycle, still
 			 * under the card lock and after the session is synced. This moves
 			 * the next rotation's f_expand burst off the rotation path and
-			 * onto the disposable spare, amortized over the first minutes of
-			 * the session. */
-			spare_maintain();
+			 * onto a disposable file, amortized over idle cycles. */
+			reservation_maintain();
 			last_flush = now;
 		}
 
@@ -1105,34 +1293,34 @@ static void writer_thread(void *a, void *b, void *c)
 		 * waits for a cycle where it can run without dropping frames. Two gates
 		 * define that cycle:
 		 *
-		 *   - the background spare must be settled (READY, so the reopen renames
-		 *     a pre-built extent with no inline f_expand burst; or GIVEUP, where
-		 *     no better state is coming and the inline fallback is the only
-		 *     option). While it is still IDLE or BUILDING the spare is seconds
-		 *     from ready, so waiting avoids forcing the fallback needlessly.
+		 *   - the ring must be nearly empty (the same quiet threshold the pool
+		 *     builds on), so its full ~510 ms of headroom is free to absorb the
+		 *     close, f_sync and rename while capture keeps enqueuing;
 		 *
-		 *   - the ring must be nearly empty (the same quiet threshold the spare
-		 *     grows on), so its full ~510 ms of headroom is free to absorb the
-		 *     close, f_sync and rename while capture keeps enqueuing.
+		 *   - and a reservation must stand on the card, so the reopen renames a
+		 *     pre-built extent with no inline f_expand burst. A builder that
+		 *     gave up passes too: no better state is coming and the inline
+		 *     fallback is the only option left. While a build is running the
+		 *     next reservation is seconds away, so waiting avoids forcing the
+		 *     fallback needlessly. That check reads the card, so it is asked
+		 *     only after the two cheap gates above have passed.
 		 *
-		 * Deferring to a quiet cycle costs only a few kilobytes past the 256 MiB
-		 * reservation. A manual `flightlog rotate` bypasses these gates and
+		 * Deferring to a quiet cycle costs only a few kilobytes past the
+		 * reservation size. A manual `flightlog rotate` bypasses these gates and
 		 * rotates immediately through the same request path. */
 #if defined(CONFIG_RDD2_FLIGHT_LOG_EAGER_ROTATE)
 		/* Rotate as soon as the byte threshold is crossed, without waiting
 		 * for a burst-free cycle. This reproduces the pre-deferral behavior
 		 * whose mid-flight reservation stall overflowed the ring. */
-		bool spare_settled = true;
 		bool ring_quiet = true;
 #else
-		bool spare_settled = (g_spare_state == SPARE_READY ||
-				      g_spare_state == SPARE_GIVEUP);
 		bool ring_quiet = ring_buf_size_get(&g_ring) <=
 				  (CONFIG_RDD2_FLIGHT_LOG_RING_BYTES / 8U);
 #endif
 
 		if (g_stream.bytes_written >= (uint64_t)CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES &&
-		    spare_settled && ring_quiet) {
+		    ring_quiet &&
+		    (IS_ENABLED(CONFIG_RDD2_FLIGHT_LOG_EAGER_ROTATE) || rotation_ready())) {
 			atomic_set(&g_rotate_request, 1);
 		}
 
@@ -1168,8 +1356,25 @@ void rdd2_flight_log_status_get(struct rdd2_flight_log_status *out)
 	out->dropped_frames = (uint32_t)atomic_get(&g_dropped);
 	out->ring_high_water = (uint32_t)atomic_get(&g_ring_high_water);
 	out->flush_errors = g_flush_errors;
-	out->spare_state = (uint8_t)g_spare_state;
-	out->spare_reserved = g_spare.reserved;
+	out->last_sync_ms = g_stream.last_sync_ms;
+	out->max_sync_ms = g_stream.max_sync_ms;
+	out->reservation_state = (uint8_t)g_reservation_state;
+	out->reservation_bytes =
+		g_reservation_state == RESERVATION_BUILDING ? g_reservation.reserved : 0U;
+	out->reservation_slots = RDD2_FLIGHT_LOG_RESERVE_SLOTS;
+	out->ready_reservations = 0U;
+	if (rdd2_flight_log_fs_mounted()) {
+		struct rdd2_flight_log_scan scan;
+
+		/* Counting what stands on the card is a directory read, so take the
+		 * card lock the same way a shell command that touches the volume does.
+		 * The lock is recursive and the writer holds it only in short batches. */
+		rdd2_flight_log_fs_lock();
+		if (rdd2_flight_log_fs_scan(&scan) == 0) {
+			out->ready_reservations = scan.ready_count;
+		}
+		rdd2_flight_log_fs_unlock();
+	}
 }
 
 void rdd2_flight_log_request_start(void)
@@ -1198,7 +1403,9 @@ static struct zros_sub *const *g_subs_ptrs(void)
 	return g_sub_ptr_storage;
 }
 
+/* No start delay: the card is identified and mounted as early as the kernel can
+ * run a thread, so logging is live before the vehicle can be armed. */
 K_THREAD_DEFINE(flight_log_writer, CONFIG_RDD2_FLIGHT_LOG_WRITER_STACK_SIZE, writer_thread,
-		NULL, NULL, NULL, CONFIG_RDD2_FLIGHT_LOG_WRITER_PRIORITY, 0, 1000);
+		NULL, NULL, NULL, CONFIG_RDD2_FLIGHT_LOG_WRITER_PRIORITY, 0, 0);
 K_THREAD_DEFINE(flight_log_capture, CONFIG_RDD2_FLIGHT_LOG_FRONT_STACK_SIZE, capture_thread,
-		NULL, NULL, NULL, CONFIG_RDD2_FLIGHT_LOG_FRONT_PRIORITY, 0, 1000);
+		NULL, NULL, NULL, CONFIG_RDD2_FLIGHT_LOG_FRONT_PRIORITY, 0, 0);

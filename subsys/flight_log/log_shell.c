@@ -18,18 +18,22 @@ static int cmd_log_status(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "logging=%s active=%s mounted=%s sync_ok=%s",
 		    status.want_logging ? "on" : "off", status.active ? "yes" : "no",
 		    status.mounted ? "yes" : "no", status.last_sync_ok ? "yes" : "no");
-	shell_print(sh, "session=%s%04u%s bytes=%llu dropped=%u ring_high=%u flush_err=%u",
+	shell_print(sh,
+		    "session=%s%04u%s bytes=%llu dropped=%u ring_high=%u flush_err=%u "
+		    "sync_last_ms=%u sync_max_ms=%u",
 		    RDD2_FLIGHT_LOG_FILE_PREFIX, (unsigned int)(status.session_index % 10000U),
 		    RDD2_FLIGHT_LOG_FILE_SUFFIX, (unsigned long long)status.bytes_written,
-		    status.dropped_frames, status.ring_high_water, status.flush_errors);
+		    status.dropped_frames, status.ring_high_water, status.flush_errors,
+		    status.last_sync_ms, status.max_sync_ms);
 	{
-		static const char *const spare_names[] = {"idle", "building", "ready",
-							  "given-up"};
-		const char *name = status.spare_state < 4U ? spare_names[status.spare_state]
-							   : "unknown";
+		static const char *const build_names[] = {"idle", "building", "given-up"};
+		const char *name = status.reservation_state < ARRAY_SIZE(build_names)
+					   ? build_names[status.reservation_state]
+					   : "unknown";
 
-		shell_print(sh, "spare=%s reserved=%llu", name,
-			    (unsigned long long)status.spare_reserved);
+		shell_print(sh, "reservations=%u/%u build=%s reserved=%llu",
+			    status.ready_reservations, status.reservation_slots, name,
+			    (unsigned long long)status.reservation_bytes);
 	}
 	return 0;
 }

@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <zephyr/fs/fs.h>
+#include <zephyr/toolchain.h>
 
 #include <synapse/mcap.h>
 
@@ -20,10 +21,13 @@
  * The writer emits variable-length byte runs. This adapter accumulates them
  * into a sector-aligned block and pushes whole blocks to the open file, so the
  * card sees aligned writes rather than one write per short record. A flush
- * pushes the partial remainder and issues an f_sync, bounding how much trailing
- * data a power loss can cost. All memory is caller-owned and there is no
- * dynamic allocation: only the writer's storage thread ever calls into the
- * sink, so blocking on the card here is by design.
+ * pushes only the whole sectors of the remainder and issues an f_sync, keeping
+ * the file offset a multiple of 512 so FatFs never has to split a later block
+ * write around a partly filled sector. A power loss therefore costs the flush
+ * window plus at most the 511 bytes held back for that alignment. Close writes
+ * the final sub-sector tail in full so the footer lands. All memory is
+ * caller-owned and there is no dynamic allocation: only the writer's storage
+ * thread ever calls into the sink, so blocking on the card here is by design.
  *
  * When preallocated is set the session file was expanded to a contiguous extent
  * at open (see mcap_stream_preallocate), so the streaming writes fill the
@@ -38,23 +42,27 @@ struct mcap_stream {
 	bool preallocated;      /* session file holds a reserved extent */
 	uint64_t reserved_bytes; /* size of the reserved extent, 0 when grow-on-write */
 	uint64_t bytes_written; /* payload bytes handed to FatFs */
+	uint32_t last_sync_ms;  /* duration of the most recent flush sync */
+	uint32_t max_sync_ms;   /* longest flush sync seen this session */
 	size_t block_fill;
-	uint8_t block[CONFIG_RDD2_FLIGHT_LOG_BLOCK_BYTES];
+	/* Cache-line aligned so the SD DMA path transfers straight out of this
+	 * buffer instead of bouncing it one 512-byte block at a time. */
+	uint8_t block[CONFIG_RDD2_FLIGHT_LOG_BLOCK_BYTES] __aligned(32);
 };
 
 /*
- * Background pre-allocated spare file. While a session streams, the writer grows
- * this reserved file one small step per flush cycle (mcap_stream_spare_grow) so
- * the next session's cluster extent is fully built before rotation, moving the
- * f_expand burst out of the mid-flight rotation path.
+ * One standing reservation under construction. While a session streams, the
+ * writer grows this reserved file one small step per flush cycle
+ * (mcap_stream_reservation_grow) so a session extent is fully built before it is
+ * needed, moving the f_expand burst out of the mid-flight rotation path.
  *
- * The spare is disposable and holds no logged data: growth only stretches the
- * FAT cluster chain over newly seeked ranges, it never writes file content. Its
- * name is ignored by the session-index scan, and because the active session
+ * A reservation is disposable and holds no logged data: growth only stretches
+ * the FAT cluster chain over newly seeked ranges, it never writes file content.
+ * Its name is ignored by the session-index scan, and because the active session
  * file's extent is already fully built, a card yank during a growth step can
- * damage only this spare's chain, never the streaming session.
+ * damage only this reservation's chain, never the streaming session.
  */
-struct prealloc_spare {
+struct prealloc_reservation {
 	struct fs_file_t file;
 	bool open;
 	uint64_t reserved; /* bytes of chain allocated so far */
@@ -81,9 +89,9 @@ int mcap_stream_preallocate(struct mcap_stream *stream, uint64_t size_bytes);
 
 /*
  * Open an existing file for writing without truncating it, positioned at offset
- * 0, so a pre-built cluster chain (a spare renamed into this session) is reused
- * in place: the streaming writes overwrite the reserved clusters from the top and
- * never grow the FAT. Marks the stream preallocated with the given reserved size.
+ * 0, so a pre-built cluster chain (a reservation renamed into this session) is
+ * reused in place: the streaming writes overwrite the reserved clusters from the
+ * top and never grow the FAT. Marks the stream preallocated with that size.
  * Must not pass a truncating or appending open, both of which would defeat the
  * reservation. Returns 0 on success or a negative errno.
  */
@@ -110,7 +118,13 @@ int mcap_stream_close_file_full(struct mcap_stream *stream);
 /* Complete-write sink callback: 0 means every byte was accepted. */
 int mcap_stream_sink_write(void *context, const uint8_t *data, size_t size);
 
-/* Sink flush callback: writes the remainder and syncs the file. */
+/*
+ * Sink flush callback: writes the whole sectors of the remainder, holding back
+ * the sub-sector tail so the file offset stays 512-aligned, then waits for the
+ * data to reach the medium: a disk sync while a preallocated extent streams,
+ * where no filesystem metadata changes, and an f_sync on the grow-on-write
+ * fallback, whose FAT chain does.
+ */
 int mcap_stream_sink_flush(void *context);
 
 /* Build a synapse_mcap_sink_t bound to this stream. */
@@ -125,25 +139,28 @@ synapse_mcap_sink_t mcap_stream_sink(struct mcap_stream *stream);
 void mcap_stream_session_id(char *out);
 
 /*
- * Open (creating, truncating any leftover) the spare at path and set its growth
- * target. reserved starts at 0. Returns 0 on success or a negative errno.
+ * Open (creating, truncating any leftover) the reservation at path and set its
+ * growth target. reserved starts at 0. Returns 0 or a negative errno.
  */
-int mcap_stream_spare_open(struct prealloc_spare *spare, const char *path,
-			   uint64_t target);
+int mcap_stream_reservation_open(struct prealloc_reservation *reservation,
+				 const char *path, uint64_t target);
 
 /*
- * Grow the spare by at most step_bytes using the FatFs write-mode lseek idiom,
- * which stretches the file's cluster chain over the newly seeked range and
- * writes only FAT metadata, no file data. Syncs after the step so the on-disk
- * chain and directory size stay consistent and a yank leaves a well-formed
- * partial spare. Returns 1 when the target is reached (the spare is synced and
- * closed, ready to rename), 0 when more steps remain, or a negative errno on
- * failure (-ENOSPC when the card cannot hold the full reservation alongside the
- * live session). The caller discards the spare on any negative return.
+ * Grow the reservation by at most step_bytes using the FatFs write-mode lseek
+ * idiom, which stretches the file's cluster chain over the newly seeked range
+ * and writes only FAT metadata, no file data. Syncs after the step so the
+ * on-disk chain and directory size stay consistent and a yank leaves a
+ * well-formed partial file, and erases the clusters the step added so the
+ * session that inherits this chain streams into known-erased space. Returns 1
+ * when the target is reached (the file is synced and closed, ready to rename), 0
+ * when more steps remain, or a negative errno on failure (-ENOSPC when the card
+ * cannot hold another full reservation alongside the live session). The caller
+ * discards the reservation on any negative return.
  */
-int mcap_stream_spare_grow(struct prealloc_spare *spare, uint64_t step_bytes);
+int mcap_stream_reservation_grow(struct prealloc_reservation *reservation,
+				 uint64_t step_bytes);
 
-/* Close the spare file if open. Does not remove it from the card. */
-void mcap_stream_spare_close(struct prealloc_spare *spare);
+/* Close the reservation file if open. Does not remove it from the card. */
+void mcap_stream_reservation_close(struct prealloc_reservation *reservation);
 
 #endif /* RDD2_FLIGHT_LOG_MCAP_STREAM_H_ */

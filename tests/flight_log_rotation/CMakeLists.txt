@@ -25,14 +25,17 @@ target_sources(app PRIVATE
 
 # The flight logger reads its tuning from Kconfig. The suite does not enable the
 # CONFIG_RDD2_FLIGHT_LOG driver stack (it selects on-target SD hardware), so the
-# tuning is supplied directly. The rotation and spare-step sizes are scaled down
-# so several size-triggered rotations occur within the run while the ring stays
-# at its real 131072-byte size.
+# tuning is supplied directly. The rotation, pool and growth-step sizes are
+# scaled down so several size-triggered rotations occur within the run while the
+# ring stays at its real 131072-byte size.
 target_compile_definitions(app PRIVATE
   CONFIG_RDD2_FLIGHT_LOG_LOG_LEVEL=1
   CONFIG_RDD2_FLIGHT_LOG_RING_BYTES=131072
   CONFIG_RDD2_FLIGHT_LOG_BLOCK_BYTES=4096
   CONFIG_RDD2_FLIGHT_LOG_ROTATE_BYTES=262144
+  # Four pool slots at the scaled rotation size, so the refill of a consumed
+  # slot is exercised without stretching the run.
+  CONFIG_RDD2_FLIGHT_LOG_RESERVE_BYTES=1048576
   CONFIG_RDD2_FLIGHT_LOG_PREALLOC_STEP_BYTES=32768
   # Scale the reservation floor below the scaled rotation size so the inline
   # reservation path actually reserves (in the flight image the 256 MiB rotation

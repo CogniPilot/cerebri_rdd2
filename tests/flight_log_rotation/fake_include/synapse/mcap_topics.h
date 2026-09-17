@@ -20,11 +20,12 @@ typedef enum {
 	synapse_types_TimeStatus_Gnss = 2,
 } synapse_types_TimeStatus_enum_t;
 
-/* Leading uint64 publish time matches the production fixed-layout convention:
- * the writer reads publish_time from offset 0 of every payload. */
+/* Leading timestamp_ns matches the production fixed-layout convention, field
+ * name included: the writer reads publish_time from offset 0 of every payload
+ * and flight_log.c asserts that offset on this field name. */
 #define RDD2_FAKE_PAYLOAD(name, size)                                                              \
 	typedef struct __attribute__((packed)) {                                                   \
-		uint64_t publish_time_ns;                                                          \
+		uint64_t timestamp_ns;                                                             \
 		uint8_t _bytes[(size) - 8U];                                                        \
 	} name
 
@@ -45,7 +46,7 @@ typedef enum {
 } synapse_topic_VehicleHealthFlags_t;
 
 typedef struct __attribute__((packed)) {
-	uint64_t publish_time_ns;
+	uint64_t timestamp_ns;
 	uint32_t flags;
 	uint8_t _bytes[56U - 12U];
 } synapse_topic_VehicleHealthData_t;

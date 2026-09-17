@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include "mcap_stream.h"
+#include "flight_log_fs.h"
 
 #include <errno.h>
 #include <string.h>
@@ -9,6 +10,7 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/kernel.h>
 #include <zephyr/random/random.h>
+#include <zephyr/storage/disk_access.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
 
@@ -38,16 +40,31 @@ static int write_all(struct mcap_stream *stream, const uint8_t *buf, size_t len)
 	return 0;
 }
 
-static int flush_block(struct mcap_stream *stream)
+/* Card sector size. CONFIG_RDD2_FLIGHT_LOG_BLOCK_BYTES is a multiple of it. */
+#define SECTOR_BYTES 512U
+
+/*
+ * Write the first n bytes of the staging block and shift whatever is left down
+ * to the front. n must not exceed block_fill. Callers pass the whole fill to
+ * empty the block, or a sector multiple to keep the file offset 512-aligned.
+ */
+static int flush_block(struct mcap_stream *stream, size_t n)
 {
 	int rc;
 
-	if (stream->block_fill == 0U) {
+	if (n == 0U) {
 		return 0;
 	}
-	rc = write_all(stream, stream->block, stream->block_fill);
-	stream->block_fill = 0U;
-	return rc;
+	rc = write_all(stream, stream->block, n);
+	if (rc != 0) {
+		stream->block_fill = 0U;
+		return rc;
+	}
+	stream->block_fill -= n;
+	if (stream->block_fill != 0U) {
+		memmove(stream->block, stream->block + n, stream->block_fill);
+	}
+	return 0;
 }
 
 int mcap_stream_open_file(struct mcap_stream *stream, const char *path)
@@ -129,6 +146,20 @@ int mcap_stream_preallocate(struct mcap_stream *stream, uint64_t size_bytes)
 	 * leaves the write pointer at 0, so the sequential writes that follow fill
 	 * the reserved clusters in place without stretching the FAT. */
 	fil = (FIL *)stream->file.filep;
+
+	/* f_expand scans the FAT in a single circular pass that starts at the
+	 * volume's suggested next-free cluster and gives up when it comes back to
+	 * it, so a free run straddling that point counts as two shorter runs. The
+	 * hint is read back from FSInfo at mount, and after a power cut or reset
+	 * that left the volume mounted it points into the middle of the free space:
+	 * an almost empty card then denies a reservation it has room for twice
+	 * over. Point the scan at the start of the volume so it walks the FAT in
+	 * layout order and measures the free run the same way the caller's
+	 * largest-free-run check does. f_expand replaces the hint with the end of
+	 * what it allocates, and a failed expand leaves it at the volume start,
+	 * which only makes the next chain allocation search from there. */
+	fil->obj.fs->last_clst = 2U;
+
 	fr = f_expand(fil, (FSIZE_t)size_bytes, 1);
 	if (fr != FR_OK) {
 		/* FR_DENIED here means no contiguous free block of that size exists
@@ -151,12 +182,16 @@ static int mcap_stream_close_common(struct mcap_stream *stream, bool truncate_ta
 	}
 
 	if (!stream->write_failed) {
-		if (flush_block(stream) == 0) {
+		/* Full remainder, sub-sector tail included: one unaligned write at
+		 * close is the price of landing the MCAP footer. */
+		if (flush_block(stream, stream->block_fill) == 0) {
 			/* Give back the unused tail of a preallocated extent so the
-			 * card is not left holding phantom clusters. After flush_block
-			 * the FatFs write pointer sits at the real end, so seek to the
-			 * streamed byte count and truncate there to free every reserved
-			 * cluster past it. Best-effort: a card pulled mid-session sets
+			 * volume is not left holding phantom clusters. This frees FAT
+			 * clusters only and writes no erase, so the tail is erased again
+			 * when it is next reserved. After flush_block the FatFs write
+			 * pointer sits at the real end, so seek to the streamed byte
+			 * count and truncate there to free every reserved cluster past
+			 * it. Best-effort: a card pulled mid-session sets
 			 * write_failed and skips this path entirely, and a stale
 			 * full-size directory entry with a garbage tail is acceptable
 			 * because the MCAP reader stops at the first invalid record.
@@ -213,7 +248,7 @@ int mcap_stream_sink_write(void *context, const uint8_t *data, size_t size)
 		offset += chunk;
 
 		if (stream->block_fill == sizeof(stream->block)) {
-			if (flush_block(stream) != 0) {
+			if (flush_block(stream, stream->block_fill) != 0) {
 				return -1;
 			}
 		}
@@ -226,6 +261,7 @@ int mcap_stream_sink_write(void *context, const uint8_t *data, size_t size)
 int mcap_stream_sink_flush(void *context)
 {
 	struct mcap_stream *stream = context;
+	int64_t start_ms;
 	int rc;
 
 	if (stream == NULL || !stream->file_open || stream->write_failed) {
@@ -235,12 +271,40 @@ int mcap_stream_sink_flush(void *context)
 		return -1;
 	}
 
-	if (flush_block(stream) != 0) {
+	/* Whole sectors only: handing FatFs a sub-sector tail would leave the file
+	 * offset mid-sector, and every later 4 KiB block write would then split
+	 * into a read-modify-write of the shared sector plus a short direct write
+	 * from an odd buffer offset. The held-back tail (under one sector) goes out
+	 * with the next flush, or in full at close.
+	 *
+	 * The offset is sector-aligned but not block-aligned, so a 4 KiB write
+	 * that straddles a cluster boundary still splits into two aligned
+	 * multi-sector writes (about one in eight at 32 KiB clusters). Holding
+	 * back the whole sub-4096 remainder instead would remove that split at
+	 * the cost of up to 4 KiB of power-cut exposure rather than 511 bytes.
+	 */
+	if (flush_block(stream, (stream->block_fill / SECTOR_BYTES) * SECTOR_BYTES) != 0) {
 		stream->last_sync_ok = false;
 		return -1;
 	}
 
-	rc = fs_sync(&stream->file);
+	/* While a preallocated extent streams, f_sync has nothing left to do: the
+	 * directory entry already carries the reserved size and the timestamp is a
+	 * fixed constant, the chain is fully built, and the flush above hands FatFs
+	 * only whole sectors, so FatFs holds no dirty file data. An f_sync would
+	 * therefore only rewrite an unchanged directory sector every flush. What
+	 * still matters for durability is waiting for the card to finish the last
+	 * write, so sync the disk instead. The grow-on-write fallback keeps f_sync
+	 * because its FAT chain really does change. Close and rotate still go
+	 * through fs_sync/fs_close, which land the true size. */
+	start_ms = k_uptime_get();
+	rc = stream->preallocated
+		     ? disk_access_ioctl(RDD2_FLIGHT_LOG_DISK_NAME, DISK_IOCTL_CTRL_SYNC, NULL)
+		     : fs_sync(&stream->file);
+	stream->last_sync_ms = (uint32_t)(k_uptime_get() - start_ms);
+	if (stream->last_sync_ms > stream->max_sync_ms) {
+		stream->max_sync_ms = stream->last_sync_ms;
+	}
 	stream->last_sync_ok = (rc == 0);
 	return rc == 0 ? 0 : -1;
 }
@@ -295,41 +359,45 @@ void mcap_stream_session_id(char *out)
 	out[32] = '\0';
 }
 
-int mcap_stream_spare_open(struct prealloc_spare *spare, const char *path, uint64_t target)
+int mcap_stream_reservation_open(struct prealloc_reservation *reservation, const char *path,
+				 uint64_t target)
 {
 	int rc;
 
-	if (spare == NULL || path == NULL || target == 0U) {
+	if (reservation == NULL || path == NULL || target == 0U) {
 		return -EINVAL;
 	}
 
-	/* FS_O_TRUNC resets any leftover partial spare so growth starts from an
+	/* FS_O_TRUNC resets any leftover partial file so growth starts from an
 	 * empty chain at a known zero size. */
-	fs_file_t_init(&spare->file);
-	rc = fs_open(&spare->file, path, FS_O_CREATE | FS_O_WRITE | FS_O_TRUNC);
+	fs_file_t_init(&reservation->file);
+	rc = fs_open(&reservation->file, path, FS_O_CREATE | FS_O_WRITE | FS_O_TRUNC);
 	if (rc != 0) {
 		return rc;
 	}
 
-	spare->open = true;
-	spare->reserved = 0U;
-	spare->target = target;
+	reservation->open = true;
+	reservation->reserved = 0U;
+	reservation->target = target;
 	return 0;
 }
 
-int mcap_stream_spare_grow(struct prealloc_spare *spare, uint64_t step_bytes)
+int mcap_stream_reservation_grow(struct prealloc_reservation *reservation, uint64_t step_bytes)
 {
 	FIL *fil;
+	uint64_t previous;
 	uint64_t next;
 	FRESULT fr;
 
-	if (spare == NULL || !spare->open || spare->file.filep == NULL || step_bytes == 0U) {
+	if (reservation == NULL || !reservation->open || reservation->file.filep == NULL ||
+	    step_bytes == 0U) {
 		return -EINVAL;
 	}
 
-	next = spare->reserved + step_bytes;
-	if (next > spare->target) {
-		next = spare->target;
+	previous = reservation->reserved;
+	next = previous + step_bytes;
+	if (next > reservation->target) {
+		next = reservation->target;
 	}
 
 	/* Classic FatFs grow idiom: with FA_WRITE set, seeking past the current file
@@ -338,42 +406,47 @@ int mcap_stream_spare_grow(struct prealloc_spare *spare, uint64_t step_bytes)
 	 * cluster it crosses in write mode, allocating clusters and writing FAT
 	 * entries but no file data. f_expand cannot be used per step because it
 	 * requires an empty file (objsize == 0) and so cannot extend an already
-	 * partly grown spare. This is the only FAT allocation the writer performs
+	 * partly grown file. This is the only FAT allocation the writer performs
 	 * during a live session, and it lands entirely on this disposable file, not
 	 * the active session whose extent is already fully built and thus quiet. */
-	fil = (FIL *)spare->file.filep;
+	fil = (FIL *)reservation->file.filep;
 	fr = f_lseek(fil, (FSIZE_t)next);
 	if (fr != FR_OK) {
 		return -EIO;
 	}
 
-	/* No per-step sync: the spare is disposable, so durability of a partial
-	 * build is worthless, and skipping the sync lets the FatFs sector window
-	 * coalesce the FAT writes of many consecutive steps into the rare flush
-	 * when the window moves. The one durable sync happens at completion via
-	 * the close below, which also lands the directory size. f_lseek reports
-	 * FR_OK even when a full card clips the grow, so the reached offset, not
-	 * the return code, is the truth. */
-	spare->reserved = (uint64_t)f_tell(fil);
-	if (spare->reserved < next) {
-		/* create_chain clipped on a full card: the spare cannot reach target. */
+	/* f_lseek reports FR_OK even when a full card clips the grow, so the
+	 * reached offset, not the return code, is the truth. */
+	reservation->reserved = (uint64_t)f_tell(fil);
+	if (reservation->reserved < next) {
+		/* create_chain clipped on a full card: this one cannot reach target. */
 		return -ENOSPC;
 	}
-	if (spare->reserved >= spare->target) {
+
+	/* Erase the clusters this step just added, while they still hold nothing,
+	 * so the session that inherits this chain at rotation streams into
+	 * known-erased blocks. The range walk reads the chain off the card and so
+	 * syncs the file first, which also lands the FAT entries the lseek above
+	 * created and the directory size; a yank therefore leaves a well-formed
+	 * partial file. Best-effort: a failed erase costs throughput, not data. */
+	(void)rdd2_flight_log_fs_trim_file_range(&reservation->file, previous,
+						 reservation->reserved);
+
+	if (reservation->reserved >= reservation->target) {
 		if (f_sync(fil) != FR_OK) {
 			return -EIO;
 		}
-		mcap_stream_spare_close(spare);
+		mcap_stream_reservation_close(reservation);
 		return 1;
 	}
 	return 0;
 }
 
-void mcap_stream_spare_close(struct prealloc_spare *spare)
+void mcap_stream_reservation_close(struct prealloc_reservation *reservation)
 {
-	if (spare == NULL || !spare->open) {
+	if (reservation == NULL || !reservation->open) {
 		return;
 	}
-	(void)fs_close(&spare->file);
-	spare->open = false;
+	(void)fs_close(&reservation->file);
+	reservation->open = false;
 }
