@@ -143,3 +143,46 @@
 &bmi08x_gyro {
 	status = "disabled";
 };
+
+/*
+ * FlexRAM split: 64 KB DTCM for the relocated hot-path data, 64 KB ITCM for
+ * the relocated hot-path code, and the remaining 384 KB as FlexRAM OCRAM at
+ * 0x20280000. OCRAM2, the main RAM region, is too small for the generated
+ * navigation estimator state plus the flight log ring, so both are relocated
+ * here in src/CMakeLists.txt. Each image applies its own split from its reset
+ * hook, so MCUboot keeping the board default does not conflict.
+ */
+#include <zephyr/dt-bindings/memory-controller/nxp,flexram.h>
+
+&flexram {
+	flexram,bank-spec = <FLEXRAM_DTCM>,
+			    <FLEXRAM_DTCM>,
+			    <FLEXRAM_ITCM>,
+			    <FLEXRAM_ITCM>,
+			    <FLEXRAM_OCRAM>,
+			    <FLEXRAM_OCRAM>,
+			    <FLEXRAM_OCRAM>,
+			    <FLEXRAM_OCRAM>,
+			    <FLEXRAM_OCRAM>,
+			    <FLEXRAM_OCRAM>,
+			    <FLEXRAM_OCRAM>,
+			    <FLEXRAM_OCRAM>,
+			    <FLEXRAM_OCRAM>,
+			    <FLEXRAM_OCRAM>,
+			    <FLEXRAM_OCRAM>,
+			    <FLEXRAM_OCRAM>;
+
+	flexram_ocram: ocram@20280000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0x20280000 DT_SIZE_K(384)>;
+		zephyr,memory-region = "OCRAM";
+	};
+};
+
+&itcm {
+	reg = <0x00000000 DT_SIZE_K(64)>;
+};
+
+&dtcm {
+	reg = <0x20000000 DT_SIZE_K(64)>;
+};

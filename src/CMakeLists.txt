@@ -128,4 +128,23 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
       LOCATION DTCM_DATA_BSS
     )
   endif()
+
+  # The generated navigation estimator state and the flight log ring do not
+  # fit in OCRAM2 together, so they live in the FlexRAM OCRAM region carved
+  # out in boards/mr_vmu_tropic.overlay.
+  if(NOT CONFIG_RDD2_COMMS_STUB AND NOT CONFIG_RDD2_CONTROL_SIMPLE)
+    zephyr_code_relocate(
+      FILES
+        processes/navigation_estimator.c
+      LOCATION OCRAM_BSS
+    )
+  endif()
+
+  if(CONFIG_RDD2_FLIGHT_LOG)
+    zephyr_code_relocate(
+      FILES
+        ${CMAKE_SOURCE_DIR}/subsys/flight_log/flight_log.c
+      LOCATION OCRAM_NOINIT
+    )
+  endif()
 endif()
