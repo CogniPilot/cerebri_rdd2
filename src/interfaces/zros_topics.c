@@ -16,7 +16,7 @@
 #include <synapse/topic_print.h>
 #include <synapse/types_reader.h>
 
-ZROS_TOPIC_DEFINE(manual_input, synapse_topic_ManualControlData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(manual_input, synapse_topic_ManualControlData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(control_imu,
                                    synapse_topic_InertialSampleData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(waypoint_plan, rdd2_waypoint_plan_t);
