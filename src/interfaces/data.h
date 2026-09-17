@@ -90,6 +90,9 @@ typedef struct {
 typedef struct {
   int64_t rc_stamp_ms;
   int32_t throttle_us;
+  uint16_t battery_voltage_cv;
+  int16_t battery_current_da;
+  int8_t battery_remaining_pct;
   uint8_t rc_link_quality;
   uint8_t flight_mode;
   bool armed;

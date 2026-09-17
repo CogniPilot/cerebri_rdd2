@@ -1,0 +1,18 @@
+config RDD2_POWER_SOURCE
+	bool "Battery voltage and current from an I2C power monitor"
+	default n
+	depends on SENSOR
+	help
+	  Poll the sensor on the power0 devicetree alias (an INA226 on the
+	  CogniPilot power module) every 100 ms from the system work queue and
+	  publish bus voltage, pack current, and an estimated remaining percent
+	  into the vehicle_health topic. The rate loop only reads the cached
+	  values, so no I2C transfer ever runs on the 800 Hz path.
+
+if RDD2_POWER_SOURCE
+
+module = RDD2_POWER_SOURCE
+module-str = rdd2 power source
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # RDD2_POWER_SOURCE

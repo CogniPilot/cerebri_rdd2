@@ -422,6 +422,9 @@ int rdd2_rate_control_allocator_process_run(void) {
     process->status.imu_ok = rdd2_imu_stream_wait_next(
         &process->gyro, &process->accel, &process->dt, &imu_timestamp_ns);
     process->status.rc_link_quality = rdd2_rc_input_link_quality_get();
+    rdd2_power_get(&process->status.battery_voltage_cv,
+                   &process->status.battery_current_da,
+                   &process->status.battery_remaining_pct);
     rdd2_rc_input_latest_get(&process->rc, &process->status.rc_stamp_ms,
                              &process->status.rc_valid);
     publish_imu(process, imu_timestamp_ns);

@@ -1,0 +1,1 @@
+target_sources_ifdef(CONFIG_RDD2_POWER_SOURCE app PRIVATE power_source.c)

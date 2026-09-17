@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include <zephyr/dt-bindings/sensor/icm45686.h>
+#include <zephyr/dt-bindings/sensor/ina226.h>
 
 / {
 	aliases {
 		rc = &sbus0;
 		imu0 = &icm45686;
+		power0 = &ina226;
 		motors = &dshot;
 		gnss = &gnss0;
 		zros-serial = &lpuart4;
@@ -68,6 +70,21 @@
 	gnss0: gnss {
 		status = "okay";
 		compatible = "cognipilot,ubx-gnss";
+	};
+};
+
+/*
+ * Battery monitor on the CogniPilot power module, on the I2C bus behind the
+ * POWER connector. The shunt value and the current LSB below are the ones the
+ * module ships with; both scale the reported current directly, so check the
+ * current channel against a meter under load before trusting the telemetry.
+ */
+&lpi2c3 {
+	ina226: ina226@41 {
+		compatible = "ti,ina226";
+		reg = <0x41>;
+		current-lsb-microamps = <5000>;
+		rshunt-micro-ohms = <500>;
 	};
 };
 

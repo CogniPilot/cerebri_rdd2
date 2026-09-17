@@ -27,6 +27,19 @@ void rdd2_rc_input_latest_get(rdd2_rc_channels_t *rc, int64_t *stamp_ms, bool *v
 uint8_t rdd2_rc_input_link_quality_get(void);
 uint8_t rdd2_rc_flight_mode(const rdd2_rc_channels_t *rc);
 
+/* Latest battery sample, or zeros when no power monitor is compiled in. */
+#ifdef CONFIG_RDD2_POWER_SOURCE
+void rdd2_power_get(uint16_t *voltage_cv, int16_t *current_da, int8_t *remaining_pct);
+#else
+static inline void rdd2_power_get(uint16_t *voltage_cv, int16_t *current_da,
+				  int8_t *remaining_pct)
+{
+	*voltage_cv = 0U;
+	*current_da = 0;
+	*remaining_pct = 0;
+}
+#endif
+
 int rdd2_motor_output_init(void);
 bool rdd2_motor_output_ready(void);
 uint64_t rdd2_motor_output_write_all(const rdd2_motor_values_t *motors, bool armed, bool test_mode);
