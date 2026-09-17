@@ -796,12 +796,13 @@
               runtimeInputs = baseTools ++ mkFastDynCiTools pkgs;
             };
 
-          rdd2-build = mkWestApp "rdd2-build" ''
+          rdd2-build = mkCargoApp "rdd2-build" ''
             ${commonScript}
 
             app="$(rdd2_find_app)"
             rdd2_export_common "$app"
             rdd2_require_workspace "$app"
+            rdd2_prepare_synapse_fbs "$app"
             workspace="$RDD2_WORKSPACE_ROOT"
 
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
@@ -814,12 +815,13 @@
             exec west build -p always -b "$board" -d "$build_dir" "$app" "$@"
           '';
 
-          rdd2-build-comms-stub = mkWestApp "rdd2-build-comms-stub" ''
+          rdd2-build-comms-stub = mkCargoApp "rdd2-build-comms-stub" ''
             ${commonScript}
 
             app="$(rdd2_find_app)"
             rdd2_export_common "$app"
             rdd2_require_workspace "$app"
+            rdd2_prepare_synapse_fbs "$app"
             workspace="$RDD2_WORKSPACE_ROOT"
 
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-zephyr}"
@@ -833,12 +835,13 @@
               -DEXTRA_CONF_FILE="$app/comms_stub.conf"
           '';
 
-          rdd2-build-native-sim = mkWestApp "rdd2-build-native-sim" ''
+          rdd2-build-native-sim = mkCargoApp "rdd2-build-native-sim" ''
             ${commonScript}
 
             app="$(rdd2_find_app)"
             rdd2_export_common "$app"
             rdd2_require_workspace "$app"
+            rdd2_prepare_synapse_fbs "$app"
             workspace="$RDD2_WORKSPACE_ROOT"
 
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-host}"
@@ -857,6 +860,7 @@
             rdd2_ensure_workspace "$app" "${rdd2-west-update}/bin/rdd2-west-update"
             rdd2_export_common "$app"
             rdd2_require_workspace "$app"
+            rdd2_prepare_synapse_fbs "$app"
 
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-host}"
             export NIX_HARDENING_ENABLE=""
