@@ -774,7 +774,7 @@
             name: text:
             pkgs.writeShellApplication {
               inherit name;
-              runtimeInputs = baseTools;
+              runtimeInputs = baseTools ++ mkFastDynCiTools pkgs;
               inherit text;
             };
 
@@ -789,14 +789,7 @@
               ];
             };
 
-          mkCargoApp =
-            name: text:
-            pkgs.writeShellApplication {
-              inherit name text;
-              runtimeInputs = baseTools ++ mkFastDynCiTools pkgs;
-            };
-
-          rdd2-build = mkCargoApp "rdd2-build" ''
+          rdd2-build = mkWestApp "rdd2-build" ''
             ${commonScript}
 
             app="$(rdd2_find_app)"
@@ -815,7 +808,7 @@
             exec west build -p always -b "$board" -d "$build_dir" "$app" "$@"
           '';
 
-          rdd2-build-comms-stub = mkCargoApp "rdd2-build-comms-stub" ''
+          rdd2-build-comms-stub = mkWestApp "rdd2-build-comms-stub" ''
             ${commonScript}
 
             app="$(rdd2_find_app)"
@@ -835,7 +828,7 @@
               -DEXTRA_CONF_FILE="$app/comms_stub.conf"
           '';
 
-          rdd2-build-native-sim = mkCargoApp "rdd2-build-native-sim" ''
+          rdd2-build-native-sim = mkWestApp "rdd2-build-native-sim" ''
             ${commonScript}
 
             app="$(rdd2_find_app)"
@@ -853,7 +846,7 @@
             exec west build -p always -b "$board" -d "$build_dir" "$app" "$@"
           '';
 
-          rdd2-test-gps-lockstep = mkCargoApp "rdd2-test-gps-lockstep" ''
+          rdd2-test-gps-lockstep = mkWestApp "rdd2-test-gps-lockstep" ''
             ${commonScript}
 
             app="$(rdd2_find_app)"
@@ -1049,7 +1042,7 @@
               "$@"
           '';
 
-          rdd2-fastdyn-ci = mkCargoApp "rdd2-fastdyn-ci" ''
+          rdd2-fastdyn-ci = mkWestApp "rdd2-fastdyn-ci" ''
             ${commonScript}
 
             unset RDD2_MODELICA_MODELS_ROOT
@@ -1078,7 +1071,7 @@
             exec "$app/target/release/xtask" fastdyn-ci "$@"
           '';
 
-          rdd2-fastdyn-setup = mkCargoApp "rdd2-fastdyn-setup" ''
+          rdd2-fastdyn-setup = mkWestApp "rdd2-fastdyn-setup" ''
             ${commonScript}
 
             if [ "$#" -ne 0 ]; then
@@ -1150,7 +1143,7 @@
             printf 'FastDyn runtime is ready at %s\n' "$FASTDYN_ROOT"
           '';
 
-          rdd2-fastdyn-mission = mkCargoApp "rdd2-fastdyn-mission" ''
+          rdd2-fastdyn-mission = mkWestApp "rdd2-fastdyn-mission" ''
             ${commonScript}
 
             app="$(rdd2_find_app)"
