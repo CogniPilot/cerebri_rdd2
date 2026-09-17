@@ -38,8 +38,12 @@
         pkgs.python3.withPackages (
           ps: with ps; [
             anytree
+            # MCUboot imgtool signs the application image under sysbuild.
+            cbor2
+            click
             # Zephyr Twister imports these build/run-test modules eagerly.
             colorama
+            cryptography
             intelhex
             jinja2
             jsonschema
@@ -60,6 +64,7 @@
             pyyaml
             requests
             semver
+            setuptools
             tabulate
             tqdm
             west
@@ -805,7 +810,10 @@
             build_dir="''${RDD2_BUILD_DIR:-$app/build-$board_slug}"
 
             cd "$workspace"
-            exec west build -p always -b "$board" -d "$build_dir" "$app" "$@"
+            # The Tropic boots through MCUboot, which only starts a signed image.
+            # Sysbuild builds the bootloader and signs the application together,
+            # and west flash then writes both.
+            exec west build -p always --sysbuild -b "$board" -d "$build_dir" "$app" "$@"
           '';
 
           rdd2-build-comms-stub = mkWestApp "rdd2-build-comms-stub" ''
@@ -824,7 +832,7 @@
             build_dir="''${RDD2_COMMS_STUB_BUILD_DIR:-$app/build-$board_slug-comms-stub}"
 
             cd "$workspace"
-            exec west build -p always -b "$board" -d "$build_dir" "$app" "$@" -- \
+            exec west build -p always --sysbuild -b "$board" -d "$build_dir" "$app" "$@" -- \
               -DEXTRA_CONF_FILE="$app/comms_stub.conf"
           '';
 
@@ -1270,7 +1278,10 @@
                 board="''${RDD2_BOARD:-mr_vmu_tropic}"
                 board_slug="''${board//\//_}"
                 build_dir="''${RDD2_BUILD_DIR:-$app/build-$board_slug}"
-                elf="$build_dir/zephyr/zephyr.elf"
+                elf="$build_dir/cerebri_rdd2/zephyr/zephyr.elf"
+                if [ ! -r "$elf" ]; then
+                  elf="$build_dir/zephyr/zephyr.elf"
+                fi
 
                 if [ ! -r "$elf" ]; then
                   printf 'error: firmware ELF not found: %s\n' "$elf" >&2
