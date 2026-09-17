@@ -159,9 +159,9 @@ FastDyn exchange generated `synapse_fbs` payloads through
 coordinate or pace the control loop.
 
 CMake checks the Rumoca executable the flake input supplies against the
-revision pinned by `cmake/RumocaLock.cmake` (or, once that revision has a
-published release, installs it into the build tree and verifies the installer,
-executable version, and platform binary hash), and generates eFMI Production
+revision pinned by `cmake/RumocaLock.cmake`; without one it installs that
+revision with `cargo install` into `~/.cache/cerebri_rdd2/rumoca/<rev>`, reuses
+that cache on later builds, verifies the executable version, and generates eFMI Production
 Code from
 `Planning.Bezier.WaypointTrajectoryPlanner`,
 `Vehicles.Rdd2.NavigationEstimator`, `Vehicles.Rdd2.GuidanceController`, and
@@ -293,14 +293,30 @@ mkdir -p /tmp/cerebri-ws
 git clone <repo-url> /tmp/cerebri-ws/cerebri_rdd2
 cd /tmp/cerebri-ws
 python -m venv .venv
-source .venv/activate/bin
+source .venv/bin/activate
 pip install west
 west init -l cerebri_rdd2
 west update
 west packages pip --install
 west sdk install -t arm-zephyr-eabi
+cerebri_rdd2/scripts/synapse_fbs_package
 west build -p -b mr_vmu_tropic cerebri_rdd2
 ```
+
+`west sdk install` registers the SDK in the CMake package registry
+(`~/.cmake/packages/Zephyr-sdk`), so the build finds it without
+`ZEPHYR_SDK_INSTALL_DIR`. An SDK installed by hand is registered by running its
+`setup.sh -c` once.
+
+`scripts/synapse_fbs_package` run from the workspace root writes the generated
+Synapse C package to `<workspace>/synapse_fbs-build/synapse_fbs-c`, which the
+build picks up as the default `RDD2_SYNAPSE_FBS_ROOT`. Pass a different output
+directory to the script and export `RDD2_SYNAPSE_FBS_ROOT` to override it.
+
+The first build compiles the pinned Rumoca revision from source, so `cargo`
+(rustup's default location or `CARGO_HOME`) must be installed; the result is
+cached in `~/.cache/cerebri_rdd2/rumoca/<rev>` and reused by later builds,
+including `west build -p`.
 
 ## Nix / NixOS
 

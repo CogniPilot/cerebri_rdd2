@@ -131,9 +131,17 @@ else()
       )
     endif()
   else()
-    set(RDD2_RUMOCA_BIN_DIR
-      ${PROJECT_BINARY_DIR}/tools/rumoca/${RDD2_RUMOCA_VERSION}
-    )
+    if(RDD2_RUMOCA_SOURCE_REV)
+      # cargo builds the pinned revision once per user, outside the build
+      # directory, so `west build -p` reuses it instead of rebuilding it.
+      set(RDD2_RUMOCA_BIN_DIR
+        $ENV{HOME}/.cache/cerebri_rdd2/rumoca/${RDD2_RUMOCA_SOURCE_REV}/bin
+      )
+    else()
+      set(RDD2_RUMOCA_BIN_DIR
+        ${PROJECT_BINARY_DIR}/tools/rumoca/${RDD2_RUMOCA_VERSION}
+      )
+    endif()
     set(RDD2_RUMOCA_EXECUTABLE ${RDD2_RUMOCA_BIN_DIR}/rumoca)
 
     add_custom_command(

@@ -33,8 +33,14 @@ rdd2_cache_path(RDD2_ZROS_ROOT
   "${WORKSPACE_ROOT}/modules/lib/zros"
   "ZROS Zephyr module source"
 )
+# scripts/synapse_fbs_package writes the package here when it is run from the
+# workspace root with its default output directory.
+set(_synapse_fbs_default "${WORKSPACE_ROOT}/synapse_fbs-build/synapse_fbs-c")
+if(NOT IS_DIRECTORY "${_synapse_fbs_default}")
+  set(_synapse_fbs_default "")
+endif()
 rdd2_cache_path(RDD2_SYNAPSE_FBS_ROOT
-  ""
+  "${_synapse_fbs_default}"
   "Generated Synapse C package source"
 )
 rdd2_cache_path(RDD2_MODELICA_MODELS_ROOT
@@ -75,8 +81,9 @@ set(ZEPHYR_EXTRA_MODULES
 if(NOT RDD2_SYNAPSE_FBS_ROOT)
   message(FATAL_ERROR
     "RDD2_SYNAPSE_FBS_ROOT must identify the generated Synapse C package. "
-    "Generate it with scripts/synapse_fbs_package and export the "
-    "RDD2_SYNAPSE_FBS_ROOT value it prints."
+    "Run scripts/synapse_fbs_package from the workspace root so that "
+    "${WORKSPACE_ROOT}/synapse_fbs-build/synapse_fbs-c resolves as the default, "
+    "or export the RDD2_SYNAPSE_FBS_ROOT value the script prints."
   )
 endif()
 list(APPEND ZEPHYR_EXTRA_MODULES ${RDD2_SYNAPSE_FBS_ROOT})
