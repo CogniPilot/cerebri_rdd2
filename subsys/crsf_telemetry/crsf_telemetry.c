@@ -45,6 +45,7 @@
 
 #include "crsf_telemetry_encode.h"
 
+#include "interfaces/drivers.h"
 #include "interfaces/zros_topics.h"
 
 #include <math.h>
@@ -260,27 +261,32 @@ static size_t build_entry(size_t idx, uint8_t *buf, uint8_t *type)
 		return crsf_encode_flight_mode(buf, CRSF_ENCODE_BUF_LEN, name);
 	}
 	case CRSF_TELEM_ENTRY_BATTERY:
-		/* A zero pack voltage means no monitor reading yet, so report
+	case CRSF_TELEM_ENTRY_BATTERY_PASSTHROUGH: {
+		uint16_t voltage_cv;
+		int16_t current_da;
+		int8_t remaining_pct;
+		uint32_t consumed_mah;
+
+		/* The vehicle_health message carries no consumed charge, so the
+		 * whole sample is read from the power source here instead. A
+		 * zero pack voltage means no monitor reading yet, so report
 		 * nothing rather than a flat 0 V the transmitter would announce
-		 * as a dead pack. Consumed mAh is not tracked either: the
-		 * monitor publishes instantaneous voltage and current only, so
-		 * both battery frames carry a consumption of zero and the
-		 * transmitter shows the remaining percent instead. */
-		if (g_health.voltage_battery_cv == 0U) {
+		 * as a dead pack. */
+		rdd2_power_get(&voltage_cv, &current_da, &remaining_pct, &consumed_mah);
+		if (voltage_cv == 0U) {
 			return 0U;
 		}
-		*type = CRSF_TYPE_BATTERY;
-		return crsf_encode_battery(buf, CRSF_ENCODE_BUF_LEN, g_health.voltage_battery_cv,
-					   g_health.current_battery_da, 0U,
-					   (uint8_t)MAX(g_health.battery_remaining_pct, 0));
-	case CRSF_TELEM_ENTRY_BATTERY_PASSTHROUGH:
-		if (g_health.voltage_battery_cv == 0U) {
-			return 0U;
+		if (idx == CRSF_TELEM_ENTRY_BATTERY) {
+			*type = CRSF_TYPE_BATTERY;
+			return crsf_encode_battery(buf, CRSF_ENCODE_BUF_LEN, voltage_cv,
+						   current_da, consumed_mah,
+						   (uint8_t)MAX(remaining_pct, 0));
 		}
 		pk[0].appid = CRSF_YAAPU_BATTERY_APPID;
-		pk[0].data = crsf_yaapu_battery(g_health.voltage_battery_cv,
-						g_health.current_battery_da, 0U);
+		pk[0].data = crsf_yaapu_battery(voltage_cv, current_da,
+						(uint16_t)MIN(consumed_mah, 0x7FFFU));
 		return crsf_encode_multi_packet(buf, CRSF_ENCODE_BUF_LEN, pk, 1U);
+	}
 	case CRSF_TELEM_ENTRY_PARAMS:
 		pk[0].appid = CRSF_YAAPU_PARAMS_APPID;
 		pk[0].data = crsf_yaapu_param(CRSF_YAAPU_PARAM_FRAME_TYPE, CRSF_MAV_TYPE_QUADROTOR);

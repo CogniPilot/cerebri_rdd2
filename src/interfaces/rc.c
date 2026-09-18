@@ -221,6 +221,16 @@ static int cmd_crsf_status(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "uplink_lq=%u rssi1=-%u rssi2=-%u snr=%d rf_mode=%u",
 		    link.uplink_link_quality, link.uplink_rssi_1, link.uplink_rssi_2,
 		    link.uplink_snr, link.rf_mode);
+	{
+		uint16_t voltage_cv;
+		int16_t current_da;
+		int8_t remaining_pct;
+		uint32_t consumed_mah;
+
+		rdd2_power_get(&voltage_cv, &current_da, &remaining_pct, &consumed_mah);
+		shell_print(sh, "batt_cv=%u batt_da=%d batt_pct=%d batt_mah=%u", voltage_cv,
+			    current_da, remaining_pct, consumed_mah);
+	}
 #if defined(CONFIG_RDD2_CRSF_TELEMETRY)
 	{
 		struct rdd2_crsf_telemetry_counters telem;

@@ -11,6 +11,16 @@ config RDD2_POWER_SOURCE
 
 if RDD2_POWER_SOURCE
 
+config RDD2_POWER_SOURCE_ESR_MOHM
+	int "Internal resistance per cell in milliohm"
+	default 5
+	range 0 100
+	help
+	  Undoes the voltage sag under load before the state of charge is read
+	  off the cell curve, so the reported percent does not dip with the
+	  throttle. Typical for a healthy LiPo cell is 4 to 6 milliohm. Set 0
+	  to report the terminal voltage unchanged.
+
 module = RDD2_POWER_SOURCE
 module-str = rdd2 power source
 source "subsys/logging/Kconfig.template.log_config"

@@ -27,16 +27,23 @@ void rdd2_rc_input_latest_get(rdd2_rc_channels_t *rc, int64_t *stamp_ms, bool *v
 uint8_t rdd2_rc_input_link_quality_get(void);
 uint8_t rdd2_rc_flight_mode(const rdd2_rc_channels_t *rc);
 
-/* Latest battery sample, or zeros when no power monitor is compiled in. */
+/*
+ * Latest battery sample plus the charge drawn since boot, or zeros when no
+ * power monitor is compiled in. consumed_mah may be NULL.
+ */
 #ifdef CONFIG_RDD2_POWER_SOURCE
-void rdd2_power_get(uint16_t *voltage_cv, int16_t *current_da, int8_t *remaining_pct);
+void rdd2_power_get(uint16_t *voltage_cv, int16_t *current_da, int8_t *remaining_pct,
+		    uint32_t *consumed_mah);
 #else
 static inline void rdd2_power_get(uint16_t *voltage_cv, int16_t *current_da,
-				  int8_t *remaining_pct)
+				  int8_t *remaining_pct, uint32_t *consumed_mah)
 {
 	*voltage_cv = 0U;
 	*current_da = 0;
 	*remaining_pct = 0;
+	if (consumed_mah != NULL) {
+		*consumed_mah = 0U;
+	}
 }
 #endif
 
