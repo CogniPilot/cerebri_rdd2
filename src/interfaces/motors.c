@@ -12,6 +12,8 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/misc/nxp_flexio_dshot/nxp_flexio_dshot.h>
 #include <zephyr/drivers/pwm.h>
+#include <zephyr/drivers/sensor.h>
+#include <zephyr/shell/shell.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
 
@@ -71,10 +73,41 @@ static uint16_t motor_to_dshot(float normalized, bool armed) {
   return (uint16_t)(DSHOT_MIN + (clamped * span) + 0.5f);
 }
 
+#if defined(CONFIG_RDD2_DSHOT) && !defined(CONFIG_RDD2_LOCKSTEP)
+/*
+ * Bidirectional DShot readback. The driver decodes the ESC responses captured
+ * since the previous trigger, and runs its receive-baud training, only inside
+ * sensor_sample_fetch, so it is called once per output cycle right before the
+ * next trigger. Values stay in the driver's units: eRPM in hundreds, degrees
+ * C, volts, amps.
+ */
+static struct {
+  struct sensor_value rpm[4];
+  struct sensor_value temperature[4];
+  struct sensor_value voltage[4];
+  struct sensor_value current[4];
+  uint32_t decoded;
+  uint32_t no_data;
+} g_esc;
+
+static void esc_readback(const struct device *dshot_dev) {
+  if (sensor_sample_fetch_chan(dshot_dev, SENSOR_CHAN_RPM) != 0) {
+    g_esc.no_data++;
+    return;
+  }
+  g_esc.decoded++;
+  (void)sensor_channel_get(dshot_dev, SENSOR_CHAN_RPM, g_esc.rpm);
+  (void)sensor_channel_get(dshot_dev, SENSOR_CHAN_DIE_TEMP, g_esc.temperature);
+  (void)sensor_channel_get(dshot_dev, SENSOR_CHAN_VOLTAGE, g_esc.voltage);
+  (void)sensor_channel_get(dshot_dev, SENSOR_CHAN_CURRENT, g_esc.current);
+}
+#endif
+
 static uint64_t motor_output_trigger_and_timestamp(void) {
 #if defined(CONFIG_RDD2_DSHOT) && !defined(CONFIG_RDD2_LOCKSTEP)
   const struct device *const dshot_dev = DEVICE_DT_GET(MOTOR_NODE);
 
+  esc_readback(dshot_dev);
   nxp_flexio_dshot_trigger(dshot_dev);
   return nxp_flexio_dshot_last_trigger_ns_get(dshot_dev);
 #else
@@ -300,3 +333,23 @@ void rdd2_motor_raw_test_clear(void) {
 
   irq_unlock(key);
 }
+
+#if defined(CONFIG_RDD2_DSHOT) && !defined(CONFIG_RDD2_LOCKSTEP) && defined(CONFIG_SHELL)
+static int cmd_motors_esc(const struct shell *sh, size_t argc, char **argv) {
+  ARG_UNUSED(argc);
+  ARG_UNUSED(argv);
+  shell_print(sh, "decoded=%u no_data=%u", g_esc.decoded, g_esc.no_data);
+  for (int i = 0; i < 4; i++) {
+    shell_print(sh, "esc%d erpm=%d temp=%dC volt=%d.%02uV curr=%dA", i,
+                g_esc.rpm[i].val1 * 100, g_esc.temperature[i].val1, g_esc.voltage[i].val1,
+                (unsigned)(g_esc.voltage[i].val2 / 10000), g_esc.current[i].val1);
+  }
+  return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(motors_cmds,
+                               SHELL_CMD(esc, NULL, "Bidirectional DShot readback per ESC.",
+                                         cmd_motors_esc),
+                               SHELL_SUBCMD_SET_END);
+SHELL_CMD_REGISTER(motors, &motors_cmds, "Motor output diagnostics.", NULL);
+#endif

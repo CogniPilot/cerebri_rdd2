@@ -137,18 +137,26 @@
 
 		ch1 {
 			pin-id = <6>;
+			bidirectional-dshot;
+			extended-telemetry;
 		};
 
 		ch2 {
 			pin-id = <7>;
+			bidirectional-dshot;
+			extended-telemetry;
 		};
 
 		ch3 {
 			pin-id = <9>;
+			bidirectional-dshot;
+			extended-telemetry;
 		};
 
 		ch4 {
 			pin-id = <8>;
+			bidirectional-dshot;
+			extended-telemetry;
 		};
 	};
 };

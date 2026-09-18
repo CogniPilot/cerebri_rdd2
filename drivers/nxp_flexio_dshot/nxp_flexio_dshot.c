@@ -14,6 +14,7 @@
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/misc/nxp_flexio_dshot/nxp_flexio_dshot.h>
 #include <zephyr/drivers/sensor.h>
+#include <zephyr/shell/shell.h>
 #include <zephyr/drivers/sensor_clock.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(LOG_MODULE_NAME, CONFIG_LOG_DEFAULT_LEVEL);
@@ -56,11 +57,15 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME, CONFIG_LOG_DEFAULT_LEVEL);
  * When enabled, the ESC interleaves telemetry frames with the eRPM responses.
  * The 12-bit payload is eRPM when the 9-bit mantissa MSB is set; otherwise, if
  * EDT is enabled, it is an EDT frame carrying a type nibble and an 8-bit value.
- * The ESC only starts emitting EDT once it receives the enable command, which
- * the driver sends (repeated) after a channel first comes online.
+ * The ESC only starts emitting EDT once it receives the enable command. It only
+ * accepts commands after it has been idle for a while, so the driver holds off a
+ * second after a channel comes online, spaces the retries a second apart and
+ * gives up after a few unanswered attempts.
  */
 #define DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE 13
 #define BDSHOT_EDT_ENABLE_REPEATS           10
+#define BDSHOT_EDT_MAX_ATTEMPTS             5
+#define BDSHOT_EDT_REQUEST_DELAY_MS         1000U
 
 #define BDSHOT_EDT_MANTISSA_MSB 0x0100 /* Set -> eRPM frame, clear -> EDT frame */
 #define BDSHOT_EDT_TYPE_MASK    0x0F00
@@ -113,6 +118,7 @@ struct nxp_flexio_dshot_data {
 	uint32_t dshot_timer_mask;
 	uint32_t bdshot_recv_mask;
 	uint32_t bdshot_parsed_recv_mask;
+	uint32_t bdshot_busy_us; /* Window a bidirectional channel stays receive-armed */
 	uint64_t last_trigger_ns;
 };
 
@@ -129,6 +135,7 @@ struct nxp_flexio_dshot_channel_config {
 	uint16_t erpm;
 	uint32_t crc_error_cnt;
 	uint32_t frame_error_cnt;
+	uint32_t decoded_cnt;
 	uint32_t no_response_cnt;
 	uint32_t last_no_response_cnt;
 
@@ -140,12 +147,16 @@ struct nxp_flexio_dshot_channel_config {
 	uint8_t bdshot_training_success; /* Clean decodes at current offset */
 	bool bdshot_training_done;       /* Set once a good offset was locked in */
 	bool online;                     /* ESC currently responding */
+	uint32_t tx_started;             /* Cycle count when the last frame was armed */
 	uint16_t consecutive_successes;
 	uint16_t consecutive_failures;
 
 	/* Extended DShot Telemetry (EDT) state, only used when this channel's edt is set */
 	uint8_t edt_enable_repeats; /* Remaining enable commands to send to the ESC */
-	uint8_t edt_valid;          /* BDSHOT_EDT_VALID_* bits that have been decoded */
+	uint8_t edt_attempts;       /* Enable commands sent since the channel came online */
+	bool edt_confirmed;         /* An EDT frame arrived after one of our requests */
+	uint32_t edt_online_ms;     /* Uptime the channel came online, 0 while offline */
+	uint8_t edt_valid;          /* BDSHOT_EDT_VALID_* bits not reported yet */
 	uint8_t edt_temperature;    /* degrees C */
 	uint8_t edt_voltage;        /* raw, 0.25 V per step */
 	uint8_t edt_current;        /* amps */
@@ -179,6 +190,9 @@ static void nxp_flexio_dshot_output(const struct device *dev, uint32_t channel)
 
 	flexio_timer_config_t timerConfig;
 	flexio_shifter_config_t shifterConfig;
+
+	/* Disable timer, TIMCFG and TIMCMP may only be written while it is disabled */
+	flexio_base->TIMCTL[child->res.timer_index[channel]] = 0;
 
 	/* Disable Shifter */
 	(void)memset(&shifterConfig, 0, sizeof(shifterConfig));
@@ -356,6 +370,13 @@ static int nxp_flexio_dshot_init(const struct device *dev)
 	/* Calculate dshot timings based on dshot_pwm_freq */
 	data->dshot_tcmp = 0x2F00 | (((data->flexio_clk / (dshot_pwm_freq * 3) / 2) - 1) & 0xFF);
 
+	/* 16-bit frame, ESC turnaround, 21-bit response at 5/4 of the output rate
+	 * and margin for interrupt latency: how long a bidirectional channel may
+	 * still be busy after its frame was armed.
+	 */
+	data->bdshot_busy_us = 16000000U / dshot_pwm_freq + 30U +
+			       (21U * 4000000U) / (5U * dshot_pwm_freq) + 50U;
+
 	err = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
 	if (err) {
 		LOG_ERR("Failed to configure pins");
@@ -399,33 +420,92 @@ static void nxp_flexio_dshot_hw_trigger(const struct device *dev)
 	FLEXIO_Type *flexio_base = (FLEXIO_Type *)(config->flexio_base);
 	struct nxp_flexio_child *child = (struct nxp_flexio_child *)(config->child);
 	struct nxp_flexio_dshot_channel_config *dshot_info;
+	uint32_t recv_mask = data->bdshot_recv_mask;
+	uint32_t tx_mask = 0;
+	uint32_t tx_timer_mask = 0;
+	uint32_t now = k_cycle_get_32();
 	uint64_t cycles = 0U;
+	unsigned int key;
 
-	FLEXIO_ClearTimerStatusFlags(flexio_base, data->dshot_timer_mask);
 	if (sensor_clock_get_cycles(&cycles) == 0) {
 		data->last_trigger_ns = sensor_clock_cycles_to_ns(cycles);
 	} else {
 		data->last_trigger_ns = 0U;
 	}
 
+	data->bdshot_recv_mask = 0x0;
+
 	for (uint8_t channel = 0; (channel < config->channel->dshot_channel_count); channel++) {
+		uint32_t shifter_flag = 1 << child->res.shifter_index[channel];
+
 		dshot_info = &config->channel->dshot_info[channel];
 
-		if (dshot_info->bdshot && (data->bdshot_recv_mask & (1 << channel)) == 0) {
-			dshot_info->no_response_cnt++;
+		if (dshot_info->bdshot) {
+			/* A response the ISR has not consumed yet: latch it here
+			 * instead of destroying it, reading the buffer clears the
+			 * shifter flag. The next fetch decodes it.
+			 */
+			if (dshot_info->state == BDSHOT_RECEIVE &&
+			    (FLEXIO_GetShifterStatusFlags(flexio_base) & shifter_flag)) {
+				dshot_info->raw_response =
+					flexio_base->SHIFTBUFBIS[child->res.shifter_index[channel]];
+				dshot_info->state = BDSHOT_RECEIVE_COMPLETE;
+				data->bdshot_recv_mask |= shifter_flag;
+			} else if ((recv_mask & shifter_flag) == 0) {
+				dshot_info->no_response_cnt++;
+			}
+
+			/* The ESC may still be driving the line: leave the receive
+			 * armed until the busy window has elapsed.
+			 */
+			if (dshot_info->state != BDSHOT_RECEIVE_COMPLETE &&
+			    dshot_info->tx_started != 0 &&
+			    k_cyc_to_us_floor32(now - dshot_info->tx_started) <
+				    data->bdshot_busy_us) {
+				continue;
+			}
+
+			/* Receive is over, put the pin back to output. The
+			 * reconfiguration raises the shifter flag (buffer
+			 * empty), so mask this one channel first, it is
+			 * re-enabled below with the frame.
+			 */
+			key = irq_lock();
+			FLEXIO_DisableShifterStatusInterrupts(flexio_base, shifter_flag);
+			irq_unlock(key);
+
+			nxp_flexio_dshot_output(dev, channel);
 		}
 
 		if (dshot_info->init && dshot_info->data_seg1 != 0) {
-			flexio_base->SHIFTBUF[child->res.shifter_index[channel]] =
-				dshot_info->data_seg1;
+			tx_mask |= shifter_flag;
+			tx_timer_mask |= 1 << child->res.timer_index[channel];
 		}
 	}
 
-	data->bdshot_recv_mask = 0x0;
+	FLEXIO_ClearTimerStatusFlags(flexio_base, tx_timer_mask);
 
-	FLEXIO_ClearTimerStatusFlags(flexio_base, data->dshot_timer_mask);
-	FLEXIO_EnableShifterStatusInterrupts(flexio_base, data->dshot_mask);
-	FLEXIO_EnableTimerStatusInterrupts(flexio_base, data->dshot_timer_mask);
+	/* The ISR has to queue the second word within the first 24 sub-bits going
+	 * out, so nothing may preempt between the buffer write and the interrupt
+	 * enable. SHIFTSIEN and TIMIEN have no set/clear alias either, so the
+	 * read-modify-write also has to be atomic against the ISR's own.
+	 */
+	key = irq_lock();
+
+	for (uint8_t channel = 0; (channel < config->channel->dshot_channel_count); channel++) {
+		if ((tx_mask & (1 << child->res.shifter_index[channel])) == 0) {
+			continue;
+		}
+
+		dshot_info = &config->channel->dshot_info[channel];
+		dshot_info->state = DSHOT_START;
+		dshot_info->tx_started = now;
+		flexio_base->SHIFTBUF[child->res.shifter_index[channel]] = dshot_info->data_seg1;
+	}
+
+	FLEXIO_EnableShifterStatusInterrupts(flexio_base, tx_mask);
+	FLEXIO_EnableTimerStatusInterrupts(flexio_base, tx_timer_mask);
+	irq_unlock(key);
 }
 
 static uint64_t nxp_flexio_dshot_hw_last_trigger_ns_get(const struct device *dev)
@@ -472,9 +552,7 @@ static void nxp_flexio_dshot_hw_data_set(const struct device *dev, unsigned chan
 					 uint16_t throttle, bool telemetry)
 {
 	const struct nxp_flexio_dshot_config *config = dev->config;
-	struct nxp_flexio_dshot_data *data = dev->data;
 	struct nxp_flexio_dshot_channel_config *dshot_info = &config->channel->dshot_info[channel];
-	FLEXIO_Type *flexio_base = (FLEXIO_Type *)(config->flexio_base);
 
 	if (channel < config->channel->dshot_channel_count && dshot_info->init) {
 		uint16_t csum_data;
@@ -514,18 +592,11 @@ static void nxp_flexio_dshot_hw_data_set(const struct device *dev, unsigned chan
 
 		uint64_t dshot_expanded = nxp_flexio_dshot_expand_data(packet);
 
+		/* The frame is only armed by the trigger, which first latches a
+		 * response that is still pending on this channel.
+		 */
 		dshot_info->data_seg1 = (uint32_t)(dshot_expanded & 0xFFFFFF);
 		dshot_info->irq_data = (uint32_t)(dshot_expanded >> 24);
-		dshot_info->state = DSHOT_START;
-
-		if (dshot_info->bdshot) {
-			flexio_base->TIMCTL[config->child->res.timer_index[channel]] = 0;
-			FLEXIO_DisableShifterStatusInterrupts(flexio_base, data->dshot_mask);
-
-			nxp_flexio_dshot_output(dev, channel);
-
-			FLEXIO_ClearTimerStatusFlags(flexio_base, data->dshot_timer_mask);
-		}
 	}
 }
 
@@ -591,8 +662,6 @@ static uint16_t nxp_flexio_bdshot_payload_to_erpm(uint16_t payload)
 /* An ESC that stops responding goes offline but never forces a re-sweep. */
 static void nxp_flexio_bdshot_note_success(struct nxp_flexio_dshot_channel_config *ch)
 {
-	bool was_online = ch->online;
-
 	ch->consecutive_failures = 0;
 
 	if (ch->consecutive_successes < BDSHOT_OFFLINE_COUNT) {
@@ -603,11 +672,24 @@ static void nxp_flexio_bdshot_note_success(struct nxp_flexio_dshot_channel_confi
 		ch->online = true;
 	}
 
-	/* On the offline->online edge, (re)arm the EDT enable command so the
-	 * ESC starts emitting telemetry frames.
+	if (!ch->online) {
+		return;
+	}
+
+	if (ch->edt_online_ms == 0) {
+		ch->edt_online_ms = k_uptime_get_32();
+	}
+
+	/* The ESC only takes the enable command once it has been idle for a
+	 * while, so hold off after it comes online and put a second between the
+	 * attempts. Give up after a few, and stop as soon as it answers.
 	 */
-	if (ch->edt && ch->online && !was_online) {
+	if (ch->edt && !ch->edt_confirmed && ch->edt_enable_repeats == 0 &&
+	    ch->edt_attempts < BDSHOT_EDT_MAX_ATTEMPTS &&
+	    (k_uptime_get_32() - ch->edt_online_ms) >=
+		    BDSHOT_EDT_REQUEST_DELAY_MS * (ch->edt_attempts + 1U)) {
 		ch->edt_enable_repeats = BDSHOT_EDT_ENABLE_REPEATS;
+		ch->edt_attempts++;
 	}
 }
 
@@ -652,7 +734,13 @@ static void nxp_flexio_bdshot_note_failure(const struct device *dev, uint32_t ch
 	}
 
 	if (ch->consecutive_failures >= BDSHOT_OFFLINE_COUNT) {
+		/* Offline clears the EDT state: the ESC forgets the setting when
+		 * it stops, so the next online period has to request it again.
+		 */
 		ch->online = false;
+		ch->edt_online_ms = 0;
+		ch->edt_attempts = 0;
+		ch->edt_confirmed = false;
 	}
 
 	if (decoded_wrong && ch->consecutive_failures >= BDSHOT_RETRAIN_COUNT) {
@@ -700,11 +788,31 @@ static void nxp_flexio_bdshot_train(const struct device *dev, uint32_t channel, 
 			ch->bdshot_tcmp_offset = BDSHOT_TCMP_MIN_OFFSET;
 
 		} else {
-			/* Lock onto the centre of the good window */
-			int low = __builtin_ctz(ch->bdshot_training_mask);
-			int high = 31 - __builtin_clz(ch->bdshot_training_mask);
+			/* Lock onto the centre of the longest run of clean offsets.
+			 * Isolated clean offsets far from that run are aliases where
+			 * the sampler lands on a different edge; spanning them would
+			 * put the centre in a gap that never decoded cleanly. */
+			int best_low = 0;
+			int best_len = 0;
+			int run_low = 0;
+			int run_len = 0;
 
-			ch->bdshot_tcmp_offset = ((low + high) / 2) + BDSHOT_TCMP_MIN_OFFSET;
+			for (int bit = 0; bit < 32; bit++) {
+				if (ch->bdshot_training_mask & (1u << bit)) {
+					if (run_len == 0) {
+						run_low = bit;
+					}
+					run_len++;
+					if (run_len > best_len) {
+						best_len = run_len;
+						best_low = run_low;
+					}
+				} else {
+					run_len = 0;
+				}
+			}
+			ch->bdshot_tcmp_offset =
+				(best_low + (best_len - 1) / 2) + BDSHOT_TCMP_MIN_OFFSET;
 			ch->bdshot_training_done = true;
 			ch->consecutive_failures = 0;
 			ch->consecutive_successes = BDSHOT_OFFLINE_COUNT;
@@ -806,13 +914,21 @@ static int nxp_flexio_bdshot_decode_erpm(const struct device *dev)
 		 * the eRPM value or the parsed mask.
 		 */
 		if (dshot_info->edt && (payload & BDSHOT_EDT_MANTISSA_MSB) == 0) {
-			nxp_flexio_bdshot_store_edt(dshot_info, payload);
+			if (nxp_flexio_bdshot_store_edt(dshot_info, payload) &&
+			    dshot_info->edt_attempts > 0) {
+				/* Only a frame that followed one of our own
+				 * requests proves the ESC took the command.
+				 */
+				dshot_info->edt_confirmed = true;
+			}
+
 			nxp_flexio_bdshot_note_success(dshot_info);
 			continue;
 		}
 
 		dshot_info->erpm = nxp_flexio_bdshot_payload_to_erpm(payload);
-		data->bdshot_parsed_recv_mask |= (1 << channel);
+		dshot_info->decoded_cnt++;
+		data->bdshot_parsed_recv_mask |= shifter_flag;
 		dshot_info->last_no_response_cnt = dshot_info->no_response_cnt;
 
 		if (dshot_info->bdshot) {
@@ -831,7 +947,10 @@ static int nxp_flexio_dshot_isr(void *user_data)
 	FLEXIO_Type *flexio_base = (FLEXIO_Type *)(config->flexio_base);
 	struct nxp_flexio_child *child = (struct nxp_flexio_child *)(config->child);
 
-	uint32_t flags = FLEXIO_GetShifterStatusFlags(flexio_base);
+	/* A status flag whose interrupt is masked belongs to a phase that already
+	 * completed, so only the enabled ones are events for us.
+	 */
+	uint32_t flags = FLEXIO_GetShifterStatusFlags(flexio_base) & flexio_base->SHIFTSIEN;
 	uint32_t channel;
 	uint32_t shifter_flag;
 	uint32_t timer_flag;
@@ -841,16 +960,22 @@ static int nxp_flexio_dshot_isr(void *user_data)
 		shifter_flag = 1 << child->res.shifter_index[channel];
 
 		if (flags & shifter_flag) {
-			FLEXIO_DisableShifterStatusInterrupts(flexio_base, shifter_flag);
+			flags &= ~shifter_flag;
 			dshot_info = &config->channel->dshot_info[channel];
 
+			/* One event per phase: the second buffer load while
+			 * transmitting, the frame while receiving.
+			 */
 			if (dshot_info->state == DSHOT_START) {
+				FLEXIO_DisableShifterStatusInterrupts(flexio_base, shifter_flag);
 				dshot_info->state = DSHOT_12BIT_FIFO;
 				flexio_base->SHIFTBUF[child->res.shifter_index[channel]] =
 					dshot_info->irq_data;
 			} else if (dshot_info->state == BDSHOT_RECEIVE) {
+				FLEXIO_DisableShifterStatusInterrupts(flexio_base, shifter_flag);
 				dshot_info->state = BDSHOT_RECEIVE_COMPLETE;
-				dshot_info->raw_response = flexio_base->SHIFTBUFBIS[channel];
+				dshot_info->raw_response =
+					flexio_base->SHIFTBUFBIS[child->res.shifter_index[channel]];
 
 				data->bdshot_recv_mask |= shifter_flag;
 
@@ -865,11 +990,11 @@ static int nxp_flexio_dshot_isr(void *user_data)
 		}
 	}
 
-	flags = FLEXIO_GetTimerStatusFlags(flexio_base);
+	flags = FLEXIO_GetTimerStatusFlags(flexio_base) & flexio_base->TIMIEN;
 
-	for (channel = 0; (flags & data->dshot_mask);
+	for (channel = 0; (flags & data->dshot_timer_mask);
 	     (channel = (channel + 1) % config->channel->dshot_channel_count)) {
-		flags = FLEXIO_GetTimerStatusFlags(flexio_base);
+		flags = FLEXIO_GetTimerStatusFlags(flexio_base) & flexio_base->TIMIEN;
 		timer_flag = 1 << child->res.timer_index[channel];
 
 		if (flags & timer_flag) {
@@ -887,6 +1012,11 @@ static int nxp_flexio_dshot_isr(void *user_data)
 				   dshot_info->state == DSHOT_12BIT_TRANSFERRED) {
 				shifter_flag = 1 << child->res.shifter_index[channel];
 
+				/* The frame is out: only the shifter flag matters
+				 * until the next transmit is armed, the receive
+				 * timer compares must not re-enter the IRQ.
+				 */
+				FLEXIO_DisableTimerStatusInterrupts(flexio_base, timer_flag);
 				FLEXIO_DisableShifterStatusInterrupts(flexio_base, shifter_flag);
 				dshot_info->state = BDSHOT_RECEIVE;
 
@@ -943,9 +1073,10 @@ static int nxp_flexio_dshot_channel_get(const struct device *dev, enum sensor_ch
 
 	/*
 	 * Extended DShot Telemetry channels, one sensor_value per output.
-	 * Values are reported in real units (degrees C, volts, amps). A channel
-	 * without a fresh EDT sub-value reads zero; the read returns -ENODATA if
-	 * no channel has ever decoded that sub-value.
+	 * Values are reported in real units (degrees C, volts, amps). Each sub-value
+	 * is reported once: the read returns -ENODATA unless a channel decoded a
+	 * fresh one since the last read, so a corrupt frame that slips through the
+	 * 4-bit checksum shows up once instead of sticking.
 	 */
 	case SENSOR_CHAN_DIE_TEMP: {
 		bool any = false;
@@ -957,6 +1088,7 @@ static int nxp_flexio_dshot_channel_get(const struct device *dev, enum sensor_ch
 			val[i].val1 = (int32_t)ch->edt_temperature;
 			val[i].val2 = 0;
 			any |= (ch->edt_valid & BDSHOT_EDT_VALID_TEMPERATURE) != 0;
+			ch->edt_valid &= ~BDSHOT_EDT_VALID_TEMPERATURE;
 		}
 
 		if (!any) {
@@ -976,6 +1108,7 @@ static int nxp_flexio_dshot_channel_get(const struct device *dev, enum sensor_ch
 			val[i].val1 = ch->edt_voltage / 4;
 			val[i].val2 = (ch->edt_voltage % 4) * 250000;
 			any |= (ch->edt_valid & BDSHOT_EDT_VALID_VOLTAGE) != 0;
+			ch->edt_valid &= ~BDSHOT_EDT_VALID_VOLTAGE;
 		}
 
 		if (!any) {
@@ -994,6 +1127,7 @@ static int nxp_flexio_dshot_channel_get(const struct device *dev, enum sensor_ch
 			val[i].val1 = (int32_t)ch->edt_current;
 			val[i].val2 = 0;
 			any |= (ch->edt_valid & BDSHOT_EDT_VALID_CURRENT) != 0;
+			ch->edt_valid &= ~BDSHOT_EDT_VALID_CURRENT;
 		}
 
 		if (!any) {
@@ -1073,3 +1207,35 @@ static const struct nxp_flexio_dshot_driver_api nxp_flexio_dshot_api_funcs = {
 				     DSHOT_INIT_PRIORITY, &nxp_flexio_dshot_api_funcs);
 
 DT_INST_FOREACH_STATUS_OKAY(NXP_FLEXIO_DSHOT_INIT)
+
+#if defined(CONFIG_SHELL) && DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
+/* Per-channel bidirectional DShot link state. */
+static int cmd_dshot_status(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = DEVICE_DT_INST_GET(0);
+	const struct nxp_flexio_dshot_config *config = dev->config;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	for (uint8_t i = 0; i < config->channel->dshot_channel_count; i++) {
+		const struct nxp_flexio_dshot_channel_config *ch = &config->channel->dshot_info[i];
+
+		shell_print(sh,
+			    "ch%u bdshot=%d edt=%d online=%d trained=%d tcmp=%u offset=%d ok=%u "
+			    "no_resp=%u crc_err=%u frame_err=%u erpm=%u edt_valid=0x%x",
+			    i, ch->bdshot, ch->edt, ch->online, ch->bdshot_training_done,
+			    ch->bdshot_tcmp, ch->bdshot_tcmp_offset, ch->decoded_cnt,
+			    ch->no_response_cnt, ch->crc_error_cnt, ch->frame_error_cnt, ch->erpm,
+			    ch->edt_valid);
+	}
+
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(dshot_cmds,
+			       SHELL_CMD(status, NULL, "Bidirectional DShot per-channel state.",
+					 cmd_dshot_status),
+			       SHELL_SUBCMD_SET_END);
+SHELL_CMD_REGISTER(dshot, &dshot_cmds, "DShot driver diagnostics.", NULL);
+#endif
