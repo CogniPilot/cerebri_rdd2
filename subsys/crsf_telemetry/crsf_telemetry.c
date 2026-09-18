@@ -73,6 +73,7 @@ LOG_MODULE_REGISTER(rdd2_crsf_telemetry, LOG_LEVEL_INF);
 
 enum crsf_telem_sub {
 	SUB_HEALTH = 0,
+	SUB_MANUAL,
 	SUB_ATTITUDE,
 	SUB_GNSS,
 	SUB_ESC_RPM,
@@ -84,6 +85,7 @@ static const struct device *const g_dev = DEVICE_DT_GET(DT_ALIAS(rc));
 static struct zros_node g_node;
 static struct zros_sub g_subs[SUB_COUNT];
 static synapse_topic_VehicleHealthData_t g_health;
+static synapse_topic_ManualControlData_t g_manual;
 static synapse_topic_AttitudeEstimateData_t g_attitude;
 static synapse_topic_GnssFixData_t g_gnss;
 static rdd2_esc_rpm_t g_esc_rpm;
@@ -94,6 +96,8 @@ static const struct {
 	double rate_hz;
 } g_sub_defs[SUB_COUNT] = {
 	[SUB_HEALTH] = {&topic_vehicle_health, &g_health, 100.0},
+	/* Only the status frame reads the sticks, at its own rate. */
+	[SUB_MANUAL] = {&topic_manual_input, &g_manual, 10.0},
 	[SUB_ATTITUDE] = {&topic_attitude_estimate, &g_attitude, 10.0},
 	[SUB_GNSS] = {&topic_gnss_fix, &g_gnss, 2.0},
 	/* Published at the output rate; only the RPM frame reads it, so the
@@ -218,17 +222,12 @@ static size_t build_entry(size_t idx, uint8_t *buf, uint8_t *type)
 		return crsf_encode_multi_packet(buf, CRSF_ENCODE_BUF_LEN, pk, 2U);
 	}
 	case CRSF_TELEM_ENTRY_STATUS:
-		/* Throttle is reported as zero: manual_input is a semaphore-backed
-		 * topic whose publisher (the CRSF input callback) must collect
-		 * every read token within 1 ms, and a reader at this thread's
-		 * priority can be preempted for longer than that by the flight
-		 * log writer. Every topic read here is single-publisher and
-		 * lock-free for that reason. */
 		pk[0].appid = CRSF_YAAPU_AP_STATUS_APPID;
 		pk[0].data = crsf_yaapu_ap_status(
 			g_health.flight_mode,
 			(g_health.flags & synapse_topic_VehicleHealthFlags_Armed) != 0U,
-			(g_health.flags & synapse_topic_VehicleHealthFlags_Failsafe) != 0U, 0);
+			(g_health.flags & synapse_topic_VehicleHealthFlags_Failsafe) != 0U,
+			MAX(g_manual.throttle_milli, (int16_t)0));
 		pk[1].appid = CRSF_YAAPU_GPS_STATUS_APPID;
 		pk[1].data = crsf_yaapu_gps_status(g_gnss.satellites_used, (uint8_t)g_gnss.fix_type,
 						   g_gnss.hdop_centi, g_gnss.altitude_msl_mm);

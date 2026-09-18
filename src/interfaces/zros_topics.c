@@ -65,6 +65,9 @@ static uint16_t topic_synapse_id(const struct zros_topic *topic) {
   if (topic == &topic_control_imu) {
     return synapse_topic_TopicId_InertialSample;
   }
+  if (topic == &topic_manual_input) {
+    return synapse_topic_TopicId_ManualControlCommand;
+  }
   if (topic == &topic_trajectory_reference) {
     return synapse_topic_TopicId_LocalPositionCommand;
   }
