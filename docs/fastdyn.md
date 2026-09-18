@@ -2,9 +2,10 @@
 
 RDD2 owns its board configuration, rehosting configuration, lockstep adapter,
 and mission acceptance test. FastDyn remains a generic QEMU rehosting runtime.
-The firmware eFMI generator release and artifact hashes are locked in
-`cmake/RumocaLock.cmake`. FastDyn's optional standalone Rumoca build is a
-separate tool pinned transitively by the exact FastDyn revision in `west.yml`.
+The firmware eFMI generator revision is locked in `cmake/RumocaLock.cmake` and
+supplied by the `rumoca` flake input. FastDyn's optional standalone Rumoca build
+is a separate tool pinned transitively by the exact FastDyn revision in
+`west.yml`.
 
 The repository-owned pieces are:
 

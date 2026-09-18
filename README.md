@@ -158,9 +158,11 @@ FastDyn exchange generated `synapse_fbs` payloads through
 `subsys/lockstep`. Host-side network mirrors may run concurrently, but never
 coordinate or pace the control loop.
 
-CMake installs the Rumoca release pinned by `cmake/RumocaLock.cmake` into the
-build tree, verifies the installer, executable version, and platform binary
-hash, and generates eFMI Production Code from
+CMake checks the Rumoca executable the flake input supplies against the
+revision pinned by `cmake/RumocaLock.cmake` (or, once that revision has a
+published release, installs it into the build tree and verifies the installer,
+executable version, and platform binary hash), and generates eFMI Production
+Code from
 `Planning.Bezier.WaypointTrajectoryPlanner`,
 `Vehicles.Rdd2.NavigationEstimator`, `Vehicles.Rdd2.GuidanceController`, and
 `Vehicles.Rdd2.RateControlAllocator` in the `modelica_models` West project under

@@ -14,6 +14,14 @@ if(NOT EXISTS "${RDD2_RUMOCA_LOCK_FILE}")
 endif()
 include("${RDD2_RUMOCA_LOCK_FILE}")
 
+if(RDD2_RUMOCA_INSTALL_SCRIPT_SHA256 STREQUAL "")
+  message(FATAL_ERROR
+    "Rumoca ${RDD2_RUMOCA_VERSION} has no published release to install; "
+    "set RDD2_RUMOCA_EXECUTABLE to a Rumoca built at revision "
+    "${RDD2_RUMOCA_REVISION} (the flake input does this)"
+  )
+endif()
+
 if(CMAKE_HOST_WIN32)
   message(FATAL_ERROR "Rumoca install.sh is not supported on Windows hosts")
 endif()

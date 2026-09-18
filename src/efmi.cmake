@@ -171,6 +171,13 @@ function(rdd2_add_efmi_control_model model_file model_name generated_name)
   set(_source ${_efmu_dir}/ProductionCode/${generated_name}.c)
   set(_header ${_efmu_dir}/ProductionCode/${generated_name}.h)
   set(_algorithm ${_efmu_dir}/AlgorithmCode/${generated_name}.alg)
+  # Rumoca emits its whole-array kernels (copy, fill, dot, scaled add) as one
+  # model-independent translation unit beside every block. Every block's copy
+  # is identical for one compiler build, and each generated source checks the
+  # kernel header's version at compile time, so the application compiles the
+  # unit once (see the end of this file) rather than once per block.
+  set(_kernels_source ${_efmu_dir}/ProductionCode/rumoca_galec_kernels.c)
+  set(_kernels_header ${_efmu_dir}/ProductionCode/rumoca_galec_kernels.h)
 
   if(RDD2_PREBUILT_EFMI_DIR)
     set(_prebuilt_dir "${RDD2_PREBUILT_EFMI_DIR}/${generated_name}")
@@ -195,9 +202,38 @@ function(rdd2_add_efmi_control_model model_file model_name generated_name)
     rdd2_verified_prebuilt_sha256("${_prebuilt_header}" _header_sha256)
     rdd2_verified_prebuilt_sha256("${_prebuilt_algorithm}" _algorithm_sha256)
 
+    set(_prebuilt_kernels_source ${_prebuilt_dir}/ProductionCode/rumoca_galec_kernels.c)
+    set(_prebuilt_kernels_header ${_prebuilt_dir}/ProductionCode/rumoca_galec_kernels.h)
+    set(_prebuilt_kernel_byproducts)
+    set(_prebuilt_kernel_commands)
+    set(_prebuilt_kernel_depends)
+    if(EXISTS "${_prebuilt_kernels_source}" AND EXISTS "${_prebuilt_kernels_header}")
+      rdd2_verified_prebuilt_sha256("${_prebuilt_kernels_source}" _kernels_source_sha256)
+      rdd2_verified_prebuilt_sha256("${_prebuilt_kernels_header}" _kernels_header_sha256)
+      set(_prebuilt_kernel_byproducts ${_kernels_source} ${_kernels_header})
+      set(_prebuilt_kernel_commands
+        COMMAND ${CMAKE_COMMAND}
+                -DINPUT=${_prebuilt_kernels_source}
+                -DOUTPUT=${_kernels_source}
+                -DEXPECTED_SHA256=${_kernels_source_sha256}
+                -P ${CMAKE_CURRENT_LIST_DIR}/verify_prebuilt_efmi.cmake
+        COMMAND ${CMAKE_COMMAND}
+                -DINPUT=${_prebuilt_kernels_header}
+                -DOUTPUT=${_kernels_header}
+                -DEXPECTED_SHA256=${_kernels_header_sha256}
+                -P ${CMAKE_CURRENT_LIST_DIR}/verify_prebuilt_efmi.cmake
+      )
+      set(_prebuilt_kernel_depends ${_prebuilt_kernels_source} ${_prebuilt_kernels_header})
+      list(APPEND RDD2_EFMI_KERNEL_SOURCES ${_kernels_source})
+    elseif(EXISTS "${_prebuilt_kernels_source}" OR EXISTS "${_prebuilt_kernels_header}")
+      message(FATAL_ERROR
+        "Prebuilt ${generated_name} must provide both rumoca kernel files or neither"
+      )
+    endif()
+
     add_custom_command(
       OUTPUT ${_stamp}
-      BYPRODUCTS ${_source} ${_header} ${_algorithm}
+      BYPRODUCTS ${_source} ${_header} ${_algorithm} ${_prebuilt_kernel_byproducts}
       COMMAND ${CMAKE_COMMAND} -E make_directory
               ${_efmu_dir}/ProductionCode
               ${_efmu_dir}/AlgorithmCode
@@ -216,14 +252,16 @@ function(rdd2_add_efmi_control_model model_file model_name generated_name)
               -DOUTPUT=${_algorithm}
               -DEXPECTED_SHA256=${_algorithm_sha256}
               -P ${CMAKE_CURRENT_LIST_DIR}/verify_prebuilt_efmi.cmake
+      ${_prebuilt_kernel_commands}
       COMMAND ${CMAKE_COMMAND} -E touch
-              ${_source} ${_header} ${_algorithm} ${_stamp}
+              ${_source} ${_header} ${_algorithm} ${_prebuilt_kernel_byproducts} ${_stamp}
       DEPENDS
         ${RDD2_PREBUILT_EFMI_DIR}/MANIFEST.sha256
         ${CMAKE_CURRENT_LIST_DIR}/verify_prebuilt_efmi.cmake
         ${_prebuilt_source}
         ${_prebuilt_header}
         ${_prebuilt_algorithm}
+        ${_prebuilt_kernel_depends}
       COMMENT "Staging prebuilt ${model_name} eFMI Production Code"
       VERBATIM
     )
@@ -244,6 +282,8 @@ function(rdd2_add_efmi_control_model model_file model_name generated_name)
         ${_efmu_dir}/AlgorithmCode/manifest.xml
         ${_source}
         ${_header}
+        ${_kernels_source}
+        ${_kernels_header}
         ${_efmu_dir}/ProductionCode/manifest.xml
         ${_efmu_dir}/__content.xml
       COMMAND ${CMAKE_COMMAND} -E rm -rf
@@ -264,6 +304,7 @@ function(rdd2_add_efmi_control_model model_file model_name generated_name)
       COMMENT "Generating ${model_name} eFMI Production Code with Rumoca ${RDD2_RUMOCA_VERSION}"
       VERBATIM
     )
+    list(APPEND RDD2_EFMI_KERNEL_SOURCES ${_kernels_source})
   endif()
 
   list(APPEND RDD2_EFMI_CONTROL_STAMPS ${_stamp})
@@ -272,6 +313,7 @@ function(rdd2_add_efmi_control_model model_file model_name generated_name)
   set(RDD2_EFMI_CONTROL_STAMPS ${RDD2_EFMI_CONTROL_STAMPS} PARENT_SCOPE)
   set(RDD2_EFMI_CONTROL_SOURCES ${RDD2_EFMI_CONTROL_SOURCES} PARENT_SCOPE)
   set(RDD2_EFMI_CONTROL_INCLUDE_DIRS ${RDD2_EFMI_CONTROL_INCLUDE_DIRS} PARENT_SCOPE)
+  set(RDD2_EFMI_KERNEL_SOURCES ${RDD2_EFMI_KERNEL_SOURCES} PARENT_SCOPE)
 endfunction()
 
 rdd2_add_efmi_control_model(
@@ -297,6 +339,14 @@ rdd2_add_efmi_control_model(
   Vehicles.Rdd2.NavigationEstimator
   Vehicles_Rdd2_NavigationEstimator
 )
+
+# One copy of the shared kernel unit serves every block: the copies are
+# byte-identical for one compiler build, and a block generated by a different
+# build fails to compile against the header it would otherwise share.
+if(RDD2_EFMI_KERNEL_SOURCES)
+  list(GET RDD2_EFMI_KERNEL_SOURCES 0 _rdd2_efmi_kernels_source)
+  list(APPEND RDD2_EFMI_CONTROL_SOURCES ${_rdd2_efmi_kernels_source})
+endif()
 
 add_custom_target(rdd2_efmi_control_codegen
   DEPENDS ${RDD2_EFMI_CONTROL_STAMPS}

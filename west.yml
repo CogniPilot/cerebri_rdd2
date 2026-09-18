@@ -58,7 +58,7 @@ manifest:
       path: modules/lib/cerebri_lockstep
     - name: modelica_models
       remote: cognipilot
-      revision: 3585add07917500ecc990e9abd13b36e93a5872c # eskf-automatic-reseed-logmap-fix: from_DCM/from_Quat/correctMagnetometer galec branch-lowering workarounds
+      revision: f2f927e9f57de1b82392b293d990f67c3b688bf6 # main: optional ESKF re-seed stage and galec branch-lowering workarounds
       path: models/modelica_models
     - name: fastdyn
       url: https://github.com/jgoppert/FastDyn.git
