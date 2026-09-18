@@ -160,5 +160,10 @@ interval a resting aircraft chattered between free fall and two g on its
 accelerometer, and at a 5 ms internal step a touchdown with a fraction of a
 degree of tilt settled into a phase-locked limit cycle that the accelerometer
 reported as a steady 5.5 m/s2 and the estimator integrated into metres of
-drift.
+drift. The inertial reading handed to the firmware is the mean over the
+sub-steps of the exchange interval rather than an instantaneous sample at its
+boundary: the firmware replays one reading per 800 Hz tick across the whole
+interval, and at the 20 ms interval an instantaneous sample taken at the peak
+of the landing-gear impact became a 4 m/s vertical velocity error that the
+estimator carried for three seconds before it reseeded.
 

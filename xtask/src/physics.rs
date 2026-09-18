@@ -59,6 +59,9 @@ pub struct Plant {
     motor_command: ValueReference,
     outputs: [ValueReference; 6],
     output_values: [f64; 16],
+    /// Sensed body rate and specific force averaged over the substeps of the
+    /// last exchange interval, in the order gyro x, y, z, accel x, y, z.
+    imu_frame_mean: [f64; 6],
     time: f64,
 }
 
@@ -157,9 +160,11 @@ impl Plant {
             motor_command,
             outputs,
             output_values: [0.0; 16],
+            imu_frame_mean: [0.0; 6],
             time: 0.0,
         };
         plant.read_outputs()?;
+        plant.imu_frame_mean.copy_from_slice(&plant.output_values[9..15]);
         Ok(plant)
     }
 
@@ -195,17 +200,25 @@ impl Plant {
         ]
     }
 
+    /// Sensed body rate and specific force for the firmware, averaged over the
+    /// last exchange interval. The firmware replays one reading per 800 Hz
+    /// controller tick across the whole interval, so an instantaneous sample
+    /// taken at the interval boundary would hold a transient for all of it: at
+    /// the 20 ms interval the landing-gear impact, sampled at its peak, became
+    /// a 4 m/s vertical velocity error that the estimator carried for three
+    /// seconds until it reseeded. The interval mean keeps the delta velocity
+    /// and delta angle the firmware integrates equal to what the plant did.
     pub fn imu_flu(&self) -> ([f32; 3], [f32; 3]) {
         (
             [
-                self.output_values[9] as f32,
-                self.output_values[10] as f32,
-                self.output_values[11] as f32,
+                self.imu_frame_mean[0] as f32,
+                self.imu_frame_mean[1] as f32,
+                self.imu_frame_mean[2] as f32,
             ],
             [
-                self.output_values[12] as f32,
-                self.output_values[13] as f32,
-                self.output_values[14] as f32,
+                self.imu_frame_mean[3] as f32,
+                self.imu_frame_mean[4] as f32,
+                self.imu_frame_mean[5] as f32,
             ],
         )
     }
@@ -240,6 +253,7 @@ impl Plant {
         // interval, which is where the plant rests cleanly.
         let substeps = plant_substeps(dt);
         let sub_dt = dt / f64::from(substeps);
+        let mut imu_sum = [0.0_f64; 6];
         for _ in 0..substeps {
             let mut event_handling_needed = false;
             let mut terminate_simulation = false;
@@ -266,8 +280,15 @@ impl Plant {
                 );
             }
             self.time = last_successful_time;
+            self.read_outputs()?;
+            for (sum, value) in imu_sum.iter_mut().zip(&self.output_values[9..15]) {
+                *sum += value;
+            }
         }
-        self.read_outputs()
+        for (mean, sum) in self.imu_frame_mean.iter_mut().zip(imu_sum) {
+            *mean = sum / f64::from(substeps);
+        }
+        Ok(())
     }
 
     fn read_outputs(&mut self) -> Result<()> {
