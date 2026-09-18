@@ -65,6 +65,77 @@ config RDD2_CONTROL_SIMPLE
 
 endchoice
 
+config RDD2_MAGNETOMETER
+	bool "Feed the onboard magnetometer to the navigation estimator"
+	depends on !RDD2_COMMS_STUB && !RDD2_LOCKSTEP && SENSOR
+	default y if BMM350 || IST8310
+	help
+	  Sample the onboard magnetometer at a fixed rate, publish it as the
+	  magnetic_field topic in body FLU tesla, log it, and offer it to the
+	  navigation estimator, which takes its initial heading from it and fuses
+	  it as a yaw observation. Without it the estimator has no heading source
+	  indoors and its yaw is arbitrary. The lockstep image has no I2C device
+	  behind the driver, so it stays off there.
+
+if RDD2_MAGNETOMETER
+
+choice RDD2_MAGNETOMETER_DEVICE
+	prompt "Magnetometer device"
+	default RDD2_MAGNETOMETER_BMM350 if BMM350
+	default RDD2_MAGNETOMETER_IST8310
+
+config RDD2_MAGNETOMETER_BMM350
+	bool "BMM350 (LPI2C4)"
+	depends on BMM350
+
+config RDD2_MAGNETOMETER_IST8310
+	bool "IST8310 (LPI2C1)"
+	depends on IST8310
+
+endchoice
+
+config RDD2_MAGNETOMETER_RATE_HZ
+	int "Sample rate in Hz"
+	default 50
+	range 5 200
+
+config RDD2_MAGNETOMETER_STDDEV_NT
+	int "Per-axis measurement noise standard deviation in nT"
+	default 300
+	help
+	  Reported to the estimator as an isotropic measurement covariance. Set
+	  it from the field scatter measured on the resting aircraft with motors
+	  off; the estimator's innovation gate handles the rest.
+
+choice RDD2_MAGNETOMETER_MOUNT_YAW
+	prompt "Rotation from the sensor axes to the body FLU frame about z"
+	default RDD2_MAGNETOMETER_MOUNT_YAW_90
+	help
+	  The 90 degree default is the mapping the IMU interface applies to the
+	  ICM45686 on this board (body x is sensor y, body y is -sensor x).
+	  Verify it on the bench with the aircraft pointed at a known heading
+	  before trusting the magnetic heading.
+
+config RDD2_MAGNETOMETER_MOUNT_YAW_0
+	bool "0 degrees"
+
+config RDD2_MAGNETOMETER_MOUNT_YAW_90
+	bool "90 degrees"
+
+config RDD2_MAGNETOMETER_MOUNT_YAW_180
+	bool "180 degrees"
+
+config RDD2_MAGNETOMETER_MOUNT_YAW_270
+	bool "270 degrees"
+
+endchoice
+
+config RDD2_MAGNETOMETER_Z_INVERTED
+	bool "Sensor z axis points down"
+	default n
+
+endif # RDD2_MAGNETOMETER
+
 rsource "subsys/Kconfig"
 rsource "drivers/Kconfig"
 

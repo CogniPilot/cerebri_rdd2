@@ -52,6 +52,7 @@ ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(optical_flow,
                                    synapse_topic_OpticalFlowData_t);
 /* Single-publisher home of the selected GNSS source. */
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(gnss_fix, synapse_topic_GnssFixData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(magnetic_field, synapse_topic_MagneticFieldData_t);
 
 #if defined(CONFIG_ZROS_SHELL)
 static char g_topic_shell_field[128];
@@ -103,6 +104,9 @@ static uint16_t topic_synapse_id(const struct zros_topic *topic) {
   }
   if (topic == &topic_gnss_fix) {
     return synapse_topic_TopicId_GnssFix;
+  }
+  if (topic == &topic_magnetic_field) {
+    return synapse_topic_TopicId_MagneticField;
   }
   return synapse_topic_TopicId_Unknown;
 }
@@ -221,6 +225,7 @@ static struct zros_shell_topic_formatter g_topic_shell_formatters[] = {
     {.topic = &topic_rate_command, .format = format_synapse_topic},
     {.topic = &topic_control_loop_metrics, .format = format_synapse_topic},
     {.topic = &topic_gnss_fix, .format = format_synapse_topic},
+    {.topic = &topic_magnetic_field, .format = format_synapse_topic},
 };
 #endif
 

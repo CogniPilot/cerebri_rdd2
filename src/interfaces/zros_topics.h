@@ -45,6 +45,9 @@ ZROS_TOPIC_DECLARE(local_position_command, synapse_topic_LocalPositionCommandDat
  * Exactly one of those is compiled in, so the single-publisher backend holds
  * and the producer owns the publisher. */
 ZROS_TOPIC_DECLARE(gnss_fix, synapse_topic_GnssFixData_t);
+/* Onboard magnetometer in body FLU tesla, published by interfaces/magnetometer.c
+ * for the estimator's heading correction and initial alignment. */
+ZROS_TOPIC_DECLARE(magnetic_field, synapse_topic_MagneticFieldData_t);
 
 uint32_t rdd2_topic_generation(const struct zros_topic *topic);
 bool rdd2_topic_has_sample(const struct zros_topic *topic);

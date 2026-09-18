@@ -112,6 +112,7 @@ enum log_channel {
 	LOG_CH_OPTICAL,
 	LOG_CH_OPTICAL_RAW,
 	LOG_CH_GNSS,
+	LOG_CH_MAGNETIC_FIELD,
 	LOG_CH_TIMEREF,
 	LOG_CH_SELF_STATUS,
 	LOG_CH_WIRE_STATS,
@@ -208,6 +209,10 @@ static struct log_source g_sources[] = {
 	{&topic_optical_flow, LOG_CH_OPTICAL_RAW,
 	 sizeof(synapse_topic_OpticalFlowData_t), 50.0},
 	{&topic_gnss_fix, LOG_CH_GNSS, sizeof(synapse_topic_GnssFixData_t), 0.0},
+#if defined(CONFIG_RDD2_MAGNETOMETER)
+	{&topic_magnetic_field, LOG_CH_MAGNETIC_FIELD,
+	 sizeof(synapse_topic_MagneticFieldData_t), 0.0},
+#endif
 };
 
 #define LOG_SOURCE_COUNT ARRAY_SIZE(g_sources)

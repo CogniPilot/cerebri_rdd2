@@ -68,6 +68,9 @@ struct navigation_estimator_process {
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
   synapse_topic_OpticalFlowData_t optical_flow_raw;
 #endif
+#if defined(CONFIG_RDD2_MAGNETOMETER)
+  synapse_topic_MagneticFieldData_t magnetic_field;
+#endif
   synapse_topic_VehicleHealthData_t health;
   synapse_topic_OdometryEstimateData_t odometry;
   synapse_topic_AttitudeEstimateData_t attitude;
@@ -95,6 +98,9 @@ struct navigation_estimator_process {
   struct zros_sub optical_flow_raw_sub;
 #endif
   struct zros_sub health_sub;
+#if defined(CONFIG_RDD2_MAGNETOMETER)
+  struct zros_sub magnetic_field_sub;
+#endif
   struct zros_pub odometry_pub;
   struct zros_pub attitude_pub;
   struct rdd2_release_scheduler release_scheduler;
@@ -415,6 +421,36 @@ static void copy_external_odometry_input_to_efmu(
   efmu->mocap_quaternionWorldBody[2] = odometry->attitude.y;
   efmu->mocap_quaternionWorldBody[3] = odometry->attitude.z;
 }
+
+#if defined(CONFIG_RDD2_MAGNETOMETER)
+/* The field is fused as-is with a fixed isotropic noise; the estimator's own
+ * gate keeps a disturbed sample from moving the heading. A sample older than
+ * the aiding stale timeout is no longer offered as valid. */
+#define MAGNETOMETER_STALE_NS (500ULL * 1000ULL * 1000ULL)
+static void copy_magnetometer_input_to_efmu(
+    struct navigation_estimator_process *process,
+    const synapse_topic_MagneticFieldData_t *field, bool fresh) {
+  NavigationEstimatorState *efmu = &process->efmu;
+  const float values[] = {field->mag_flu_tesla.x, field->mag_flu_tesla.y,
+                          field->mag_flu_tesla.z};
+  const float stddev_t = (float)CONFIG_RDD2_MAGNETOMETER_STDDEV_NT * 1.0e-9f;
+  bool valid = field->timestamp_ns != 0U &&
+               rdd2_control_values_are_finite(values, ARRAY_SIZE(values)) &&
+               process->imu.timestamp_ns >= field->timestamp_ns &&
+               process->imu.timestamp_ns - field->timestamp_ns <= MAGNETOMETER_STALE_NS;
+  efmu->magnetometer_valid = valid;
+  efmu->magnetometer_fresh = valid && fresh;
+  efmu->magnetometer_timestamp_s =
+      filter_relative_time_s(process, field->timestamp_ns);
+  for (size_t axis = 0U; axis < 3U; ++axis) {
+    efmu->magneticFieldBodyFlu_T[axis] = values[axis];
+    for (size_t column = 0U; column < 3U; ++column) {
+      efmu->covarianceBody_T2[axis][column] =
+          (axis == column) ? stddev_t * stddev_t : 0.0f;
+    }
+  }
+}
+#endif
 
 static void copy_gps_input_to_efmu(
     struct navigation_estimator_process *process,
@@ -879,6 +915,11 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
     external_fresh = zros_sub_update(&process->external_odometry_sub) == 0;
     gnss_fresh = zros_sub_update(&process->gnss_sub) == 0;
     health_fresh = zros_sub_update(&process->health_sub) == 0;
+#if defined(CONFIG_RDD2_MAGNETOMETER)
+    copy_magnetometer_input_to_efmu(
+        process, &process->magnetic_field,
+        zros_sub_update(&process->magnetic_field_sub) == 0);
+#endif
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
     optical_flow_fresh = zros_sub_update(&process->optical_flow_sub) == 0;
 #endif
@@ -1074,6 +1115,12 @@ int rdd2_navigation_estimator_process_start(void) {
     rc = zros_sub_init(&process->health_sub, &process->node,
                        &topic_vehicle_health, &process->health, 0.0);
   }
+#if defined(CONFIG_RDD2_MAGNETOMETER)
+  if (rc == 0) {
+    rc = zros_sub_init(&process->magnetic_field_sub, &process->node,
+                       &topic_magnetic_field, &process->magnetic_field, 0.0);
+  }
+#endif
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
   if (rc == 0) {
     rc = zros_sub_init(&process->optical_flow_sub, &process->node,

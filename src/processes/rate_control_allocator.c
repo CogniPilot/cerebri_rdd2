@@ -394,6 +394,11 @@ static int process_drivers_init(void) {
   if (rc == 0) {
     rc = rdd2_imu_stream_init();
   }
+#if defined(CONFIG_RDD2_MAGNETOMETER)
+  if (rc == 0) {
+    rc = rdd2_magnetometer_init();
+  }
+#endif
   return rc;
 }
 

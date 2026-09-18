@@ -58,7 +58,7 @@ manifest:
       path: modules/lib/cerebri_lockstep
     - name: modelica_models
       remote: cognipilot
-      revision: f2f927e9f57de1b82392b293d990f67c3b688bf6 # main: optional ESKF re-seed stage and galec branch-lowering workarounds
+      revision: bc50718e9d89328e585230767e5a1547b8a1221e # main: alignment gate and unaided hold-position and zero-velocity updates
       path: models/modelica_models
     - name: fastdyn
       url: https://github.com/jgoppert/FastDyn.git

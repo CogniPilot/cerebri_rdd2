@@ -41,6 +41,10 @@ else()
   )
 endif()
 
+target_sources_ifdef(CONFIG_RDD2_MAGNETOMETER app PRIVATE
+  interfaces/magnetometer.c
+)
+
 target_sources_ifdef(CONFIG_SHELL app PRIVATE
   interfaces/mission_shell.c
 )

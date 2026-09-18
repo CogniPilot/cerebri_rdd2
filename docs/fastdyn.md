@@ -122,3 +122,17 @@ references, ordered traversal of every square corner by both the reference and
 plant truth, exact 10 Hz GNSS and current-status generations, bounded GPS
 navigation error, final disarm and landing, and execution speed. Plant ground
 contact is intentionally expressed with `noEvent` branches.
+
+## GNSS-denied estimator check
+
+`RDD2_FASTDYN_GNSS_DENIED=1 nix run .#fastdyn-ci` runs the same rehosted image
+with the lockstep GNSS source emitting only unusable fixes. No origin is ever
+established, the mission never starts, and the aircraft rests disarmed for the
+whole run; the report then judges the navigation estimator alone: it must
+report a usable estimate within 10 s, stay finite, and hold the resting
+aircraft within 2 m horizontally and vertically and below 1 m/s, which is the
+unaided condition an indoor flight puts it in. The plant is sub-stepped four
+times per 5 ms exchange interval (`RDD2_FASTDYN_PLANT_SUBSTEPS`) so its
+landing-gear contact integrates cleanly; at one step per interval a resting
+aircraft chattered between free fall and two g on its accelerometer.
+

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include "data.h"
+#include "drivers.h"
 
 #include "synapse_time_status.h"
 
@@ -48,6 +49,13 @@ void rdd2_topic_make_vehicle_health(synapse_topic_VehicleHealthData_t *output,
   if (status->failsafe) {
     flags |= synapse_topic_VehicleHealthFlags_Failsafe;
   }
+
+#if defined(CONFIG_RDD2_MAGNETOMETER)
+  sensors |= synapse_topic_SensorComponentFlags_Mag;
+  if (rdd2_magnetometer_healthy()) {
+    healthy |= synapse_topic_SensorComponentFlags_Mag;
+  }
+#endif
 
 #if defined(CONFIG_RDD2_FLIGHT_LOG)
   /* The logger is a present, enabled component whenever it is compiled in,

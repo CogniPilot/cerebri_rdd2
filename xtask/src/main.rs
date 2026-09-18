@@ -44,6 +44,7 @@ struct Options {
     plant_description: PathBuf,
     plant_dt: f64,
     minimum_speedup: f64,
+    gnss_denied: bool,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -86,6 +87,11 @@ struct Report {
     maximum_plan_generation: u32,
     maximum_reference_generation: u32,
     failures: Vec<String>,
+    gnss_denied: bool,
+    navigation_estimate_observed: bool,
+    navigation_initialized_at_s: f64,
+    max_navigation_speed_m_s: f64,
+    max_navigation_vertical_error_m: f64,
 }
 
 fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
@@ -114,6 +120,12 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
         .map(|value| value.parse())
         .transpose()?
         .unwrap_or(0.0);
+    let mut gnss_denied = env::var("RDD2_FASTDYN_GNSS_DENIED")
+        .map(|value| {
+            let value = value.trim();
+            value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(false);
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let value = || anyhow!("{arg} requires a value");
@@ -134,6 +146,7 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
             }
             "--plant-dt" => plant_dt = args.next().ok_or_else(value)?.parse()?,
             "--minimum-speedup" => minimum_speedup = args.next().ok_or_else(value)?.parse()?,
+            "--gnss-denied" => gnss_denied = true,
             "-h" | "--help" => {
                 println!(
                     "cargo xtask fastdyn-mission --shared-memory PATH (--firmware-elf PATH | --native-sim PATH) --plant-library PATH --plant-description PATH [--report PATH] [--trajectory PATH] [--duration SEC] [--controller-benchmark SEC] [--plant-dt SEC] [--minimum-speedup X]"
@@ -167,6 +180,7 @@ fn options(args: impl IntoIterator<Item = String>) -> Result<Options> {
             .context("--plant-description or RDD2_RUMOCA_PLANT_DESCRIPTION is required")?,
         plant_dt,
         minimum_speedup,
+        gnss_denied,
     })
 }
 
@@ -260,6 +274,11 @@ fn evaluate(report: &mut Report) {
             "simulation speed {:.3}x is below required {:.3}x",
             report.speedup_over_realtime, report.minimum_speedup_required
         ));
+    }
+    if report.gnss_denied {
+        evaluate_gnss_denied(report);
+        report.passed = report.failures.is_empty();
+        return;
     }
     if !report.firmware_armed_observed {
         report.failures.push("firmware never armed".into());
@@ -406,6 +425,68 @@ fn evaluate(report: &mut Report) {
     report.passed = report.failures.is_empty();
 }
 
+/// GNSS denied: the mission never starts, the aircraft rests disarmed on the
+/// ground for the whole run, and what is judged is the estimator alone. It
+/// must align, publish a finite estimate, and hold that estimate on the
+/// resting aircraft with no aiding of any kind, which is the failure that
+/// took an indoor flight down: an unaided tilt error integrating into an
+/// unbounded velocity.
+const GNSS_DENIED_MAX_HORIZONTAL_ERROR_M: f64 = 2.0;
+const GNSS_DENIED_MAX_VERTICAL_ERROR_M: f64 = 2.0;
+const GNSS_DENIED_MAX_SPEED_M_S: f64 = 1.0;
+const GNSS_DENIED_MAX_INITIALIZATION_S: f64 = 10.0;
+
+fn evaluate_gnss_denied(report: &mut Report) {
+    if !report.firmware_rc_and_imu_healthy {
+        report
+            .failures
+            .push("firmware did not report valid RC and IMU state".into());
+    }
+    if report.firmware_armed_observed {
+        report
+            .failures
+            .push("firmware armed although no mission could start without GNSS".into());
+    }
+    if report.gnss_source_ready_observed || report.navigation_origin_observed {
+        report
+            .failures
+            .push("GNSS source or origin became ready although GNSS was denied".into());
+    }
+    if !report.navigation_estimate_observed {
+        report
+            .failures
+            .push("navigation estimator never reported a usable estimate without GNSS".into());
+    } else if report.navigation_initialized_at_s > GNSS_DENIED_MAX_INITIALIZATION_S {
+        report.failures.push(format!(
+            "navigation estimator took {:.1} s to report a usable estimate, limit {:.1} s",
+            report.navigation_initialized_at_s, GNSS_DENIED_MAX_INITIALIZATION_S
+        ));
+    }
+    if !report.navigation_estimate_finite {
+        report
+            .failures
+            .push("navigation estimate became non-finite".into());
+    }
+    if report.max_navigation_horizontal_error_m > GNSS_DENIED_MAX_HORIZONTAL_ERROR_M {
+        report.failures.push(format!(
+            "unaided navigation drifted {:.2} m horizontally on a resting aircraft, limit {:.2} m",
+            report.max_navigation_horizontal_error_m, GNSS_DENIED_MAX_HORIZONTAL_ERROR_M
+        ));
+    }
+    if report.max_navigation_vertical_error_m > GNSS_DENIED_MAX_VERTICAL_ERROR_M {
+        report.failures.push(format!(
+            "unaided navigation drifted {:.2} m vertically on a resting aircraft, limit {:.2} m",
+            report.max_navigation_vertical_error_m, GNSS_DENIED_MAX_VERTICAL_ERROR_M
+        ));
+    }
+    if report.max_navigation_speed_m_s > GNSS_DENIED_MAX_SPEED_M_S {
+        report.failures.push(format!(
+            "unaided navigation reported {:.2} m/s on a resting aircraft, limit {:.2} m/s",
+            report.max_navigation_speed_m_s, GNSS_DENIED_MAX_SPEED_M_S
+        ));
+    }
+}
+
 fn advance_square_corner(
     progress: &mut u8,
     origin: [f64; 2],
@@ -455,6 +536,7 @@ where
     let plant = Plant::open(&options.plant_library, &options.plant_description)?;
     let (gyro, accel) = plant.imu_flu();
     let mut synthetic_gnss = SyntheticGnss::from_env();
+    synthetic_gnss.denied = options.gnss_denied;
     let mut channels = [1500; 16];
     channels[2] = 1000;
     channels[4] = 1000;
@@ -508,12 +590,15 @@ where
         position_mission_continuous: true,
         mission_status_current: true,
         navigation_estimate_finite: true,
+        gnss_denied: options.gnss_denied,
+        navigation_initialized_at_s: f64::NAN,
         ..Report::default()
     };
     let mut simulated_time = 0.0_f64;
     let wall_start = Instant::now();
     let mut firmware_ready = false;
     let mut synthetic_gnss = SyntheticGnss::from_env();
+    synthetic_gnss.denied = options.gnss_denied;
     let mission_plan = protocol::bounded_square_plan(1, 1.0, 0.3)?;
     let mut plan_sent = false;
     let mut mission_epoch = None;
@@ -527,6 +612,7 @@ where
     // time, so the plant is never left in free fall by a mid-air motor cut.
     let defer_disarm_until_landed = env::var_os("RDD2_MISSION_DEFER_DISARM").is_some();
     let mut navigation_truth_origin: Option<[f64; 2]> = None;
+    let plant_start_altitude = plant.position()[2];
     let mut trajectory = trajectory_writer(&options.trajectory)?;
 
     let mission_steps = (options.duration / options.plant_dt).round() as u64;
@@ -649,18 +735,32 @@ where
                 0.50,
             );
         }
-        if status.flags & MissionStatusWire::ORIGIN_VALID != 0
+        // With GNSS denied there is never an origin, so the estimate is judged
+        // against the plant from the moment the estimator first reports a
+        // usable quality: the aircraft has not moved, and the estimate must say
+        // so for the whole run.
+        if (status.flags & MissionStatusWire::ORIGIN_VALID != 0 || options.gnss_denied)
             && outputs.odometry_estimate.quality_pct() > 0
         {
+            if !report.navigation_estimate_observed {
+                report.navigation_estimate_observed = true;
+                report.navigation_initialized_at_s = simulated_time;
+            }
             let truth = plant.position();
             let origin = *navigation_truth_origin.get_or_insert([truth[0], truth[1]]);
             let estimate = outputs.odometry_estimate.position_enu_m();
+            let velocity = outputs.odometry_estimate.velocity_enu_m_s();
             let error_e = f64::from(estimate.x()) - (truth[0] - origin[0]);
             let error_n = f64::from(estimate.y()) - (truth[1] - origin[1]);
-            if error_e.is_finite() && error_n.is_finite() {
+            let error_u = f64::from(estimate.z()) - (truth[2] - plant_start_altitude);
+            let speed = f64::from(velocity.x()).hypot(f64::from(velocity.y())).hypot(f64::from(velocity.z()));
+            if error_e.is_finite() && error_n.is_finite() && error_u.is_finite() && speed.is_finite() {
                 report.max_navigation_horizontal_error_m = report
                     .max_navigation_horizontal_error_m
                     .max(error_e.hypot(error_n));
+                report.max_navigation_vertical_error_m =
+                    report.max_navigation_vertical_error_m.max(error_u.abs());
+                report.max_navigation_speed_m_s = report.max_navigation_speed_m_s.max(speed);
             } else {
                 report.navigation_estimate_finite = false;
             }
@@ -692,7 +792,7 @@ where
         let progress_steps = (1.0 / options.plant_dt).round() as u64;
         if report.plant_steps.is_multiple_of(progress_steps) {
             println!(
-                "[rdd2-mission] t={simulated_time:.1}s alt={:.2}m vz={:.2}m/s tilt={:.1}deg armed={} gps_ready={} origin={} mission_state={}",
+                "[rdd2-mission] t={simulated_time:.1}s alt={:.2}m vz={:.2}m/s tilt={:.1}deg armed={} gps_ready={} origin={} mission_state={} nav_quality={} nav_err_h={:.2}m nav_err_v={:.2}m nav_speed={:.2}m/s imu_f=({:.2},{:.2},{:.2}) imu_w={:.3} est_z={:.2}m est_vz={:.2}m/s motor=({:.3},{:.3},{:.3},{:.3})",
                 plant.altitude(),
                 plant.vertical_speed(),
                 roll.max(pitch),
@@ -700,6 +800,20 @@ where
                 status.flags & MissionStatusWire::SOURCE_READY != 0,
                 status.flags & MissionStatusWire::ORIGIN_VALID != 0,
                 status.mission_state,
+                outputs.odometry_estimate.quality_pct(),
+                report.max_navigation_horizontal_error_m,
+                report.max_navigation_vertical_error_m,
+                report.max_navigation_speed_m_s,
+                accel[0],
+                accel[1],
+                accel[2],
+                (gyro[0] * gyro[0] + gyro[1] * gyro[1] + gyro[2] * gyro[2]).sqrt(),
+                outputs.odometry_estimate.position_enu_m().z(),
+                outputs.odometry_estimate.velocity_enu_m_s().z(),
+                outputs.motor_command.values[0],
+                outputs.motor_command.values[1],
+                outputs.motor_command.values[2],
+                outputs.motor_command.values[3],
             );
         }
         last_outputs = Some(outputs);

@@ -224,31 +224,42 @@ impl Plant {
             },
             "set motor inputs",
         )?;
-        let mut event_handling_needed = false;
-        let mut terminate_simulation = false;
-        let mut early_return = false;
-        let mut last_successful_time = self.time;
-        check_status(
-            unsafe {
-                (self.api.do_step)(
-                    self.instance,
-                    self.time,
-                    dt,
-                    true,
-                    &mut event_handling_needed,
-                    &mut terminate_simulation,
-                    &mut early_return,
-                    &mut last_successful_time,
-                )
-            },
-            "advance plant",
-        )?;
-        if event_handling_needed || early_return || terminate_simulation {
-            bail!(
-                "FMI plant requested unsupported external event handling: event={event_handling_needed} early={early_return} terminate={terminate_simulation}"
-            );
+        // The exported plant takes one fixed Runge-Kutta step per doStep with
+        // no event location, and its landing-gear contact is stiff: at the
+        // 5 ms exchange step a resting aircraft chatters between free fall
+        // and two g on its accelerometer, which is an artifact of the
+        // integration, not of the model (the same plant rests cleanly in the
+        // host simulator). Sub-stepping the plant inside one exchange
+        // interval keeps the internal step at 1.25 ms by default.
+        let substeps = plant_substeps();
+        let sub_dt = dt / f64::from(substeps);
+        for _ in 0..substeps {
+            let mut event_handling_needed = false;
+            let mut terminate_simulation = false;
+            let mut early_return = false;
+            let mut last_successful_time = self.time;
+            check_status(
+                unsafe {
+                    (self.api.do_step)(
+                        self.instance,
+                        self.time,
+                        sub_dt,
+                        true,
+                        &mut event_handling_needed,
+                        &mut terminate_simulation,
+                        &mut early_return,
+                        &mut last_successful_time,
+                    )
+                },
+                "advance plant",
+            )?;
+            if event_handling_needed || early_return || terminate_simulation {
+                bail!(
+                    "FMI plant requested unsupported external event handling: event={event_handling_needed} early={early_return} terminate={terminate_simulation}"
+                );
+            }
+            self.time = last_successful_time;
         }
-        self.time = last_successful_time;
         self.read_outputs()
     }
 
@@ -266,6 +277,16 @@ impl Plant {
             "read plant outputs",
         )
     }
+}
+
+/// Internal plant steps per exchange interval; RDD2_FASTDYN_PLANT_SUBSTEPS
+/// overrides the default of four.
+fn plant_substeps() -> u32 {
+    std::env::var("RDD2_FASTDYN_PLANT_SUBSTEPS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| (1..=64).contains(value))
+        .unwrap_or(4)
 }
 
 impl Drop for Plant {

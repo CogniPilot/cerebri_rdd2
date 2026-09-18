@@ -23,6 +23,11 @@ bool rdd2_imu_stream_wait_next(rdd2_vec3f_t *gyro, rdd2_vec3f_t *accel, float *d
 bool rdd2_imu_stream_lockstep_at_target(void);
 
 int rdd2_rc_input_init(void);
+
+/* Onboard magnetometer publisher; a missing device is not a fault, it only
+ * leaves the estimator without a heading source. */
+int rdd2_magnetometer_init(void);
+bool rdd2_magnetometer_healthy(void);
 void rdd2_rc_input_latest_get(rdd2_rc_channels_t *rc, int64_t *stamp_ms, bool *valid);
 uint8_t rdd2_rc_input_link_quality_get(void);
 uint8_t rdd2_rc_flight_mode(const rdd2_rc_channels_t *rc);

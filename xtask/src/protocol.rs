@@ -135,6 +135,9 @@ pub struct SyntheticGnss {
     // Defaults off: the bounded lockstep mission validates against the perfect
     // boot-synced 10 Hz constant-accuracy stream.
     fidelity: bool,
+    /// Emit only unusable fixes, so the firmware never gains a GNSS source or
+    /// origin: the indoor, flow-only case the estimator must survive.
+    pub denied: bool,
 }
 
 impl SyntheticGnss {
@@ -174,6 +177,12 @@ impl SyntheticGnss {
         target_boot_time_ns: u64,
     ) -> topic::GnssFixData {
         let grid_ts = target_boot_time_ns / GNSS_PERIOD_NS * GNSS_PERIOD_NS;
+        if self.denied {
+            if grid_ts != 0 && grid_ts > self.latest.timestamp_ns() {
+                self.latest = unusable_gnss_fix(grid_ts);
+            }
+            return self.latest;
+        }
         // In the fidelity model, before gPTP sync the producer clock led the boot
         // clock; stamp the fix ahead so the future/age gates are hit. The default
         // mission stream is boot-synced, so the stamp is always the grid time.
