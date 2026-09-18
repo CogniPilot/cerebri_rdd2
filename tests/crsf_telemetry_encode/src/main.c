@@ -331,6 +331,39 @@ static void check_battery_frame(void)
 	CHECK(buf[4] == 0xFF && buf[5] == 0xFF && buf[6] == 0xFF);
 }
 
+/* Decoded the way EdgeTX's crossfire.cpp reads frame type 0x0C: a source id
+ * byte, then one sign-extended 24 bit big-endian value per motor. */
+static void check_rpm_frame(void)
+{
+	uint8_t buf[CRSF_ENCODE_BUF_LEN];
+	const int32_t rpm[5] = {0, 1234, -5678, 9000000, -9000000};
+	size_t i;
+
+	CHECK(crsf_encode_rpm(buf, 15, 0, rpm, 5) == 0);
+	CHECK(crsf_encode_rpm(buf, sizeof(buf), 0, rpm, 0) == 0);
+	CHECK(crsf_encode_rpm(buf, sizeof(buf), 0, NULL, 5) == 0);
+
+	CHECK(crsf_encode_rpm(buf, sizeof(buf), 7, rpm, 5) == 16u);
+	CHECK(buf[0] == 7u);
+	for (i = 0; i < 5; i++) {
+		const uint8_t *b = &buf[1 + i * 3];
+		uint32_t bits = ((uint32_t)b[0] << 16) | ((uint32_t)b[1] << 8) | b[2];
+		int32_t want = rpm[i];
+
+		if (want > 8388607) {
+			want = 8388607;
+		} else if (want < -8388608) {
+			want = -8388608;
+		}
+		/* Sign extend bit 23 the way EdgeTX does, without shifting a
+		 * negative value. */
+		if (bits & 0x800000u) {
+			bits |= 0xFF000000u;
+		}
+		CHECK((int32_t)bits == want);
+	}
+}
+
 static void check_flight_mode(void)
 {
 	uint8_t buf[CRSF_ENCODE_BUF_LEN];
@@ -460,6 +493,15 @@ static void print_frames(void)
 
 	len = crsf_encode_flight_mode(buf, sizeof(buf), "MANUAL");
 	print_frame("flight mode \"MANUAL\"", 0x21, buf, len);
+
+	{
+		/* 12000 eRPM on a 14 magnet motor is 12000 * 2 / 14 RPM. */
+		const int32_t rpm[4] = {1714, 1715, 0, -1714};
+
+		len = crsf_encode_rpm(buf, sizeof(buf), 0, rpm, 4);
+		print_frame("rpm source=0 motors=1714 1715 0 -1714", CRSF_FRAME_TYPE_RPM, buf,
+			    len);
+	}
 }
 
 int main(void)
@@ -477,6 +519,7 @@ int main(void)
 	check_gps_frame();
 	check_battery_frame();
 	check_flight_mode();
+	check_rpm_frame();
 	check_bind_command();
 	check_euler();
 

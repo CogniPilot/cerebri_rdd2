@@ -228,15 +228,16 @@ static int cmd_crsf_status(const struct shell *sh, size_t argc, char **argv)
 		rdd2_crsf_telemetry_counters_get(&telem);
 		shell_print(sh,
 			    "telem_att=%u telem_status=%u telem_gps=%u telem_mode=%u "
-			    "telem_batt=%u telem_batt_pt=%u telem_param=%u telem_text=%u "
-			    "telem_bytes=%u",
+			    "telem_batt=%u telem_batt_pt=%u telem_param=%u telem_rpm=%u "
+			    "telem_text=%u telem_bytes=%u",
 			    telem.frames[CRSF_TELEM_ENTRY_ATTITUDE],
 			    telem.frames[CRSF_TELEM_ENTRY_STATUS],
 			    telem.frames[CRSF_TELEM_ENTRY_GPS],
 			    telem.frames[CRSF_TELEM_ENTRY_FLIGHT_MODE],
 			    telem.frames[CRSF_TELEM_ENTRY_BATTERY],
 			    telem.frames[CRSF_TELEM_ENTRY_BATTERY_PASSTHROUGH],
-			    telem.frames[CRSF_TELEM_ENTRY_PARAMS], telem.text_frames,
+			    telem.frames[CRSF_TELEM_ENTRY_PARAMS],
+			    telem.frames[CRSF_TELEM_ENTRY_ESC_RPM], telem.text_frames,
 			    telem.bytes);
 	}
 #endif

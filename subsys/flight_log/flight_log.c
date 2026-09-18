@@ -96,6 +96,8 @@ LOG_MODULE_REGISTER(rdd2_flight_log, CONFIG_RDD2_FLIGHT_LOG_LOG_LEVEL);
  * catalog range so a decoder never confuses them with a catalog topic. */
 #define FLIGHT_LOG_TOPIC_ID_LOGGER_STATUS 200U
 #define FLIGHT_LOG_TOPIC_ID_WIRE_STATS 201U
+#define FLIGHT_LOG_TOPIC_ID_ESC_RPM 202U
+#define FLIGHT_LOG_TOPIC_ID_ESC_TELEMETRY 203U
 
 enum log_channel {
 	LOG_CH_CONTROL_IMU = 0,
@@ -113,6 +115,8 @@ enum log_channel {
 	LOG_CH_TIMEREF,
 	LOG_CH_SELF_STATUS,
 	LOG_CH_WIRE_STATS,
+	LOG_CH_ESC_RPM,
+	LOG_CH_ESC_TELEMETRY,
 	LOG_CH_COUNT,
 };
 
@@ -175,6 +179,12 @@ static struct log_source g_sources[] = {
 	 sizeof(synapse_topic_InertialSampleData_t), 0.0},
 	{&topic_pwm_signal_outputs, LOG_CH_PWM,
 	 sizeof(synapse_topic_PwmSignalOutputsData_t), 400.0},
+	/* eRPM is published at the output rate for the rate loop; the log only
+	 * needs it fast enough to follow a throttle step, so it is capped well
+	 * below that. The extended telemetry arrives a few times a second and is
+	 * logged as it comes. */
+	{&topic_esc_rpm, LOG_CH_ESC_RPM, sizeof(rdd2_esc_rpm_t), 100.0},
+	{&topic_esc_telemetry, LOG_CH_ESC_TELEMETRY, sizeof(rdd2_esc_telemetry_t), 0.0},
 	{&topic_navigation_odometry, LOG_CH_ODOMETRY,
 	 sizeof(synapse_topic_OdometryEstimateData_t), 100.0},
 	{&topic_attitude_estimate, LOG_CH_ATT_EST,
@@ -223,6 +233,8 @@ FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_ManualControlData_t);
 FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_OpticalFlowVelocityData_t);
 FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_OpticalFlowData_t);
 FLIGHT_LOG_ASSERT_PAYLOAD(synapse_topic_GnssFixData_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(rdd2_esc_rpm_t);
+FLIGHT_LOG_ASSERT_PAYLOAD(rdd2_esc_telemetry_t);
 FLIGHT_LOG_ASSERT_PAYLOAD(struct flight_log_self_record);
 FLIGHT_LOG_ASSERT_PAYLOAD(struct flight_log_wire_record);
 
@@ -271,6 +283,44 @@ static synapse_mcap_topic_t logger_status_topic(void)
 		.fixed_layout = 1U,
 	};
 }
+
+#if !defined(CONFIG_RDD2_COMMS_STUB)
+/* The ESC topics are repo-local PODs, so they carry the same kind of
+ * packed-LE schema as the logger-owned records. */
+static const uint8_t g_esc_rpm_schema[] =
+	"rdd2.motors.EscRpm packed-le {"
+	"u64 timestamp_ns; i32 erpm[4]; u32 decoded; u32 no_data; "
+	"u8 valid; u8 reserved[7];}";
+
+static const uint8_t g_esc_telemetry_schema[] =
+	"rdd2.motors.EscTelemetry packed-le {"
+	"u64 timestamp_ns; i16 temperature_degc[4]; u16 voltage_cv[4]; "
+	"i16 current_da[4]; u8 fresh; u8 reserved[7];}";
+
+static synapse_mcap_topic_t esc_rpm_topic(void)
+{
+	return (synapse_mcap_topic_t){
+		.topic_id = FLIGHT_LOG_TOPIC_ID_ESC_RPM,
+		.schema_name = "rdd2.motors.EscRpm",
+		.schema_data = g_esc_rpm_schema,
+		.schema_size = sizeof(g_esc_rpm_schema),
+		.payload_size = sizeof(rdd2_esc_rpm_t),
+		.fixed_layout = 1U,
+	};
+}
+
+static synapse_mcap_topic_t esc_telemetry_topic(void)
+{
+	return (synapse_mcap_topic_t){
+		.topic_id = FLIGHT_LOG_TOPIC_ID_ESC_TELEMETRY,
+		.schema_name = "rdd2.motors.EscTelemetry",
+		.schema_data = g_esc_telemetry_schema,
+		.schema_size = sizeof(g_esc_telemetry_schema),
+		.payload_size = sizeof(rdd2_esc_telemetry_t),
+		.fixed_layout = 1U,
+	};
+}
+#endif
 
 #if defined(CONFIG_RDD2_SYNAPSE_WIRE)
 static const uint8_t g_wire_stats_schema[] =
@@ -334,6 +384,8 @@ static int register_channels(void)
 			       LOG_CH_RATE_CMD);
 	rc |= register_channel(SYNAPSE_MCAP_TOPIC_ManualControlCommand, "manual_input",
 			       LOG_CH_MANUAL);
+	rc |= register_channel(esc_rpm_topic(), "esc_rpm", LOG_CH_ESC_RPM);
+	rc |= register_channel(esc_telemetry_topic(), "esc_telemetry", LOG_CH_ESC_TELEMETRY);
 #endif
 	rc |= register_channel(SYNAPSE_MCAP_TOPIC_OpticalFlowVelocity, "optical_flow_vel",
 			       LOG_CH_OPTICAL);

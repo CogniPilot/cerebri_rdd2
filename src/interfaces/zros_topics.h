@@ -22,6 +22,10 @@ ZROS_TOPIC_DECLARE(manual_input, synapse_topic_ManualControlData_t);
 /* Driver-decoded IMU sample handed from the rate process to the estimator. */
 ZROS_TOPIC_DECLARE(control_imu, synapse_topic_InertialSampleData_t);
 ZROS_TOPIC_DECLARE(waypoint_plan, rdd2_waypoint_plan_t);
+/* Bidirectional DShot readback from the motor output path: eRPM at the output
+ * rate, extended telemetry whenever an ESC sends one. */
+ZROS_TOPIC_DECLARE(esc_rpm, rdd2_esc_rpm_t);
+ZROS_TOPIC_DECLARE(esc_telemetry, rdd2_esc_telemetry_t);
 ZROS_TOPIC_DECLARE(trajectory_reference, synapse_topic_LocalPositionCommandData_t);
 ZROS_TOPIC_DECLARE(navigation_odometry, synapse_topic_OdometryEstimateData_t);
 ZROS_TOPIC_DECLARE(rate_command, synapse_topic_RateCommandData_t);

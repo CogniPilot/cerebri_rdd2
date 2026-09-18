@@ -20,6 +20,8 @@ ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(manual_input, synapse_topic_ManualControlData
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(control_imu,
                                    synapse_topic_InertialSampleData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(waypoint_plan, rdd2_waypoint_plan_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(esc_rpm, rdd2_esc_rpm_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(esc_telemetry, rdd2_esc_telemetry_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(trajectory_reference,
                                    synapse_topic_LocalPositionCommandData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(navigation_odometry,
@@ -164,7 +166,44 @@ static void format_synapse_topic(const struct shell *sh,
   }
 }
 
+/* The ESC topics are repo-local PODs with no Synapse field catalog, so they
+ * print their four motors directly. */
+static void format_esc_rpm(const struct shell *sh,
+                           const struct zros_topic *topic, const void *msg,
+                           size_t msg_size) {
+  const rdd2_esc_rpm_t *m = msg;
+
+  if (msg_size != sizeof(*m)) {
+    shell_error(sh, "%s: unexpected payload size", topic->_name);
+    return;
+  }
+  shell_print(sh, "%s: decoded=%u no_data=%u valid=0x%x", topic->_name,
+              m->decoded, m->no_data, m->valid);
+  shell_print(sh, "  erpm %d %d %d %d", m->erpm[0], m->erpm[1], m->erpm[2],
+              m->erpm[3]);
+}
+
+static void format_esc_telemetry(const struct shell *sh,
+                                 const struct zros_topic *topic,
+                                 const void *msg, size_t msg_size) {
+  const rdd2_esc_telemetry_t *m = msg;
+
+  if (msg_size != sizeof(*m)) {
+    shell_error(sh, "%s: unexpected payload size", topic->_name);
+    return;
+  }
+  shell_print(sh, "%s: fresh=0x%x", topic->_name, m->fresh);
+  for (size_t i = 0; i < 4U; ++i) {
+    shell_print(sh, "  esc%u %dC %u.%02u V %d.%d A", (unsigned)i,
+                m->temperature_degc[i], m->voltage_cv[i] / 100U,
+                m->voltage_cv[i] % 100U, m->current_da[i] / 10,
+                m->current_da[i] % 10);
+  }
+}
+
 static struct zros_shell_topic_formatter g_topic_shell_formatters[] = {
+    {.topic = &topic_esc_rpm, .format = format_esc_rpm},
+    {.topic = &topic_esc_telemetry, .format = format_esc_telemetry},
     {.topic = &topic_manual_input, .format = format_synapse_topic},
     {.topic = &topic_control_imu, .format = format_synapse_topic},
     {.topic = &topic_trajectory_reference, .format = format_synapse_topic},

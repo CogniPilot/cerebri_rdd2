@@ -78,28 +78,77 @@ static uint16_t motor_to_dshot(float normalized, bool armed) {
  * Bidirectional DShot readback. The driver decodes the ESC responses captured
  * since the previous trigger, and runs its receive-baud training, only inside
  * sensor_sample_fetch, so it is called once per output cycle right before the
- * next trigger. Values stay in the driver's units: eRPM in hundreds, degrees
- * C, volts, amps.
+ * next trigger. The driver reports eRPM in hundreds, and degrees C, volts and
+ * amps for the extended telemetry; the topics carry real eRPM, centivolt and
+ * deciamp.
+ *
+ * eRPM is published every cycle: it is the fastest-moving value here and a
+ * rotor-frequency filter needs it at the loop rate, and a publish is a copy of
+ * 40 bytes into the topic's spare buffer. The extended telemetry replaces an
+ * eRPM frame when the ESC sends it, so it is published only on the cycles that
+ * carried one, which is a few hertz per quantity.
  */
-static struct {
-  struct sensor_value rpm[4];
-  struct sensor_value temperature[4];
-  struct sensor_value voltage[4];
-  struct sensor_value current[4];
-  uint32_t decoded;
-  uint32_t no_data;
-} g_esc;
+static struct zros_pub g_esc_rpm_pub;
+static struct zros_pub g_esc_telemetry_pub;
+static rdd2_esc_rpm_t g_esc_rpm;
+static rdd2_esc_telemetry_t g_esc_telemetry;
+static bool g_esc_pub_ready;
 
 static void esc_readback(const struct device *dshot_dev) {
-  if (sensor_sample_fetch_chan(dshot_dev, SENSOR_CHAN_RPM) != 0) {
-    g_esc.no_data++;
+  struct sensor_value val[4];
+  uint8_t was_valid = g_esc_rpm.valid;
+  uint8_t fresh = 0U;
+
+  if (sensor_sample_fetch_chan(dshot_dev, SENSOR_CHAN_RPM) == 0) {
+    g_esc_rpm.decoded++;
+    g_esc_rpm.valid = 0x0FU;
+    (void)sensor_channel_get(dshot_dev, SENSOR_CHAN_RPM, val);
+    for (size_t i = 0; i < 4U; i++) {
+      g_esc_rpm.erpm[i] = val[i].val1 * 100;
+    }
+  } else {
+    g_esc_rpm.no_data++;
+    g_esc_rpm.valid = 0U;
+  }
+  g_esc_rpm.timestamp_ns = synapse_time_boot_ns();
+
+  /* The fetch does not report extended telemetry either way, so read it
+   * unconditionally. Each get reports -ENODATA unless a channel decoded a
+   * fresh value since the last read. */
+  if (sensor_channel_get(dshot_dev, SENSOR_CHAN_DIE_TEMP, val) == 0) {
+    fresh |= RDD2_ESC_TELEMETRY_TEMPERATURE;
+    for (size_t i = 0; i < 4U; i++) {
+      g_esc_telemetry.temperature_degc[i] = (int16_t)val[i].val1;
+    }
+  }
+  if (sensor_channel_get(dshot_dev, SENSOR_CHAN_VOLTAGE, val) == 0) {
+    fresh |= RDD2_ESC_TELEMETRY_VOLTAGE;
+    for (size_t i = 0; i < 4U; i++) {
+      g_esc_telemetry.voltage_cv[i] =
+          (uint16_t)(val[i].val1 * 100 + val[i].val2 / 10000);
+    }
+  }
+  if (sensor_channel_get(dshot_dev, SENSOR_CHAN_CURRENT, val) == 0) {
+    fresh |= RDD2_ESC_TELEMETRY_CURRENT;
+    for (size_t i = 0; i < 4U; i++) {
+      g_esc_telemetry.current_da[i] = (int16_t)(val[i].val1 * 10);
+    }
+  }
+
+  if (!g_esc_pub_ready) {
     return;
   }
-  g_esc.decoded++;
-  (void)sensor_channel_get(dshot_dev, SENSOR_CHAN_RPM, g_esc.rpm);
-  (void)sensor_channel_get(dshot_dev, SENSOR_CHAN_DIE_TEMP, g_esc.temperature);
-  (void)sensor_channel_get(dshot_dev, SENSOR_CHAN_VOLTAGE, g_esc.voltage);
-  (void)sensor_channel_get(dshot_dev, SENSOR_CHAN_CURRENT, g_esc.current);
+  /* With nothing answering, publish the sample that goes invalid and then stay
+   * quiet: a build without bidirectional ESCs feeds no empty frames to the log
+   * or the transmitter. */
+  if (g_esc_rpm.valid != 0U || was_valid != 0U) {
+    (void)zros_pub_update(&g_esc_rpm_pub);
+  }
+  if (fresh != 0U) {
+    g_esc_telemetry.fresh = fresh;
+    g_esc_telemetry.timestamp_ns = g_esc_rpm.timestamp_ns;
+    (void)zros_pub_update(&g_esc_telemetry_pub);
+  }
 }
 #endif
 
@@ -131,6 +180,13 @@ int rdd2_motor_output_init(void) {
   rc = zros_pub_init(&g_rdd2_motor_output_pub, &g_rdd2_motor_output_node,
                      &topic_pwm_signal_outputs, &g_rdd2_motor_output_blob);
   g_rdd2_motor_output_pub_ready = (rc == 0);
+#if defined(CONFIG_RDD2_DSHOT) && !defined(CONFIG_RDD2_LOCKSTEP)
+  g_esc_pub_ready =
+      zros_pub_init(&g_esc_rpm_pub, &g_rdd2_motor_output_node, &topic_esc_rpm,
+                    &g_esc_rpm) == 0 &&
+      zros_pub_init(&g_esc_telemetry_pub, &g_rdd2_motor_output_node,
+                    &topic_esc_telemetry, &g_esc_telemetry) == 0;
+#endif
 
   rdd2_motor_test_clear();
   rdd2_motor_raw_test_clear();
@@ -336,13 +392,22 @@ void rdd2_motor_raw_test_clear(void) {
 
 #if defined(CONFIG_RDD2_DSHOT) && !defined(CONFIG_RDD2_LOCKSTEP) && defined(CONFIG_SHELL)
 static int cmd_motors_esc(const struct shell *sh, size_t argc, char **argv) {
+  /* Read the published samples rather than the rate thread's own buffers: the
+   * shell runs at a lower priority and would otherwise print a torn one. */
+  rdd2_esc_rpm_t rpm = {0};
+  rdd2_esc_telemetry_t edt = {0};
+
   ARG_UNUSED(argc);
   ARG_UNUSED(argv);
-  shell_print(sh, "decoded=%u no_data=%u", g_esc.decoded, g_esc.no_data);
+  (void)zros_topic_read(&topic_esc_rpm, &rpm);
+  (void)zros_topic_read(&topic_esc_telemetry, &edt);
+  shell_print(sh, "decoded=%u no_data=%u valid=0x%x edt_fresh=0x%x", rpm.decoded,
+              rpm.no_data, rpm.valid, edt.fresh);
   for (int i = 0; i < 4; i++) {
-    shell_print(sh, "esc%d erpm=%d temp=%dC volt=%d.%02uV curr=%dA", i,
-                g_esc.rpm[i].val1 * 100, g_esc.temperature[i].val1, g_esc.voltage[i].val1,
-                (unsigned)(g_esc.voltage[i].val2 / 10000), g_esc.current[i].val1);
+    shell_print(sh, "esc%d erpm=%d temp=%dC volt=%u.%02uV curr=%d.%dA", i,
+                rpm.erpm[i], edt.temperature_degc[i], edt.voltage_cv[i] / 100U,
+                edt.voltage_cv[i] % 100U, edt.current_da[i] / 10,
+                edt.current_da[i] % 10);
   }
   return 0;
 }

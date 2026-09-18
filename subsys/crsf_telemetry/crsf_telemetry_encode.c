@@ -316,6 +316,26 @@ size_t crsf_encode_battery(uint8_t *buf, size_t buf_len, uint16_t voltage_cv, in
 	return 8u;
 }
 
+size_t crsf_encode_rpm(uint8_t *buf, size_t buf_len, uint8_t source_id, const int32_t *rpm,
+		       size_t count)
+{
+	size_t i;
+
+	if (buf == NULL || rpm == NULL || count == 0u || buf_len < 1u + 3u * count) {
+		return 0;
+	}
+
+	buf[0] = source_id;
+	for (i = 0; i < count; i++) {
+		uint32_t v = (uint32_t)clamp_i32(rpm[i], -8388608, 8388607);
+
+		buf[1u + i * 3u] = (uint8_t)(v >> 16);
+		buf[2u + i * 3u] = (uint8_t)(v >> 8);
+		buf[3u + i * 3u] = (uint8_t)v;
+	}
+	return 1u + 3u * count;
+}
+
 size_t crsf_encode_flight_mode(uint8_t *buf, size_t buf_len, const char *name)
 {
 	size_t len;

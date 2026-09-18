@@ -16,7 +16,7 @@
  * (type 0x80, the passthrough groups) is appended, so type 0x80 must be
  * offered well below the link's drain rate or a status frame carrying an
  * armed or failsafe edge waits seconds behind attitude frames. The default
- * periods below add up to roughly 240 bytes/s, of which about 205 bytes/s is
+ * periods below add up to roughly 309 bytes/s, of which about 205 bytes/s is
  * type 0x80:
  *
  *   attitude group  10 Hz x 18 B = 180 B/s
@@ -25,6 +25,7 @@
  *   flight mode    0.5 Hz x 13 B =   7 B/s (plus one frame per mode change)
  *   battery x2    0.33 Hz x 12 B =   8 B/s
  *   params        0.25 Hz x 12 B =   3 B/s
+ *   ESC RPM          4 Hz x 17 B =  68 B/s
  *
  * Every frame goes through one scheduler that sends at most one frame per
  * 10 ms tick. Among the entries whose period has elapsed it picks the one that
@@ -67,11 +68,13 @@ LOG_MODULE_REGISTER(rdd2_crsf_telemetry, LOG_LEVEL_INF);
 #define CRSF_TELEM_MODE_PERIOD_MS    2000
 #define CRSF_TELEM_BATTERY_PERIOD_MS 3000
 #define CRSF_TELEM_PARAMS_PERIOD_MS  4000
+#define CRSF_TELEM_ESC_RPM_PERIOD_MS 250
 
 enum crsf_telem_sub {
 	SUB_HEALTH = 0,
 	SUB_ATTITUDE,
 	SUB_GNSS,
+	SUB_ESC_RPM,
 	SUB_COUNT,
 };
 
@@ -82,6 +85,7 @@ static struct zros_sub g_subs[SUB_COUNT];
 static synapse_topic_VehicleHealthData_t g_health;
 static synapse_topic_AttitudeEstimateData_t g_attitude;
 static synapse_topic_GnssFixData_t g_gnss;
+static rdd2_esc_rpm_t g_esc_rpm;
 
 static const struct {
 	struct zros_topic *topic;
@@ -91,6 +95,9 @@ static const struct {
 	[SUB_HEALTH] = {&topic_vehicle_health, &g_health, 100.0},
 	[SUB_ATTITUDE] = {&topic_attitude_estimate, &g_attitude, 10.0},
 	[SUB_GNSS] = {&topic_gnss_fix, &g_gnss, 2.0},
+	/* Published at the output rate; only the RPM frame reads it, so the
+	 * subscription throttles it down to the frame rate here. */
+	[SUB_ESC_RPM] = {&topic_esc_rpm, &g_esc_rpm, 5.0},
 };
 
 static const uint16_t g_period_ms[CRSF_TELEM_ENTRY_COUNT] = {
@@ -101,6 +108,7 @@ static const uint16_t g_period_ms[CRSF_TELEM_ENTRY_COUNT] = {
 	[CRSF_TELEM_ENTRY_BATTERY] = CRSF_TELEM_BATTERY_PERIOD_MS,
 	[CRSF_TELEM_ENTRY_BATTERY_PASSTHROUGH] = CRSF_TELEM_BATTERY_PERIOD_MS,
 	[CRSF_TELEM_ENTRY_PARAMS] = CRSF_TELEM_PARAMS_PERIOD_MS,
+	[CRSF_TELEM_ENTRY_ESC_RPM] = CRSF_TELEM_ESC_RPM_PERIOD_MS,
 };
 
 static int64_t g_last_ms[CRSF_TELEM_ENTRY_COUNT];
@@ -277,6 +285,22 @@ static size_t build_entry(size_t idx, uint8_t *buf, uint8_t *type)
 		pk[0].appid = CRSF_YAAPU_PARAMS_APPID;
 		pk[0].data = crsf_yaapu_param(CRSF_YAAPU_PARAM_FRAME_TYPE, CRSF_MAV_TYPE_QUADROTOR);
 		return crsf_encode_multi_packet(buf, CRSF_ENCODE_BUF_LEN, pk, 1U);
+	case CRSF_TELEM_ENTRY_ESC_RPM: {
+		int32_t rpm[ARRAY_SIZE(g_esc_rpm.erpm)];
+
+		/* Nothing to report while no ESC answers the bidirectional
+		 * request, which is also the case on a build without it. */
+		if (g_esc_rpm.valid == 0U) {
+			return 0U;
+		}
+		for (size_t i = 0U; i < ARRAY_SIZE(rpm); ++i) {
+			/* One mechanical turn is pole-pairs electrical ones. */
+			rpm[i] = g_esc_rpm.erpm[i] * 2 /
+				 CONFIG_RDD2_CRSF_TELEMETRY_MOTOR_POLES;
+		}
+		*type = CRSF_FRAME_TYPE_RPM;
+		return crsf_encode_rpm(buf, CRSF_ENCODE_BUF_LEN, 0U, rpm, ARRAY_SIZE(rpm));
+	}
 	default:
 		return 0U;
 	}

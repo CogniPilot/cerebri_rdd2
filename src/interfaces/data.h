@@ -111,6 +111,58 @@ typedef struct {
   uint16_t value[4];
 } rdd2_motor_raw_t;
 
+/*
+ * Bidirectional DShot readback, split by the rate each half arrives at.
+ *
+ * An ESC answers every output cycle with an eRPM frame, so the eRPM image is
+ * published at the full output rate and is fine to filter on rotor frequency.
+ * Extended DShot telemetry shares that one return channel: the ESC rotates a
+ * temperature, voltage or current frame in place of an eRPM frame every so
+ * often, which puts each of them at a few hertz, so they ride their own topic
+ * and are published only on the cycles that carry one.
+ */
+typedef struct {
+  uint64_t timestamp_ns;
+  int32_t erpm[4]; /* electrical RPM, last decode held while a motor is quiet */
+  uint32_t decoded; /* output cycles that decoded a fresh eRPM */
+  uint32_t no_data; /* output cycles that decoded none */
+  /* Bit per motor. The driver reports link health for the group rather than
+   * per channel, so today all four bits move together. */
+  uint8_t valid;
+  uint8_t reserved[7];
+} rdd2_esc_rpm_t;
+
+_Static_assert(sizeof(rdd2_esc_rpm_t) == 40U, "esc rpm log layout mismatch");
+_Static_assert(offsetof(rdd2_esc_rpm_t, erpm) == 8U,
+               "esc rpm erpm offset mismatch");
+_Static_assert(offsetof(rdd2_esc_rpm_t, valid) == 32U,
+               "esc rpm valid offset mismatch");
+
+enum rdd2_esc_telemetry_valid {
+  RDD2_ESC_TELEMETRY_TEMPERATURE = 1U << 0,
+  RDD2_ESC_TELEMETRY_VOLTAGE = 1U << 1,
+  RDD2_ESC_TELEMETRY_CURRENT = 1U << 2,
+};
+
+typedef struct {
+  uint64_t timestamp_ns;
+  int16_t temperature_degc[4];
+  uint16_t voltage_cv[4]; /* centivolt */
+  int16_t current_da[4];  /* deciamp */
+  /* rdd2_esc_telemetry_valid bits refreshed by this sample; the other
+   * quantities carry their previous value. These select quantities, unlike the
+   * per-motor mask in rdd2_esc_rpm_t. */
+  uint8_t fresh;
+  uint8_t reserved[7];
+} rdd2_esc_telemetry_t;
+
+_Static_assert(sizeof(rdd2_esc_telemetry_t) == 40U,
+               "esc telemetry log layout mismatch");
+_Static_assert(offsetof(rdd2_esc_telemetry_t, voltage_cv) == 16U,
+               "esc telemetry voltage offset mismatch");
+_Static_assert(offsetof(rdd2_esc_telemetry_t, fresh) == 32U,
+               "esc telemetry fresh offset mismatch");
+
 struct rdd2_topic_flight_state {
   synapse_topic_VehicleHealthData_t vehicle_health;
   synapse_topic_AttitudeEstimateData_t attitude_estimate;

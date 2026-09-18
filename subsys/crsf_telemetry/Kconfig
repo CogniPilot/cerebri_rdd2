@@ -4,7 +4,7 @@ config RDD2_CRSF_TELEMETRY
 	depends on INPUT_CRSF
 	help
 	  Feed the receiver's downlink with plain CRSF telemetry frames (GPS,
-	  battery, flight mode) and with the Yaapu passthrough frames the
+	  battery, flight mode, ESC RPM) and with the Yaapu passthrough frames the
 	  Yaapu telemetry script on the transmitter decodes. One subscriber
 	  thread reads the flight bus and paces the frames, so telemetry never
 	  exceeds the downlink budget and the frames leave in a fixed rotation
@@ -38,6 +38,11 @@ config RDD2_CRSF_TELEMETRY_ATTITUDE_PERIOD_MS
 	  a 1:4 link keeps up with 10 Hz attitude plus the slow groups.
 	  On a 1:8 link raise this period to 170 ms, on 1:16 to 500 ms.
 
+	  The native RPM frame (type 0x0C, 17 bytes on the wire) carries the
+	  four motors at 4 Hz, about 68 bytes/s. It is a broadcast type, so a
+	  queued frame is overwritten by the next one instead of piling up in
+	  the receiver FIFO.
+
 config RDD2_CRSF_TELEMETRY_STATUS_PERIOD_MS
 	int "Status passthrough period in milliseconds"
 	default 1000
@@ -46,6 +51,16 @@ config RDD2_CRSF_TELEMETRY_STATUS_PERIOD_MS
 	  Period of the flight-mode/armed, GPS-status and home passthrough
 	  group. These change slowly, so they carry the cheaper rate in the
 	  budget described above.
+
+config RDD2_CRSF_TELEMETRY_MOTOR_POLES
+	int "Motor magnet count"
+	default 14
+	range 2 64
+	help
+	  Number of magnets on the motor bell, used to turn the eRPM the ESCs
+	  report over bidirectional DShot into the mechanical RPM the CRSF RPM
+	  frame carries: RPM = eRPM * 2 / poles. Count the magnets, not the
+	  stator teeth; 14 covers most 5 inch and 7 inch quadrotor motors.
 
 config RDD2_CRSF_TELEMETRY_THREAD_STACK_SIZE
 	int "Telemetry thread stack size"

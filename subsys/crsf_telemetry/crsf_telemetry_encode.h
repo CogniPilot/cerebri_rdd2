@@ -40,6 +40,8 @@ extern "C" {
 #define CRSF_STATUS_TEXT_MAX        49 /* chars, plus NUL */
 #define CRSF_ENCODE_BUF_LEN         64
 #define CRSF_BIND_COMMAND_LEN       5
+/* Native RPM frame type. Not in the Zephyr CRSF packet-type enum. */
+#define CRSF_FRAME_TYPE_RPM         0x0C
 
 /** One Yaapu passthrough word: application id plus its 32 bit payload. */
 struct crsf_yaapu_packet {
@@ -113,6 +115,19 @@ size_t crsf_encode_gps(uint8_t *buf, size_t buf_len, int32_t lat_e7, int32_t lon
 /** Build the 8 byte big-endian payload of a CRSF type 0x08 battery frame. */
 size_t crsf_encode_battery(uint8_t *buf, size_t buf_len, uint16_t voltage_cv, int16_t current_da,
 			   uint32_t consumed_mah, uint8_t remaining_pct);
+
+/**
+ * Build the payload of a CRSF type 0x0C RPM frame:
+ * [source id][mechanical RPM, big-endian signed 24 bit] * count.
+ *
+ * Values are clamped to the 24 bit signed range. The source id groups a block
+ * of motors: the transmitter keys its sensors on the frame type plus that id
+ * and numbers them by position within the block.
+ *
+ * @return 1 + 3 * count, or 0 when count is 0 or the buffer is too small.
+ */
+size_t crsf_encode_rpm(uint8_t *buf, size_t buf_len, uint8_t source_id, const int32_t *rpm,
+		       size_t count);
 
 /** Build the payload of a CRSF type 0x21 flight mode frame: name plus NUL. */
 size_t crsf_encode_flight_mode(uint8_t *buf, size_t buf_len, const char *name);
