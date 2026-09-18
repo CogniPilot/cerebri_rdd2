@@ -18,6 +18,7 @@ minus the measured transport latency is used instead.
 rotation) by linear interpolation at the nominal 800 Hz spacing.
 """
 import argparse, json, os, struct
+import sys
 import numpy as np
 
 from wire_replay import read_channels
@@ -62,6 +63,7 @@ LAYOUTS = {
     'optical_flow_vel': np.dtype([('ts', '<u8'), ('vx', '<f4'), ('vy', '<f4'), ('dist', '<f4'), ('roll', '<f4'), ('pitch', '<f4'), ('quality', 'u1'), ('flags', 'u1'), ('time_status', 'u1'), ('id', 'u1')]),
     'optical_flow': np.dtype([('ts', '<u8'), ('ts_sample', '<u8'), ('dist_ts', '<u8'), ('flow_x', '<f4'), ('flow_y', '<f4'), ('da_x', '<f4'), ('da_y', '<f4'), ('da_z', '<f4'), ('dist', '<f4'), ('dist_spread', '<f4'), ('int_ns', '<u4'), ('err', '<u4'), ('max_flow', '<f4'), ('min_gd', '<f4'), ('max_gd', '<f4'), ('fov', '<f4'), ('temp', '<f4'), ('quality', 'u1'), ('dist_quality', 'u1'), ('dist_pixel_ok', 'u1'), ('mode', 'u1'), ('flags', 'u1'), ('time_status', 'u1'), ('id', 'u1'), ('pad', 'u1')]),
     'attitude_estimate': np.dtype([('ts', '<u8'), ('qw', '<f4'), ('qx', '<f4'), ('qy', '<f4'), ('qz', '<f4'), ('wx', '<f4'), ('wy', '<f4'), ('wz', '<f4'), ('flags', 'u1'), ('time_status', 'u1'), ('pad', 'V2')]),
+    'navigation_odometry': np.dtype([('ts', '<u8'), ('px', '<f4'), ('py', '<f4'), ('pz', '<f4'), ('qw', '<f4'), ('qx', '<f4'), ('qy', '<f4'), ('qz', '<f4'), ('vx', '<f4'), ('vy', '<f4'), ('vz', '<f4'), ('wr', '<f4'), ('wp', '<f4'), ('wy', '<f4'), ('pose_cov', '<f4', (21,)), ('vel_cov', '<f4', (21,)), ('reset', 'u1'), ('est_type', 'u1'), ('quality', 'i1'), ('time_status', 'u1')]),
     'time_reference': np.dtype([('ts', '<u8'), ('tai_ns', '<u8'), ('unix_ns', '<u8'), ('unc_ns', '<u4'), ('utc_off', '<i2'), ('time_status', 'u1'), ('clock_class', 'u1'), ('domain', 'u1'), ('id', 'u1'), ('pad', 'V6')]),
 }
 WIRE_LATENCY_NS = 2_000_000
@@ -81,9 +83,19 @@ def read_log(path):
         frames = channels.get(name)
         if not frames:
             continue
+        # A log cut at the SD extent boundary can end in one partial record;
+        # drop any frame whose payload is not exactly one layout item rather
+        # than refusing the whole channel, and say how many were dropped.
+        whole = [(log_time, raw) for log_time, raw in frames if len(raw) == dtype.itemsize]
+        dropped = len(frames) - len(whole)
+        if dropped:
+            sizes = sorted({len(raw) for _log_time, raw in frames if len(raw) != dtype.itemsize})
+            print(f'{name}: dropped {dropped} of {len(frames)} frames whose payload size {sizes} '
+                  f'does not match layout {dtype.itemsize}', file=sys.stderr)
+        frames = whole
+        if not frames:
+            continue
         blob = b''.join(raw for _log_time, raw in frames)
-        if len(blob) != len(frames) * dtype.itemsize:
-            raise SystemExit(f'{name}: payload size {len(blob) / len(frames)} does not match layout {dtype.itemsize}')
         log_times = np.array([log_time for log_time, _raw in frames], dtype=np.int64)
         out[name] = (np.frombuffer(blob, dtype=dtype), log_times)
     return out
@@ -94,7 +106,8 @@ def main():
     ap.add_argument('log'); ap.add_argument('output_dir'); ap.add_argument('--fill-gaps', action='store_true')
     args = ap.parse_args(); os.makedirs(args.output_dir, exist_ok=True); out = args.output_dir
     log = read_log(args.log)
-    imu, _ = log['control_imu']; gps, gps_lt = log['gnss_fix']; flow, flow_lt = log['optical_flow_vel']
+    imu, _ = log['control_imu']; flow, flow_lt = log['optical_flow_vel']
+    gps, gps_lt = log.get('gnss_fix', (None, None))
     att, _ = log['attitude_estimate']; tr, _ = log['time_reference']
     t0 = int(imu['ts'][0])
     sync = tr['time_status'] == 1
@@ -121,22 +134,28 @@ def main():
         rows = np.array(filled)
     np.savetxt(f'{out}/imu.csv', rows, delimiter=',', fmt=['%.6f'] + ['%.7f'] * 6, header='t_s,gx_rad_s,gy_rad_s,gz_rad_s,ax_m_s2,ay_m_s2,az_m_s2', comments='')
 
-    tg = (wire_to_boot(gps['ts'], gps_lt, gps['time_status']) - t0) / 1e9
-    lat = gps['lat_e7'] / 1e7; lon = gps['lon_e7'] / 1e7; alt = gps['alt_msl_mm'] / 1e3; alte = gps['alt_ell_mm'] / 1e3
-    hacc = gps['hacc_mm'] / 1e3; vacc = gps['vacc_mm'] / 1e3; sacc = gps['sacc_mm_s'] / 1e3
-    speed = gps['gspeed_cm_s'] / 100.0; cog = np.deg2rad(gps['cog_cdeg'] / 100.0)
-    vn = speed * np.cos(cog); ve = speed * np.sin(cog)
-    vd = -np.gradient(_smooth_altitude(alt, 0.3 / (5.0 / 2)), tg)
-    pos_valid = (gps['fix_type'] >= 3) & (hacc <= 10.0) & (vacc <= 15.0)
-    vel_valid = ((gps['flags'] & 2) != 0) & (sacc <= 5.0)
-    first = int(np.flatnonzero(pos_valid)[0])
-    origin = dict(lat_deg=float(lat[first]), lon_deg=float(lon[first]), alt_msl_m=float(alt[first]), t_s=float(tg[first]))
-    json.dump(origin, open(f'{out}/origin.json', 'w'), indent=1)
-    radius = 6378137.0; lat0 = np.deg2rad(origin['lat_deg'])
-    e = np.deg2rad(lon - origin['lon_deg']) * radius * np.cos(lat0); n = np.deg2rad(lat - origin['lat_deg']) * radius; u = alt - origin['alt_msl_m']
-    np.savetxt(f'{out}/gps.csv', np.c_[tg, lat, lon, alt, alte, vn, ve, vd, hacc, vacc, sacc, gps['fix_type'], gps['sats_used'], pos_valid, vel_valid, np.ones_like(tg), e, n, u], delimiter=',',
-               fmt=['%.6f', '%.9f', '%.9f', '%.3f', '%.3f', '%.3f', '%.3f', '%.3f', '%.3f', '%.3f', '%.3f', '%d', '%d', '%d', '%d', '%d', '%.3f', '%.3f', '%.3f'],
-               header='t_s,lat_deg,lon_deg,alt_msl_m,alt_ell_m,vn_m_s,ve_m_s,vd_m_s,hacc_m,vacc_m,sacc_m_s,fix_type,sats_used,pos_valid,vel_valid,vd_derived,e_m,n_m,u_m', comments='')
+    if gps is None:
+        # A flight without a GNSS receiver (indoor, optical flow only): write an
+        # empty fix table and no origin, so the replay runs with --no-gps.
+        open(f'{out}/gps.csv', 'w').write('t_s,lat_deg,lon_deg,alt_msl_m,alt_ell_m,vn_m_s,ve_m_s,vd_m_s,hacc_m,vacc_m,sacc_m_s,fix_type,sats_used,pos_valid,vel_valid,vd_ok,cog_rad,speed_m_s\n')
+        tg = np.zeros(0); pos_valid = np.zeros(0, dtype=bool); origin = None
+    else:
+      tg = (wire_to_boot(gps['ts'], gps_lt, gps['time_status']) - t0) / 1e9
+      lat = gps['lat_e7'] / 1e7; lon = gps['lon_e7'] / 1e7; alt = gps['alt_msl_mm'] / 1e3; alte = gps['alt_ell_mm'] / 1e3
+      hacc = gps['hacc_mm'] / 1e3; vacc = gps['vacc_mm'] / 1e3; sacc = gps['sacc_mm_s'] / 1e3
+      speed = gps['gspeed_cm_s'] / 100.0; cog = np.deg2rad(gps['cog_cdeg'] / 100.0)
+      vn = speed * np.cos(cog); ve = speed * np.sin(cog)
+      vd = -np.gradient(_smooth_altitude(alt, 0.3 / (5.0 / 2)), tg)
+      pos_valid = (gps['fix_type'] >= 3) & (hacc <= 10.0) & (vacc <= 15.0)
+      vel_valid = ((gps['flags'] & 2) != 0) & (sacc <= 5.0)
+      first = int(np.flatnonzero(pos_valid)[0])
+      origin = dict(lat_deg=float(lat[first]), lon_deg=float(lon[first]), alt_msl_m=float(alt[first]), t_s=float(tg[first]))
+      json.dump(origin, open(f'{out}/origin.json', 'w'), indent=1)
+      radius = 6378137.0; lat0 = np.deg2rad(origin['lat_deg'])
+      e = np.deg2rad(lon - origin['lon_deg']) * radius * np.cos(lat0); n = np.deg2rad(lat - origin['lat_deg']) * radius; u = alt - origin['alt_msl_m']
+      np.savetxt(f'{out}/gps.csv', np.c_[tg, lat, lon, alt, alte, vn, ve, vd, hacc, vacc, sacc, gps['fix_type'], gps['sats_used'], pos_valid, vel_valid, np.ones_like(tg), e, n, u], delimiter=',',
+                 fmt=['%.6f', '%.9f', '%.9f', '%.3f', '%.3f', '%.3f', '%.3f', '%.3f', '%.3f', '%.3f', '%.3f', '%d', '%d', '%d', '%d', '%d', '%.3f', '%.3f', '%.3f'],
+                 header='t_s,lat_deg,lon_deg,alt_msl_m,alt_ell_m,vn_m_s,ve_m_s,vd_m_s,hacc_m,vacc_m,sacc_m_s,fix_type,sats_used,pos_valid,vel_valid,vd_derived,e_m,n_m,u_m', comments='')
     tf = (wire_to_boot(flow['ts'], flow_lt, flow['time_status']) - t0) / 1e9
     np.savetxt(f'{out}/flow.csv', np.c_[tf, flow['vx'], flow['vy'], flow['dist'], flow['quality'] / 255.0, (flow['flags'] & 7) == 7], delimiter=',', fmt=['%.6f', '%.4f', '%.4f', '%.4f', '%.4f', '%d'], header='t_s,vx_flu_m_s,vy_flu_m_s,dist_m,quality,valid', comments='')
     raw = log.get('optical_flow')
@@ -152,8 +171,19 @@ def main():
                    comments='')
     ta = (att['ts'].astype(np.int64) - t0) / 1e9
     np.savetxt(f'{out}/onboard.csv', np.c_[ta, att['qw'], att['qx'], att['qy'], att['qz'], att['wx'], att['wy'], att['wz']], delimiter=',', fmt='%.6f', header='t_s,qw,qx,qy,qz,wx,wy,wz', comments='')
+    odom = log.get('navigation_odometry')
+    if odom is not None:
+        # The estimator's own published state, so a flight can be judged
+        # against what the aircraft believed rather than only against a replay.
+        o, _ = odom
+        to = (o['ts'].astype(np.int64) - t0) / 1e9
+        np.savetxt(f'{out}/odometry.csv',
+                   np.c_[to, o['px'], o['py'], o['pz'], o['vx'], o['vy'], o['vz'], o['qw'], o['qx'], o['qy'], o['qz'], o['quality'], o['reset']],
+                   delimiter=',', fmt=['%.6f'] + ['%.4f'] * 10 + ['%d', '%d'],
+                   header='t_s,e_m,n_m,u_m,ve_m_s,vn_m_s,vu_m_s,qw,qx,qy,qz,quality_pct,reset_counter', comments='')
     nraw = 0 if raw is None else len(raw[0])
-    print(f'imu {len(rows)} rows, gps {len(tg)} ({int(pos_valid.sum())} usable), flow {len(tf)}, flow_raw {nraw}, origin {origin}')
+    nodom = 0 if odom is None else len(odom[0])
+    print(f'imu {len(rows)} rows, gps {len(tg)} ({int(pos_valid.sum())} usable), flow {len(tf)}, flow_raw {nraw}, odometry {nodom}, origin {origin}')
 
 
 if __name__ == '__main__':
