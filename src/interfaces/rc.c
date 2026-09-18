@@ -7,6 +7,10 @@
 #include "synapse_time_status.h"
 #include "zros_topics.h"
 
+#if defined(CONFIG_RDD2_CRSF_TELEMETRY)
+#include "crsf_telemetry.h"
+#endif
+
 #include <errno.h>
 
 #include <zephyr/device.h>
@@ -213,6 +217,25 @@ static int cmd_crsf_status(const struct shell *sh, size_t argc, char **argv)
 	shell_print(sh, "uplink_lq=%u rssi1=-%u rssi2=-%u snr=%d rf_mode=%u",
 		    link.uplink_link_quality, link.uplink_rssi_1, link.uplink_rssi_2,
 		    link.uplink_snr, link.rf_mode);
+#if defined(CONFIG_RDD2_CRSF_TELEMETRY)
+	{
+		struct rdd2_crsf_telemetry_counters telem;
+
+		rdd2_crsf_telemetry_counters_get(&telem);
+		shell_print(sh,
+			    "telem_att=%u telem_status=%u telem_gps=%u telem_mode=%u "
+			    "telem_batt=%u telem_batt_pt=%u telem_param=%u telem_text=%u "
+			    "telem_bytes=%u",
+			    telem.frames[CRSF_TELEM_ENTRY_ATTITUDE],
+			    telem.frames[CRSF_TELEM_ENTRY_STATUS],
+			    telem.frames[CRSF_TELEM_ENTRY_GPS],
+			    telem.frames[CRSF_TELEM_ENTRY_FLIGHT_MODE],
+			    telem.frames[CRSF_TELEM_ENTRY_BATTERY],
+			    telem.frames[CRSF_TELEM_ENTRY_BATTERY_PASSTHROUGH],
+			    telem.frames[CRSF_TELEM_ENTRY_PARAMS], telem.text_frames,
+			    telem.bytes);
+	}
+#endif
 	return 0;
 }
 

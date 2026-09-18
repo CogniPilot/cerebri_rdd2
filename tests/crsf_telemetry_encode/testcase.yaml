@@ -1,0 +1,13 @@
+tests:
+  rdd2.crsf_telemetry_encode:
+    platform_allow:
+      - native_sim/native/64
+    harness: console
+    harness_config:
+      type: one_line
+      regex:
+        - "PASS"
+    tags:
+      - rdd2
+      - crsf
+      - telemetry

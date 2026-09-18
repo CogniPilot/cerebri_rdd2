@@ -1,0 +1,66 @@
+config RDD2_CRSF_TELEMETRY
+	bool "CRSF telemetry to the ELRS receiver"
+	default n
+	depends on INPUT_CRSF
+	help
+	  Feed the receiver's downlink with plain CRSF telemetry frames (GPS,
+	  battery, flight mode) and with the Yaapu passthrough frames the
+	  Yaapu telemetry script on the transmitter decodes. One subscriber
+	  thread reads the flight bus and paces the frames, so telemetry never
+	  exceeds the downlink budget and the frames leave in a fixed rotation
+	  rather than in bursts.
+
+if RDD2_CRSF_TELEMETRY
+
+config RDD2_CRSF_TELEMETRY_ATTITUDE_PERIOD_MS
+	int "Attitude passthrough period in milliseconds"
+	default 100
+	range 50 10000
+	help
+	  Period of the roll/pitch and velocity/yaw passthrough group, the
+	  fastest-changing values on the transmitter screen.
+
+	  The defaults are sized for ELRS 2.4 GHz at a 500 Hz packet rate
+	  with a 1:4 telemetry ratio, which the ELRS documentation rates at
+	  4687 bit/s, about 585 bytes/s of CRSF frames shared with the
+	  receiver's own link statistics.
+
+	  The receiver queues telemetry in a 512 byte FIFO. Broadcast frame
+	  types (GPS, battery, flight mode) overwrite the older queued frame
+	  of the same type and stay fresh, but every custom telemetry frame
+	  (type 0x80, all the passthrough groups) is appended, so if those
+	  are offered faster than the link drains them the FIFO fills and a
+	  status frame with an armed or failsafe edge waits seconds behind
+	  attitude frames. The arm state therefore rides the flight mode
+	  string, a broadcast frame, and the attitude group runs at 10 Hz.
+	  Measured with the radio's telemetry mirror: a 1:8 link delivers
+	  about 8 custom frames per second in total and drops the rest,
+	  a 1:4 link keeps up with 10 Hz attitude plus the slow groups.
+	  On a 1:8 link raise this period to 170 ms, on 1:16 to 500 ms.
+
+config RDD2_CRSF_TELEMETRY_STATUS_PERIOD_MS
+	int "Status passthrough period in milliseconds"
+	default 1000
+	range 50 10000
+	help
+	  Period of the flight-mode/armed, GPS-status and home passthrough
+	  group. These change slowly, so they carry the cheaper rate in the
+	  budget described above.
+
+config RDD2_CRSF_TELEMETRY_THREAD_STACK_SIZE
+	int "Telemetry thread stack size"
+	default 2048
+	range 1024 8192
+
+config RDD2_CRSF_TELEMETRY_THREAD_PRIORITY
+	int "Telemetry thread priority"
+	default 9
+	help
+	  Runs below every flight and wire thread (priorities 2 through 7) and
+	  below the flight log writer at 8, and above the background floor
+	  threads at 14. A frame is sent as a synchronous poll-out of about
+	  24 us per byte, so it must never be able to delay the flight loop or
+	  the card writer; nothing downstream of it depends on telemetry
+	  latency.
+
+endif # RDD2_CRSF_TELEMETRY
