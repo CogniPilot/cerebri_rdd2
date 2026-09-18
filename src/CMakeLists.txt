@@ -182,6 +182,14 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
     FILES
       ${CMAKE_SOURCE_DIR}/drivers/nxp_flexio_dshot/nxp_flexio_dshot.c
       ${ZEPHYR_BASE}/drivers/misc/mcux_flexio/mcux_flexio.c
+      ${CMAKE_SOURCE_DIR}/src/interfaces/zros_topics.c
     LOCATION DTCM_DATA_BSS
+  )
+
+  # The interrupt stack and the main thread's stack (the rate loop) in
+  # DTCM: exception entry and the rate loop never wait on a cache line.
+  zephyr_code_relocate(
+    FILES ${ZEPHYR_BASE}/kernel/init.c
+    LOCATION DTCM_NOINIT
   )
 endif()
