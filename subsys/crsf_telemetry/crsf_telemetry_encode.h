@@ -39,6 +39,7 @@ extern "C" {
 #define CRSF_MULTI_PACKET_MAX       3  /* ELRS cap */
 #define CRSF_STATUS_TEXT_MAX        49 /* chars, plus NUL */
 #define CRSF_ENCODE_BUF_LEN         64
+#define CRSF_BIND_COMMAND_LEN       5
 
 /** One Yaapu passthrough word: application id plus its 32 bit payload. */
 struct crsf_yaapu_packet {
@@ -115,6 +116,20 @@ size_t crsf_encode_battery(uint8_t *buf, size_t buf_len, uint16_t voltage_cv, in
 
 /** Build the payload of a CRSF type 0x21 flight mode frame: name plus NUL. */
 size_t crsf_encode_flight_mode(uint8_t *buf, size_t buf_len, const char *name);
+
+/**
+ * Build the payload of the CRSF type 0x32 command frame that asks the
+ * receiver to enter bind mode:
+ * [dest 0xEC][origin 0xC8][command id 0x10 (receiver)][sub command 0x01 (bind)]
+ * [command CRC8, poly 0xBA over the 0x32 type byte through the sub command].
+ *
+ * The frame that reaches the wire once the driver has added the sync byte,
+ * the length and the 0xD5 frame CRC is
+ * C8 07 32 EC C8 10 01 9E E8.
+ *
+ * @return CRSF_BIND_COMMAND_LEN, or 0 when the buffer is too small.
+ */
+size_t crsf_encode_bind_command(uint8_t *buf, size_t buf_len);
 
 #ifdef __cplusplus
 }

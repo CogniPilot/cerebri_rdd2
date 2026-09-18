@@ -342,6 +342,32 @@ static void check_flight_mode(void)
 	CHECK(crsf_encode_flight_mode(buf, sizeof(buf), NULL) == 0);
 }
 
+static void check_bind_command(void)
+{
+	/* Wire frame: sync, length, type, payload, frame CRC (poly 0xD5). */
+	static const uint8_t expect[] = {0xC8, 0x07, 0x32, 0xEC, 0xC8, 0x10, 0x01, 0x9E, 0xE8};
+	uint8_t frame[sizeof(expect)];
+	uint8_t crc = 0;
+	size_t i;
+	int bit;
+
+	CHECK(crsf_encode_bind_command(&frame[3], 4) == 0);
+	CHECK(crsf_encode_bind_command(&frame[3], sizeof(frame) - 3u) == CRSF_BIND_COMMAND_LEN);
+
+	frame[0] = 0xC8;
+	frame[1] = CRSF_BIND_COMMAND_LEN + 2u;
+	frame[2] = 0x32;
+	for (i = 2; i < sizeof(frame) - 1u; i++) {
+		crc ^= frame[i];
+		for (bit = 0; bit < 8; bit++) {
+			crc = (crc & 0x80u) ? (uint8_t)((crc << 1) ^ 0xD5u) : (uint8_t)(crc << 1);
+		}
+	}
+	frame[sizeof(frame) - 1u] = crc;
+
+	CHECK(memcmp(frame, expect, sizeof(expect)) == 0);
+}
+
 static void check_euler(void)
 {
 	float roll, pitch, yaw;
@@ -451,6 +477,7 @@ int main(void)
 	check_gps_frame();
 	check_battery_frame();
 	check_flight_mode();
+	check_bind_command();
 	check_euler();
 
 	print_frames();

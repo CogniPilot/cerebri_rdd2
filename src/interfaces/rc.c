@@ -9,6 +9,7 @@
 
 #if defined(CONFIG_RDD2_CRSF_TELEMETRY)
 #include "crsf_telemetry.h"
+#include "crsf_telemetry_encode.h"
 #endif
 
 #include <errno.h>
@@ -214,6 +215,9 @@ static int cmd_crsf_status(const struct shell *sh, size_t argc, char **argv)
 		    diag.unsupported_frames, diag.queue_drops);
 	shell_print(sh, "uart_stopped=%u uart_restarts=%u uart_errors=%u", diag.uart_rx_stopped,
 		    diag.uart_rx_restarts, diag.uart_errors);
+	shell_print(sh, "rx_input_errors=%u parser_overflows=%u framing_errors=%u rx_buf_errors=%u",
+		    diag.rx_input_errors, diag.parser_overflows, diag.framing_errors,
+		    diag.rx_buf_errors);
 	shell_print(sh, "uplink_lq=%u rssi1=-%u rssi2=-%u snr=%d rf_mode=%u",
 		    link.uplink_link_quality, link.uplink_rssi_1, link.uplink_rssi_2,
 		    link.uplink_snr, link.rf_mode);
@@ -239,9 +243,39 @@ static int cmd_crsf_status(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+#if defined(CONFIG_RDD2_CRSF_TELEMETRY)
+/*
+ * Frame type 0x32 command, receiver sub command 0x10, bind 0x01, sent from the
+ * flight controller address to the receiver address. The receiver checks the
+ * frame CRC and the destination address, enters bind mode and drops the link;
+ * it sends no reply.
+ */
+static int cmd_crsf_bind(const struct shell *sh, size_t argc, char **argv)
+{
+	const struct device *dev = DEVICE_DT_GET(RC_NODE);
+	uint8_t payload[CRSF_BIND_COMMAND_LEN];
+	size_t len = crsf_encode_bind_command(payload, sizeof(payload));
+	int ret;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	ret = input_crsf_send_telemetry(dev, 0x32, payload, len);
+	shell_print(sh, "sent type=0x32 payload=%02x %02x %02x %02x %02x ret=%d", payload[0],
+		    payload[1], payload[2], payload[3], payload[4], ret);
+	shell_print(sh, "receiver drops the link and signals bind mode on its LED until the "
+			"transmitter binds (Bind in the receiver Lua script on the radio)");
+	return ret;
+}
+#endif
+
 SHELL_STATIC_SUBCMD_SET_CREATE(crsf_cmds,
 			       SHELL_CMD(status, NULL, "Show CRSF UART and frame diagnostics.",
 					 cmd_crsf_status),
+#if defined(CONFIG_RDD2_CRSF_TELEMETRY)
+			       SHELL_CMD(bind, NULL, "Put the receiver into bind mode.",
+					 cmd_crsf_bind),
+#endif
 			       SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(crsf, &crsf_cmds, "CRSF receiver diagnostics.", NULL);
 #endif

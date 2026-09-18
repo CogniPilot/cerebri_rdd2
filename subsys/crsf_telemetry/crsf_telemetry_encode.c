@@ -332,3 +332,27 @@ size_t crsf_encode_flight_mode(uint8_t *buf, size_t buf_len, const char *name)
 	buf[len] = '\0';
 	return len + 1u;
 }
+
+size_t crsf_encode_bind_command(uint8_t *buf, size_t buf_len)
+{
+	/* Type byte included in the command CRC but not in the payload. */
+	static const uint8_t crc_input[] = {0x32, 0xEC, 0xC8, 0x10, 0x01};
+	uint8_t crc = 0;
+	size_t i;
+	int bit;
+
+	if (buf == NULL || buf_len < CRSF_BIND_COMMAND_LEN) {
+		return 0;
+	}
+
+	for (i = 0; i < sizeof(crc_input); i++) {
+		crc ^= crc_input[i];
+		for (bit = 0; bit < 8; bit++) {
+			crc = (crc & 0x80u) ? (uint8_t)((crc << 1) ^ 0xBAu) : (uint8_t)(crc << 1);
+		}
+	}
+
+	memcpy(buf, &crc_input[1], sizeof(crc_input) - 1u);
+	buf[4] = crc;
+	return CRSF_BIND_COMMAND_LEN;
+}
