@@ -205,3 +205,34 @@
 &dtcm {
 	reg = <0x20000000 DT_SIZE_K(256)>;
 };
+
+/*
+ * Interrupt priorities. The FlexIO DShot handler has to load the second
+ * shift-buffer word and re-arm the receiver within 24 sub-bits (13 us at
+ * DShot600). Every other handler on this board can run tens of
+ * microseconds (IMU data-ready readout, CRSF frame parsing, DMA and SD
+ * completions), so they all sit one level below FlexIO and get preempted
+ * by it instead of delaying it.
+ */
+&edma0 {
+	interrupts = <0 1>, <1 1>, <2 1>, <3 1>, <4 1>, <5 1>, <6 1>, <7 1>,
+		     <8 1>, <9 1>, <10 1>, <11 1>, <12 1>, <13 1>, <14 1>,
+		     <15 1>, <16 1>;
+};
+&gpio1 { interrupts = <80 1>, <81 1>; };
+&gpio2 { interrupts = <82 1>, <83 1>; };
+&gpio3 { interrupts = <84 1>, <85 1>; };
+&gpio4 { interrupts = <86 1>, <87 1>; };
+&gpio5 { interrupts = <88 1>, <89 1>; };
+&lpuart2 { interrupts = <21 1>; };
+&lpuart3 { interrupts = <22 1>; };
+&lpuart4 { interrupts = <23 1>; };
+&lpuart5 { interrupts = <24 1>; };
+&lpuart6 { interrupts = <25 1>; };
+&lpuart7 { interrupts = <26 1>; };
+&lpuart8 { interrupts = <27 1>; };
+&lpi2c1 { interrupts = <28 1>; };
+&lpi2c3 { interrupts = <30 1>; };
+&lpi2c4 { interrupts = <31 1>; };
+&usdhc1 { interrupts = <110 1>; };
+&enet_mac { interrupts = <114 1>; };
