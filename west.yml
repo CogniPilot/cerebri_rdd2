@@ -62,7 +62,7 @@ manifest:
       path: models/modelica_models
     - name: fastdyn
       url: https://github.com/jgoppert/FastDyn.git
-      revision: 94c85f3e47be410e8d760b7f8207eb1580d7cd4c
+      revision: 3df8940e3e1fc71509b2aa39a7157aa2f8a568e2 # io-log-opt-in: device-model access log only for twintrace, probe, or FASTDYN_IO_LOG
       path: modules/sim/fastdyn
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git

@@ -123,6 +123,27 @@ plant truth, exact 10 Hz GNSS and current-status generations, bounded GPS
 navigation error, final disarm and landing, and execution speed. Plant ground
 contact is intentionally expressed with `noEvent` branches.
 
+## Execution speed
+
+The speed check (`RDD2_FASTDYN_MIN_SPEEDUP`, 3x real time by default) guards
+the environment, and two things dominate how fast the rehosted image runs.
+Every system-control register access (SysTick, MPU, PendSV) leaves QEMU's
+translated code and is served by the FastDyn device-model plugin, and the
+Zephyr timer driver makes three or four such accesses per time query or
+timeout change. The pinned FastDyn writes its per-access `io.log` only for
+twintrace and probe runs or when `FASTDYN_IO_LOG` is set; with that log on,
+the mission runs at about real time. `fastdyn/prj.conf` also builds the
+rehosted image without time slicing and without the MPU stack guard, because
+each context switch otherwise reprograms both and the 800 Hz pipeline switches
+several times per tick: on the CI host the GNSS mission runs 1.3x with them
+and 3.7x without, and the GNSS-denied run 3.4x. Neither setting changes what
+the flight processes compute. To see where guest time goes, sample the program
+counter through the QEMU monitor on port 5555 (`info registers`, the `R15`
+field) and resolve it against `build-mr_vmu_tropic-fastdyn/zephyr/zephyr.elf`.
+`RDD2_FASTDYN_CONTROLLER_BENCHMARK_S=<s>` runs the firmware alone, without the
+plant, for that many simulated seconds instead of the mission and prints
+`RDD2_CONTROLLER_BENCHMARK` with its own speed ratio.
+
 ## GNSS-denied estimator check
 
 `RDD2_FASTDYN_GNSS_DENIED=1 nix run .#fastdyn-ci` runs the same rehosted image
