@@ -118,7 +118,11 @@ struct nxp_flexio_dshot_data {
 	uint32_t dshot_timer_mask;
 	uint32_t bdshot_recv_mask;
 	uint32_t bdshot_parsed_recv_mask;
-	uint32_t bdshot_busy_us; /* Window a bidirectional channel stays receive-armed */
+	uint32_t bdshot_busy_us;
+	const struct device *dev;
+	struct k_work_delayable hold_work;
+	uint8_t hold_attempts;
+	bool hold_low;                  /* lines held low, no frames sent */ /* Window a bidirectional channel stays receive-armed */
 	uint64_t last_trigger_ns;
 };
 
@@ -345,6 +349,48 @@ static int nxp_flexio_dshot_set_clock(const struct nxp_flexio_dshot_config *cfg)
 	return ret;
 }
 
+/* Alternates between releasing the lines after a hold and, a few seconds
+ * later, checking whether every bidirectional channel came online; a channel
+ * still silent gets another hold, up to three in total.
+ */
+static void nxp_flexio_dshot_hold_work(struct k_work *work)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+	struct nxp_flexio_dshot_data *data =
+		CONTAINER_OF(dwork, struct nxp_flexio_dshot_data, hold_work);
+	const struct nxp_flexio_dshot_config *config = data->dev->config;
+	FLEXIO_Type *flexio_base = (FLEXIO_Type *)(config->flexio_base);
+	struct nxp_flexio_child *child = (struct nxp_flexio_child *)(config->child);
+	bool all_online = true;
+
+	for (uint32_t channel = 0; channel < config->channel->dshot_channel_count; channel++) {
+		struct nxp_flexio_dshot_channel_config *dshot_info =
+			&config->channel->dshot_info[channel];
+		uint32_t idx = child->res.shifter_index[channel];
+
+		if (!dshot_info->bdshot) {
+			continue;
+		}
+		if (data->hold_low) {
+			flexio_base->SHIFTCTL[idx] |= FLEXIO_SHIFTCTL_PINPOL_MASK;
+		} else if (!dshot_info->online) {
+			flexio_base->SHIFTCTL[idx] &= ~FLEXIO_SHIFTCTL_PINPOL_MASK;
+			all_online = false;
+		}
+	}
+
+	if (data->hold_low) {
+		data->hold_low = false;
+		if (data->hold_attempts < 3) {
+			k_work_schedule(&data->hold_work, K_SECONDS(5));
+		}
+	} else if (!all_online) {
+		data->hold_attempts++;
+		data->hold_low = true;
+		k_work_schedule(&data->hold_work, K_SECONDS(4));
+	}
+}
+
 static int nxp_flexio_dshot_init(const struct device *dev)
 {
 	const struct nxp_flexio_dshot_config *config = dev->config;
@@ -410,6 +456,24 @@ static int nxp_flexio_dshot_init(const struct device *dev)
 		data->dshot_timer_mask |= (1 << child->res.timer_index[channel]);
 	}
 
+	/* Hold every line low for the first seconds and send nothing. An AM32
+	 * ESC that lost its signal while the line stayed high (a debugger halt
+	 * leaves the inverted idle driven) only recovers after it has timed
+	 * out, reset and found the line low; on the bench that takes just over
+	 * 3 s and does not always succeed on the first hold. A normal power-up
+	 * is unaffected and the rest of the system boots meanwhile.
+	 */
+	FLEXIO_Type *flexio_base = (FLEXIO_Type *)(config->flexio_base);
+
+	for (channel = 0; channel < config->channel->dshot_channel_count; channel++) {
+		flexio_base->SHIFTCTL[child->res.shifter_index[channel]] &= ~FLEXIO_SHIFTCTL_PINPOL_MASK;
+	}
+	data->dev = dev;
+	data->hold_low = true;
+	data->hold_attempts = 1;
+	k_work_init_delayable(&data->hold_work, nxp_flexio_dshot_hold_work);
+	k_work_schedule(&data->hold_work, K_SECONDS(4));
+
 	return 0;
 }
 
@@ -417,6 +481,10 @@ static void nxp_flexio_dshot_hw_trigger(const struct device *dev)
 {
 	const struct nxp_flexio_dshot_config *config = dev->config;
 	struct nxp_flexio_dshot_data *data = dev->data;
+
+	if (data->hold_low) {
+		return;
+	}
 	FLEXIO_Type *flexio_base = (FLEXIO_Type *)(config->flexio_base);
 	struct nxp_flexio_child *child = (struct nxp_flexio_child *)(config->child);
 	struct nxp_flexio_dshot_channel_config *dshot_info;
