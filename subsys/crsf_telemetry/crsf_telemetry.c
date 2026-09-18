@@ -16,14 +16,14 @@
  * (type 0x80, the passthrough groups) is appended, so type 0x80 must be
  * offered well below the link's drain rate or a status frame carrying an
  * armed or failsafe edge waits seconds behind attitude frames. The default
- * periods below add up to roughly 309 bytes/s, of which about 205 bytes/s is
+ * periods below add up to roughly 325 bytes/s, of which about 217 bytes/s is
  * type 0x80:
  *
  *   attitude group  10 Hz x 18 B = 180 B/s
  *   GPS              1 Hz x 19 B =  19 B/s
  *   status group     1 Hz x 24 B =  24 B/s
  *   flight mode    0.5 Hz x 13 B =   7 B/s (plus one frame per mode change)
- *   battery x2    0.33 Hz x 12 B =   8 B/s
+ *   battery x2       1 Hz x 12 B =  24 B/s
  *   params        0.25 Hz x 12 B =   3 B/s
  *   ESC RPM          4 Hz x 17 B =  68 B/s
  *
@@ -66,7 +66,7 @@ LOG_MODULE_REGISTER(rdd2_crsf_telemetry, LOG_LEVEL_INF);
 #define CRSF_TELEM_BOOT_TEXT_MS      2000
 #define CRSF_TELEM_GPS_PERIOD_MS     1000
 #define CRSF_TELEM_MODE_PERIOD_MS    2000
-#define CRSF_TELEM_BATTERY_PERIOD_MS 3000
+#define CRSF_TELEM_BATTERY_PERIOD_MS 1000
 #define CRSF_TELEM_PARAMS_PERIOD_MS  4000
 #define CRSF_TELEM_ESC_RPM_PERIOD_MS 250
 
