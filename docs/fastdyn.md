@@ -137,9 +137,32 @@ rehosted image without time slicing and without the MPU stack guard, because
 each context switch otherwise reprograms both and the 800 Hz pipeline switches
 several times per tick: on the CI host the GNSS mission runs 1.3x with them
 and 3.7x without, and the GNSS-denied run 3.4x. Neither setting changes what
-the flight processes compute. To see where guest time goes, sample the program
-counter through the QEMU monitor on port 5555 (`info registers`, the `R15`
-field) and resolve it against `build-mr_vmu_tropic-fastdyn/zephyr/zephyr.elf`.
+the flight processes compute.
+
+Where the time goes after that, measured with `perf record` on the QEMU
+process during the controller benchmark: the vCPU thread holds about two
+thirds of the emulator's CPU time, and within it roughly a fifth is translated
+guest code, a sixth is single-precision soft-float for the Cortex-M7 FPU, and
+a sixth is system calls and main-loop notification behind timer re-arms and
+the big QEMU lock taken around every MMIO access. The device-model plugin and
+its scrolls together are about three percent, and building them optimized
+instead of at `-O0` changes nothing measurable. On the guest side a
+breakpoint histogram on the SysTick driver showed 83 percent of the timer
+reads coming from zros time stamping that only the optional subscription rate
+limit consumes; the pinned zros reads the clock only for rate-limited
+subscriptions, which the RDD2 firmware never configures. The pinned FastDyn
+also skips its per-access wall-clock timestamp when the access log is off.
+Together those two take the firmware-only benchmark from 4.35x to 4.78x on a
+quiet CI host.
+
+To see where guest time goes, sample the program counter through the QEMU
+monitor on port 5555 (`info registers`, the `R15` field) and resolve it
+against `build-mr_vmu_tropic-fastdyn/zephyr/zephyr.elf`; program-counter
+samples over-represent MMIO-heavy code, because an access syncs the counter,
+so treat them as a map of register traffic and use `perf` on the host for
+wall time. For a caller histogram, set `enable_gdb = true` in
+`fastdyn/mr_vmu_tropic.toml` and attach the Zephyr SDK gdb on port 1234 with a
+breakpoint that records a backtrace and continues.
 `RDD2_FASTDYN_CONTROLLER_BENCHMARK_S=<s>` runs the firmware alone, without the
 plant, for that many simulated seconds instead of the mission and prints
 `RDD2_CONTROLLER_BENCHMARK` with its own speed ratio.

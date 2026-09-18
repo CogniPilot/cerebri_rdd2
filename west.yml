@@ -50,7 +50,7 @@ manifest:
       path: modules/lib/zcbor
     - name: zros
       remote: cognipilot
-      revision: 4e8a7a53a935b61106a7e3065f74b7bbe2cac28f # convergence
+      revision: da99292affe1908ffc38d85ef20c0a89a4300dd1 # clock-only-when-rate-limited: subscriptions read the kernel clock only for rate limiting
       path: modules/lib/zros
     - name: cerebri_modules
       remote: cognipilot
@@ -62,7 +62,7 @@ manifest:
       path: models/modelica_models
     - name: fastdyn
       url: https://github.com/jgoppert/FastDyn.git
-      revision: 3df8940e3e1fc71509b2aa39a7157aa2f8a568e2 # io-log-opt-in: device-model access log only for twintrace, probe, or FASTDYN_IO_LOG
+      revision: cc40605fc29b62d701adee3895c659f9ce458a4b # io-log-opt-in: access log only for twintrace, probe, or FASTDYN_IO_LOG; no per-access timestamp when off
       path: modules/sim/fastdyn
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git
