@@ -129,22 +129,59 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
     )
   endif()
 
-  # The generated navigation estimator state and the flight log ring do not
-  # fit in OCRAM2 together, so they live in the FlexRAM OCRAM region carved
-  # out in boards/mr_vmu_tropic.overlay.
-  if(NOT CONFIG_RDD2_COMMS_STUB AND NOT CONFIG_RDD2_CONTROL_SIMPLE)
-    zephyr_code_relocate(
-      FILES
-        processes/navigation_estimator.c
-      LOCATION OCRAM_BSS
-    )
-  endif()
+  # The kernel, the Cortex-M arch core, the system timer and the interrupt
+  # driven drivers are placed in the .itcm output section by archive and
+  # section pattern, so a scheduler spinlock or an interrupt handler never
+  # waits on a QSPI flash cache miss. The second file asserts the placement
+  # at link time, including that the pre-copy boot path stays in flash.
+  zephyr_linker_sources(ITCM_SECTION
+    ${CMAKE_SOURCE_DIR}/boards/mr_vmu_tropic_itcm_linker.ld
+  )
+  zephyr_linker_sources(SECTIONS
+    ${CMAKE_SOURCE_DIR}/boards/mr_vmu_tropic_itcm_assert.ld
+  )
 
-  if(CONFIG_RDD2_FLIGHT_LOG)
-    zephyr_code_relocate(
-      FILES
-        ${CMAKE_SOURCE_DIR}/subsys/flight_log/flight_log.c
-      LOCATION OCRAM_NOINIT
-    )
-  endif()
+  # The interrupt path runs from ITCM: the Cortex-M wrapper and exception
+  # return, the FlexIO parent driver and the DShot child (the switch from
+  # output to input after each frame has to land within the ESC's response
+  # delay), the CRSF UART and its DMA. From QSPI flash their latency is set
+  # by cache misses.
+  zephyr_code_relocate(
+    FILES
+      ${ZEPHYR_BASE}/arch/arm/core/cortex_m/isr_wrapper.c
+      ${ZEPHYR_BASE}/arch/arm/core/cortex_m/exc_exit.c
+      ${ZEPHYR_BASE}/drivers/misc/mcux_flexio/mcux_flexio.c
+      ${ZEPHYR_BASE}/drivers/serial/uart_mcux_lpuart.c
+      ${ZEPHYR_BASE}/drivers/dma/dma_mcux_edma.c
+      ${ZEPHYR_BASE}/drivers/input/input_crsf.c
+      ${ZEPHYR_BASE}/../modules/hal/nxp/mcux/mcux-sdk-ng/drivers/flexio/fsl_flexio.c
+      ${CMAKE_SOURCE_DIR}/drivers/nxp_flexio_dshot/nxp_flexio_dshot.c
+      ${CMAKE_SOURCE_DIR}/drivers/nxp_flexio_dshot/nxp_flexio_dshot_api.c
+    LOCATION ITCM_TEXT_RODATA
+  )
+  # The other interrupt sources and what their handlers call: the IMU SPI
+  # stream, the SD card controller, Ethernet, and the kernel's interrupt
+  # table, fault entry and context switch.
+  zephyr_code_relocate(
+    FILES
+      ${CMAKE_BINARY_DIR}/zephyr/isr_tables.c
+      ${ZEPHYR_BASE}/arch/arm/core/cortex_m/swap_helper.S
+      ${ZEPHYR_BASE}/arch/arm/core/cortex_m/irq_manage.c
+      ${ZEPHYR_BASE}/arch/arm/core/cortex_m/fault.c
+      ${ZEPHYR_BASE}/kernel/sem.c
+      ${ZEPHYR_BASE}/drivers/spi/spi_nxp_lpspi/spi_nxp_lpspi_common.c
+      ${ZEPHYR_BASE}/drivers/spi/spi_nxp_lpspi/spi_nxp_lpspi_rtio.c
+      ${ZEPHYR_BASE}/drivers/sensor/tdk/icm45686/icm45686_stream.c
+      ${ZEPHYR_BASE}/drivers/sensor/tdk/icm45686/icm45686_bus.c
+      ${ZEPHYR_BASE}/drivers/sdhc/imx_usdhc.c
+      ${ZEPHYR_BASE}/drivers/ethernet/eth_nxp_enet.c
+      ${ZEPHYR_BASE}/subsys/rtio/rtio_executor.c
+    LOCATION ITCM_TEXT_RODATA
+  )
+  zephyr_code_relocate(
+    FILES
+      ${CMAKE_SOURCE_DIR}/drivers/nxp_flexio_dshot/nxp_flexio_dshot.c
+      ${ZEPHYR_BASE}/drivers/misc/mcux_flexio/mcux_flexio.c
+    LOCATION DTCM_DATA_BSS
+  )
 endif()

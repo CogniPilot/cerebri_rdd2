@@ -170,44 +170,38 @@
 };
 
 /*
- * FlexRAM split: 64 KB DTCM for the relocated hot-path data, 64 KB ITCM for
- * the relocated hot-path code, and the remaining 384 KB as FlexRAM OCRAM at
- * 0x20280000. OCRAM2, the main RAM region, is too small for the generated
- * navigation estimator state plus the flight log ring, so both are relocated
- * here in src/CMakeLists.txt. Each image applies its own split from its reset
- * hook, so MCUboot keeping the board default does not conflict.
+ * FlexRAM split: all sixteen 32 KB banks go to the tightly coupled memories,
+ * 256 KB ITCM for the hot-path code including the whole interrupt path, and
+ * 256 KB DTCM for the hot-path data. OCRAM2 (512 KB) is the general RAM and
+ * holds the generated navigation estimator state and the flight log ring.
+ * Each image applies its own split from its reset hook, so MCUboot keeping
+ * the board default does not conflict.
  */
 #include <zephyr/dt-bindings/memory-controller/nxp,flexram.h>
 
 &flexram {
 	flexram,bank-spec = <FLEXRAM_DTCM>,
 			    <FLEXRAM_DTCM>,
+			    <FLEXRAM_DTCM>,
+			    <FLEXRAM_DTCM>,
+			    <FLEXRAM_DTCM>,
+			    <FLEXRAM_DTCM>,
+			    <FLEXRAM_DTCM>,
+			    <FLEXRAM_DTCM>,
 			    <FLEXRAM_ITCM>,
 			    <FLEXRAM_ITCM>,
-			    <FLEXRAM_OCRAM>,
-			    <FLEXRAM_OCRAM>,
-			    <FLEXRAM_OCRAM>,
-			    <FLEXRAM_OCRAM>,
-			    <FLEXRAM_OCRAM>,
-			    <FLEXRAM_OCRAM>,
-			    <FLEXRAM_OCRAM>,
-			    <FLEXRAM_OCRAM>,
-			    <FLEXRAM_OCRAM>,
-			    <FLEXRAM_OCRAM>,
-			    <FLEXRAM_OCRAM>,
-			    <FLEXRAM_OCRAM>;
-
-	flexram_ocram: ocram@20280000 {
-		compatible = "zephyr,memory-region", "mmio-sram";
-		reg = <0x20280000 DT_SIZE_K(384)>;
-		zephyr,memory-region = "OCRAM";
-	};
+			    <FLEXRAM_ITCM>,
+			    <FLEXRAM_ITCM>,
+			    <FLEXRAM_ITCM>,
+			    <FLEXRAM_ITCM>,
+			    <FLEXRAM_ITCM>,
+			    <FLEXRAM_ITCM>;
 };
 
 &itcm {
-	reg = <0x00000000 DT_SIZE_K(64)>;
+	reg = <0x00000000 DT_SIZE_K(256)>;
 };
 
 &dtcm {
-	reg = <0x20000000 DT_SIZE_K(64)>;
+	reg = <0x20000000 DT_SIZE_K(256)>;
 };
