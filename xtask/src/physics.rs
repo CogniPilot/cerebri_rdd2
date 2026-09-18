@@ -225,13 +225,20 @@ impl Plant {
             "set motor inputs",
         )?;
         // The exported plant takes one fixed Runge-Kutta step per doStep with
-        // no event location, and its landing-gear contact is stiff: at the
-        // 5 ms exchange step a resting aircraft chatters between free fall
-        // and two g on its accelerometer, which is an artifact of the
-        // integration, not of the model (the same plant rests cleanly in the
-        // host simulator). Sub-stepping the plant inside one exchange
-        // interval keeps the internal step at 1.25 ms by default.
-        let substeps = plant_substeps();
+        // no event location, and its landing-gear contact is stiff. Each leg
+        // carries 150 N s/m of normal damping 0.17 m from the centre of mass
+        // against a 0.0217 kg m^2 pitch and roll inertia, so the rotational
+        // contact mode decays at about 800 1/s and the explicit fourth-order
+        // step is only stable below 3.5 ms. At a 5 ms internal step a level
+        // touchdown looks fine, because every leg moves alike and the
+        // rotational mode is never excited, but a landing with a fraction of
+        // a degree of tilt settles into a phase-locked limit cycle: the
+        // aircraft reports rest while its accelerometer holds about 5.5 m/s2
+        // with 1 m/s2 sideways and the gyroscope 0.19 rad/s, and the
+        // estimator integrates that into metres of drift. Sub-stepping keeps
+        // the internal step at or below 1.25 ms whatever the exchange
+        // interval, which is where the plant rests cleanly.
+        let substeps = plant_substeps(dt);
         let sub_dt = dt / f64::from(substeps);
         for _ in 0..substeps {
             let mut event_handling_needed = false;
@@ -279,14 +286,20 @@ impl Plant {
     }
 }
 
-/// Internal plant steps per exchange interval; RDD2_FASTDYN_PLANT_SUBSTEPS
-/// overrides the default of four.
-fn plant_substeps() -> u32 {
+/// Longest internal plant step at which the landing-gear contact integrates
+/// cleanly.
+const MAX_PLANT_INTERNAL_STEP_S: f64 = 1.25e-3;
+
+/// Internal plant steps per exchange interval: enough to keep the internal
+/// step at or below MAX_PLANT_INTERNAL_STEP_S (four at the 5 ms exchange
+/// interval, sixteen at 20 ms). RDD2_FASTDYN_PLANT_SUBSTEPS overrides the
+/// count.
+fn plant_substeps(dt: f64) -> u32 {
     std::env::var("RDD2_FASTDYN_PLANT_SUBSTEPS")
         .ok()
         .and_then(|value| value.trim().parse::<u32>().ok())
-        .filter(|value| (1..=64).contains(value))
-        .unwrap_or(4)
+        .filter(|value| (1..=256).contains(value))
+        .unwrap_or_else(|| ((dt / MAX_PLANT_INTERNAL_STEP_S).ceil() as u32).clamp(1, 256))
 }
 
 impl Drop for Plant {

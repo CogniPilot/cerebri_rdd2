@@ -131,8 +131,13 @@ established, the mission never starts, and the aircraft rests disarmed for the
 whole run; the report then judges the navigation estimator alone: it must
 report a usable estimate within 10 s, stay finite, and hold the resting
 aircraft within 2 m horizontally and vertically and below 1 m/s, which is the
-unaided condition an indoor flight puts it in. The plant is sub-stepped four
-times per 5 ms exchange interval (`RDD2_FASTDYN_PLANT_SUBSTEPS`) so its
-landing-gear contact integrates cleanly; at one step per interval a resting
-aircraft chattered between free fall and two g on its accelerometer.
+unaided condition an indoor flight puts it in. The plant is sub-stepped so its
+internal integration step never exceeds 1.25 ms (four sub-steps per 5 ms
+exchange interval, sixteen per 20 ms; `RDD2_FASTDYN_PLANT_SUBSTEPS` overrides
+the count) so its landing-gear contact integrates cleanly. At one step per 5 ms
+interval a resting aircraft chattered between free fall and two g on its
+accelerometer, and at a 5 ms internal step a touchdown with a fraction of a
+degree of tilt settled into a phase-locked limit cycle that the accelerometer
+reported as a steady 5.5 m/s2 and the estimator integrated into metres of
+drift.
 
