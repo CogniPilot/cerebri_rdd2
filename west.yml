@@ -58,7 +58,7 @@ manifest:
       path: modules/lib/cerebri_lockstep
     - name: modelica_models
       remote: cognipilot
-      revision: bc50718e9d89328e585230767e5a1547b8a1221e # main: alignment gate and unaided hold-position and zero-velocity updates
+      revision: 5b6b849ae35927f1713317f6809889d356ed263c # quiet-filter: low-pass quasi-static test, rumoca 0.10.0
       path: models/modelica_models
     - name: fastdyn
       url: https://github.com/jgoppert/FastDyn.git
