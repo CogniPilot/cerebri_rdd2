@@ -6,13 +6,13 @@
 # checks that executable against, and what the installer fallback would
 # download when no executable is supplied.
 #
-# The installer entries below are empty because no Rumoca release carries
-# this revision yet (the latest published release is v0.9.20). Until a
-# v0.10.0 release exists, a build either supplies RDD2_RUMOCA_EXECUTABLE or
+# The revision is the v0.10.0 tag. The installer entries below stay empty
+# until the v0.10.0 release publishes its install script and per-platform
+# binaries; until then a build either supplies RDD2_RUMOCA_EXECUTABLE or
 # lets InstallRumoca.cmake build RDD2_RUMOCA_SOURCE_REV with cargo. When the
-# release is cut, fill in the install script and per-platform binary hashes.
+# release assets exist, fill in the install script and binary hashes.
 set(RDD2_RUMOCA_VERSION "v0.10.0")
-set(RDD2_RUMOCA_REVISION "97eb3ab74b3e11264ab2000437eb47df1a57214d")
+set(RDD2_RUMOCA_REVISION "e0c76ac8c2d9865041853804be5d754dc17005bd")
 set(RDD2_RUMOCA_INSTALL_SCRIPT_URL
   "https://raw.githubusercontent.com/CogniPilot/rumoca/${RDD2_RUMOCA_VERSION}/infra/install/install.sh"
 )
