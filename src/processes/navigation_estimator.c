@@ -65,7 +65,7 @@ struct navigation_estimator_process {
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
   synapse_topic_OpticalFlowVelocityData_t optical_flow;
 #endif
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
   synapse_topic_OpticalFlowData_t optical_flow_raw;
 #endif
 #if defined(CONFIG_RDD2_MAGNETOMETER)
@@ -82,7 +82,7 @@ struct navigation_estimator_process {
   uint64_t optical_flow_last_fusion_control_timestamp_ns;
   uint32_t optical_flow_fusion_accepted_count;
 #endif
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
   struct rdd2_navigation_optical_flow_raw_adapter optical_flow_raw_adapter;
   uint64_t optical_flow_last_fusion_control_timestamp_ns;
   uint32_t optical_flow_fusion_accepted_count;
@@ -94,7 +94,7 @@ struct navigation_estimator_process {
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
   struct zros_sub optical_flow_sub;
 #endif
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
   struct zros_sub optical_flow_raw_sub;
 #endif
   struct zros_sub health_sub;
@@ -118,6 +118,9 @@ struct navigation_estimator_process {
 static struct navigation_estimator_process g_process;
 
 static atomic_t g_origin_valid;
+static atomic_t g_optical_flow_lockstep_status;
+static atomic_t g_optical_flow_lockstep_accepted;
+static atomic_t g_optical_flow_lockstep_fused;
 /* Gyroscope bias handed to the rate loop, which subtracts it from the raw
  * IMU sample every control tick instead of consuming the estimator's own
  * angular-velocity publication at the estimator rate. */
@@ -129,7 +132,7 @@ static struct k_spinlock g_optical_flow_diagnostics_lock;
 static struct rdd2_navigation_optical_flow_diagnostics
     g_optical_flow_diagnostics;
 #endif
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
 static struct k_spinlock g_optical_flow_raw_diagnostics_lock;
 static struct rdd2_navigation_optical_flow_raw_diagnostics
     g_optical_flow_raw_diagnostics;
@@ -168,7 +171,7 @@ static const struct rdd2_navigation_optical_flow_config g_optical_flow_config =
 };
 #endif
 
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
 static const struct rdd2_navigation_optical_flow_raw_config
     g_optical_flow_raw_config = {
         .max_age_ns = (uint64_t)CONFIG_RDD2_OPTICAL_FLOW_RAW_MAX_AGE_MS *
@@ -198,7 +201,9 @@ static const struct rdd2_navigation_optical_flow_raw_config
         .mount_yaw_deg = CONFIG_RDD2_OPTICAL_FLOW_RAW_MOUNT_YAW_DEG,
         .sensor_id = CONFIG_RDD2_OPTICAL_FLOW_RAW_SENSOR_ID,
         .min_quality = CONFIG_RDD2_OPTICAL_FLOW_RAW_MIN_QUALITY,
-        .require_gptp = true,
+        /* The direct wire stamps samples on the gPTP clock; the lockstep
+         * coordinator stamps them on the control clock it also feeds the IMU. */
+        .require_gptp = IS_ENABLED(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW),
 };
 #endif
 
@@ -548,7 +553,7 @@ static void copy_optical_flow_input_to_efmu(
 }
 #endif
 
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
 /*
  * The tightly coupled path hands the ESKF the raw integrated flow, the raw
  * integrated rotation and the range with their own covariances; the estimator
@@ -818,7 +823,7 @@ static void update_optical_flow_diagnostics(
 }
 #endif
 
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
 static void update_optical_flow_raw_diagnostics(
     const struct navigation_estimator_process *process,
     const struct rdd2_navigation_optical_flow_raw_measurement *measurement) {
@@ -882,7 +887,7 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
     struct rdd2_navigation_optical_flow_measurement optical_flow_measurement;
 #endif
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
     struct rdd2_navigation_optical_flow_raw_measurement
         optical_flow_raw_measurement;
 #endif
@@ -892,7 +897,7 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
     bool optical_flow_fresh;
 #endif
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
     bool optical_flow_raw_fresh;
 #endif
     bool origin_captured;
@@ -923,7 +928,7 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
     optical_flow_fresh = zros_sub_update(&process->optical_flow_sub) == 0;
 #endif
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
     optical_flow_raw_fresh =
         zros_sub_update(&process->optical_flow_raw_sub) == 0;
 #endif
@@ -950,12 +955,20 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
         &process->optical_flow, optical_flow_fresh, process->imu.timestamp_ns,
         &g_optical_flow_config);
     copy_optical_flow_input_to_efmu(process, &optical_flow_measurement);
-#elif defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#elif defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
     rdd2_navigation_optical_flow_raw_step(
         &process->optical_flow_raw_adapter, &optical_flow_raw_measurement,
         &process->optical_flow_raw, optical_flow_raw_fresh,
         process->imu.timestamp_ns, &g_optical_flow_raw_config);
     copy_optical_flow_raw_input_to_efmu(process, &optical_flow_raw_measurement);
+    /* The lockstep host reads the adapter's verdict and counts from the
+     * mission status record, since the rehosted image has no console. */
+    atomic_set(&g_optical_flow_lockstep_status,
+               (atomic_val_t)process->optical_flow_raw_adapter.status);
+    atomic_set(&g_optical_flow_lockstep_accepted,
+               (atomic_val_t)process->optical_flow_raw_adapter.accepted_count);
+    atomic_set(&g_optical_flow_lockstep_fused,
+               (atomic_val_t)process->optical_flow_fusion_accepted_count);
 #else
     process->efmu.opticalFlow_valid = false;
     process->efmu.opticalFlow_fresh = false;
@@ -987,7 +1000,7 @@ static void navigation_estimator_thread(void *arg1, void *arg2, void *arg3) {
           process->imu.timestamp_ns;
     }
     update_optical_flow_diagnostics(process, &optical_flow_measurement);
-#elif defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#elif defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
     if (process->efmu.status_opticalFlowCorrectionAccepted) {
       process->optical_flow_fusion_accepted_count++;
       process->optical_flow_last_fusion_control_timestamp_ns =
@@ -1020,6 +1033,19 @@ bool rdd2_navigation_origin_valid_get(void) {
   return atomic_get(&g_origin_valid) != 0;
 }
 
+void rdd2_navigation_optical_flow_lockstep_get(uint8_t *status, uint16_t *accepted,
+                                               uint16_t *fused) {
+  if (status != NULL) {
+    *status = (uint8_t)atomic_get(&g_optical_flow_lockstep_status);
+  }
+  if (accepted != NULL) {
+    *accepted = (uint16_t)MIN(atomic_get(&g_optical_flow_lockstep_accepted), 65535);
+  }
+  if (fused != NULL) {
+    *fused = (uint16_t)MIN(atomic_get(&g_optical_flow_lockstep_fused), 65535);
+  }
+}
+
 bool rdd2_navigation_optical_flow_diagnostics_get(
     struct rdd2_navigation_optical_flow_diagnostics *diagnostics) {
 #if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
@@ -1040,7 +1066,7 @@ bool rdd2_navigation_optical_flow_diagnostics_get(
 
 bool rdd2_navigation_optical_flow_raw_diagnostics_get(
     struct rdd2_navigation_optical_flow_raw_diagnostics *diagnostics) {
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
   k_spinlock_key_t key;
 
   if (diagnostics == NULL) {
@@ -1076,7 +1102,7 @@ int rdd2_navigation_estimator_process_start(void) {
             "rejected until the Kconfig limits are corrected");
   }
 #endif
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
   rdd2_navigation_optical_flow_raw_init(&process->optical_flow_raw_adapter);
   if (!rdd2_navigation_optical_flow_raw_config_valid(
           &g_optical_flow_raw_config)) {
@@ -1128,7 +1154,7 @@ int rdd2_navigation_estimator_process_start(void) {
                        0.0);
   }
 #endif
-#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW)
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_RAW)
   if (rc == 0) {
     rc = zros_sub_init(&process->optical_flow_raw_sub, &process->node,
                        &topic_optical_flow, &process->optical_flow_raw, 0.0);

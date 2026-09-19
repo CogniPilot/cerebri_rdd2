@@ -167,15 +167,43 @@ breakpoint that records a backtrace and continues.
 plant, for that many simulated seconds instead of the mission and prints
 `RDD2_CONTROLLER_BENCHMARK` with its own speed ratio.
 
+## Optical flow in the loop
+
+The rehosted image fuses raw `OpticalFlowData` through the same adapter the
+vehicle uses for the direct wire (`CONFIG_RDD2_OPTICAL_FLOW_SOURCE_LOCKSTEP_RAW`
+in `fastdyn/prj.conf`, the lockstep counterpart of
+`CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW`). The mission runner synthesizes one
+sample per exchange interval from the plant: the flow angles are the plant's
+true body velocity over the nadir range integrated across the interval plus
+the integrated body rate, with the raw path's own convention, so what the
+estimator sees is a perfect sensor with the vehicle's interface. The sample
+travels in the shared memory beside the GNSS fix and is published by the
+lockstep coordinator on the raw flow topic once the interval it integrates has
+run. `RDD2_FASTDYN_FLOW=0` switches the sensor off. The mission status record
+carries the raw adapter's verdict code and its accepted and fused counts back
+to the host, which the progress line prints as `flow_st`, `flow_acc` and
+`flow_fused`; a stream that arrives but is never fused names its reason there,
+since the rehosted image has no console.
+
 ## GNSS-denied estimator check
 
 `RDD2_FASTDYN_GNSS_DENIED=1 nix run .#fastdyn-ci` runs the same rehosted image
 with the lockstep GNSS source emitting only unusable fixes. No origin is ever
-established, the mission never starts, and the aircraft rests disarmed for the
-whole run; the report then judges the navigation estimator alone: it must
-report a usable estimate within 10 s, stay finite, and hold the resting
-aircraft within 2 m horizontally and vertically and below 1 m/s, which is the
-unaided condition an indoor flight puts it in. The plant is sub-stepped so its
+established and no mission can start. With the flow sensor on, the runner
+flies the aircraft itself instead: once the estimator reports a usable
+estimate it arms in attitude mode, climbs to hover, and flies a pattern of
+stick pulses, each followed by an equal opposite pulse, so the aircraft
+translates a metre or so along each body axis and returns; the report then
+requires the flow-aided estimate to stay within 1 m of the plant horizontally
+through the whole flight and the aircraft to disarm after landing. Height is
+unobserved in this mode, because flow constrains only the horizontal velocity
+and no barometer or range fusion is configured, so a vertical velocity offset
+picked up at takeoff persists and the vertical error is only bounded loosely.
+With `RDD2_FASTDYN_FLOW=0` the aircraft rests disarmed for the whole run and the
+report judges the unaided estimator alone: it must report a usable estimate
+within 10 s, stay finite, and hold the resting aircraft within 2 m
+horizontally and vertically and below 1 m/s, which is the unaided condition an
+indoor flight puts in. The plant is sub-stepped so its
 internal integration step never exceeds 1.25 ms (four sub-steps per 5 ms
 exchange interval, sixteen per 20 ms; `RDD2_FASTDYN_PLANT_SUBSTEPS` overrides
 the count) so its landing-gear contact integrates cleanly. At one step per 5 ms

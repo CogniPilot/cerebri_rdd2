@@ -165,6 +165,7 @@ struct __packed flight_log_wire_record {
 	uint64_t timestamp_ns;
 	struct flight_log_wire_stream optical;
 	struct flight_log_wire_stream gnss;
+	struct flight_log_wire_stream optical_raw;
 };
 
 struct log_source {
@@ -335,6 +336,9 @@ static const uint8_t g_wire_stats_schema[] =
 	"u32 socket_errors; u32 sequence_gaps; u32 session_changes; u32 last_sequence; "
 	"u64 session_id; u16 last_header_flags; u8 last_receiver_time_status; u8 reserved;} "
 	"struct gnss{u32 received; u32 accepted; u32 publish_failed; "
+	"u32 socket_errors; u32 sequence_gaps; u32 session_changes; u32 last_sequence; "
+	"u64 session_id; u16 last_header_flags; u8 last_receiver_time_status; u8 reserved;} "
+	"struct optical_raw{u32 received; u32 accepted; u32 publish_failed; "
 	"u32 socket_errors; u32 sequence_gaps; u32 session_changes; u32 last_sequence; "
 	"u64 session_id; u16 last_header_flags; u8 last_receiver_time_status; u8 reserved;}}";
 
@@ -594,6 +598,16 @@ static void emit_wire_stats(uint64_t now_ns)
 	record.gnss.session_id = snap.gnss.session_id;
 	record.gnss.last_header_flags = snap.gnss.last_header_flags;
 	record.gnss.last_receiver_time_status = snap.gnss.last_receiver_time_status;
+	record.optical_raw.received = snap.optical_raw.received;
+	record.optical_raw.accepted = snap.optical_raw.accepted;
+	record.optical_raw.publish_failed = snap.optical_raw.publish_failed;
+	record.optical_raw.socket_errors = snap.optical_raw.socket_errors;
+	record.optical_raw.sequence_gaps = snap.optical_raw.sequence_gaps;
+	record.optical_raw.session_changes = snap.optical_raw.session_changes;
+	record.optical_raw.last_sequence = snap.optical_raw.last_sequence;
+	record.optical_raw.session_id = snap.optical_raw.session_id;
+	record.optical_raw.last_header_flags = snap.optical_raw.last_header_flags;
+	record.optical_raw.last_receiver_time_status = snap.optical_raw.last_receiver_time_status;
 
 	(void)synapse_mcap_write_fixed(&g_writer, &g_channels[LOG_CH_WIRE_STATS], now_ns,
 				       record.timestamp_ns, &record, sizeof(record));

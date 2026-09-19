@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use physics::{Plant, radians_to_degrees};
-use protocol::{MissionStatusWire, SyntheticGnss, WaypointPlanWire};
+use protocol::{MissionStatusWire, SyntheticGnss, SyntheticOpticalFlow, WaypointPlanWire};
 use serde::Serialize;
 use shared_memory::LockstepOutputs;
 
@@ -88,6 +88,7 @@ struct Report {
     maximum_reference_generation: u32,
     failures: Vec<String>,
     gnss_denied: bool,
+    flow_flight: bool,
     navigation_estimate_observed: bool,
     navigation_initialized_at_s: f64,
     max_navigation_speed_m_s: f64,
@@ -206,6 +207,7 @@ fn rc_channels(
     arm_confirmed: bool,
     throttle_ramp_start: Option<f64>,
     defer_disarm_until_landed: bool,
+    attitude_flight: bool,
 ) -> [i32; 16] {
     let mut channels = [1500; 16];
     let Some(time) = mission_time else {
@@ -235,7 +237,11 @@ fn rc_channels(
     };
     let arm_requested = time >= MISSION_ARM_DELAY_S && time < disarm_time;
     channels[4] = if arm_requested { 2000 } else { 1000 };
-    channels[5] = if (MISSION_POSITION_START_S..MISSION_POSITION_END_S).contains(&time) {
+    channels[5] = if attitude_flight {
+        // Attitude mode throughout: with no origin the position mode cannot
+        // engage, and the pilot-style stick pattern below moves the aircraft.
+        1500
+    } else if (MISSION_POSITION_START_S..MISSION_POSITION_END_S).contains(&time) {
         2000
     } else if arm_requested {
         1500
@@ -259,11 +265,26 @@ fn rc_channels(
             .unwrap_or(1.0);
         channels[2] = (1000.0 + ramp * (hover_us - 1000.0)).round() as i32;
     }
-    if (2.0..2.75).contains(&time) {
+    if !attitude_flight && (2.0..2.75).contains(&time) {
         channels[0] = 1625;
     }
-    if (2.9..3.65).contains(&time) {
+    if !attitude_flight && (2.9..3.65).contains(&time) {
         channels[1] = 1375;
+    }
+    if attitude_flight {
+        // Attitude mode holds no position, so every stick pulse is followed by
+        // an equal opposite pulse that brings the aircraft back to a hover a
+        // metre or two away: roll out and back, then pitch out and back, so the
+        // flow sensor sees metres of ground motion in both body axes.
+        if (8.0..9.0).contains(&time) || (13.0..14.0).contains(&time) {
+            channels[0] = 1560;
+        } else if (9.0..10.0).contains(&time) || (12.0..13.0).contains(&time) {
+            channels[0] = 1440;
+        } else if (16.0..17.0).contains(&time) || (21.0..22.0).contains(&time) {
+            channels[1] = 1440;
+        } else if (17.0..18.0).contains(&time) || (20.0..21.0).contains(&time) {
+            channels[1] = 1560;
+        }
     }
     channels
 }
@@ -435,12 +456,21 @@ const GNSS_DENIED_MAX_HORIZONTAL_ERROR_M: f64 = 2.0;
 const GNSS_DENIED_MAX_VERTICAL_ERROR_M: f64 = 2.0;
 const GNSS_DENIED_MAX_SPEED_M_S: f64 = 1.0;
 const GNSS_DENIED_MAX_INITIALIZATION_S: f64 = 10.0;
+// Limits for the flow-aided attitude flight without GNSS: the estimate must
+// follow metres of true motion to within a fraction of a metre.
+const FLOW_FLIGHT_MAX_HORIZONTAL_ERROR_M: f64 = 1.0;
+const FLOW_FLIGHT_MAX_VERTICAL_ERROR_M: f64 = 10.0;
+const FLOW_FLIGHT_MIN_ALTITUDE_M: f64 = 1.0;
 
 fn evaluate_gnss_denied(report: &mut Report) {
     if !report.firmware_rc_and_imu_healthy {
         report
             .failures
             .push("firmware did not report valid RC and IMU state".into());
+    }
+    if report.flow_flight {
+        evaluate_flow_flight(report);
+        return;
     }
     if report.firmware_armed_observed {
         report
@@ -484,6 +514,61 @@ fn evaluate_gnss_denied(report: &mut Report) {
             "unaided navigation reported {:.2} m/s on a resting aircraft, limit {:.2} m/s",
             report.max_navigation_speed_m_s, GNSS_DENIED_MAX_SPEED_M_S
         ));
+    }
+}
+
+fn evaluate_flow_flight(report: &mut Report) {
+    if report.gnss_source_ready_observed || report.navigation_origin_observed {
+        report
+            .failures
+            .push("GNSS source or origin became ready although GNSS was denied".into());
+    }
+    if !report.firmware_armed_observed {
+        report
+            .failures
+            .push("firmware never armed for the flow-aided flight".into());
+    }
+    if report.max_altitude_m < FLOW_FLIGHT_MIN_ALTITUDE_M {
+        report.failures.push(format!(
+            "flow-aided flight reached only {:.2} m, below {:.2} m",
+            report.max_altitude_m, FLOW_FLIGHT_MIN_ALTITUDE_M
+        ));
+    }
+    if !report.navigation_estimate_observed {
+        report
+            .failures
+            .push("navigation estimator never reported a usable estimate without GNSS".into());
+    } else if report.navigation_initialized_at_s > GNSS_DENIED_MAX_INITIALIZATION_S {
+        report.failures.push(format!(
+            "navigation estimator took {:.1} s to report a usable estimate, limit {:.1} s",
+            report.navigation_initialized_at_s, GNSS_DENIED_MAX_INITIALIZATION_S
+        ));
+    }
+    if !report.navigation_estimate_finite {
+        report
+            .failures
+            .push("navigation estimate became non-finite".into());
+    }
+    if report.max_navigation_horizontal_error_m > FLOW_FLIGHT_MAX_HORIZONTAL_ERROR_M {
+        report.failures.push(format!(
+            "flow-aided navigation drifted {:.2} m horizontally in flight, limit {:.2} m",
+            report.max_navigation_horizontal_error_m, FLOW_FLIGHT_MAX_HORIZONTAL_ERROR_M
+        ));
+    }
+    // Height is unobserved in this mode: optical flow constrains only the
+    // horizontal velocity and no barometer or range fusion is configured, so
+    // a vertical velocity offset picked up at takeoff persists. The vertical
+    // error is reported for the record and bounded only loosely.
+    if report.max_navigation_vertical_error_m > FLOW_FLIGHT_MAX_VERTICAL_ERROR_M {
+        report.failures.push(format!(
+            "flow-aided navigation drifted {:.2} m vertically in flight, limit {:.2} m",
+            report.max_navigation_vertical_error_m, FLOW_FLIGHT_MAX_VERTICAL_ERROR_M
+        ));
+    }
+    if !report.firmware_disarmed_after_flight {
+        report
+            .failures
+            .push("firmware did not disarm after the flow-aided flight".into());
     }
 }
 
@@ -550,6 +635,7 @@ where
             accel,
             channels,
             fix,
+            protocol::no_optical_flow(),
             WaypointPlanWire::default(),
             warmup_target_ns,
         );
@@ -568,6 +654,7 @@ where
         accel,
         channels,
         fix,
+        protocol::no_optical_flow(),
         WaypointPlanWire::default(),
         target_ns,
     );
@@ -591,6 +678,7 @@ where
         mission_status_current: true,
         navigation_estimate_finite: true,
         gnss_denied: options.gnss_denied,
+        flow_flight: options.gnss_denied && SyntheticOpticalFlow::from_env().enabled(),
         navigation_initialized_at_s: f64::NAN,
         ..Report::default()
     };
@@ -599,6 +687,11 @@ where
     let mut firmware_ready = false;
     let mut synthetic_gnss = SyntheticGnss::from_env();
     synthetic_gnss.denied = options.gnss_denied;
+    let mut synthetic_flow = SyntheticOpticalFlow::from_env();
+    // Without GNSS no mission can start, so with a flow sensor the run flies an
+    // attitude-mode pattern from the moment the firmware is ready and judges
+    // flow-aided navigation against the plant.
+    let flow_flight = options.gnss_denied && synthetic_flow.enabled();
     let mission_plan = protocol::bounded_square_plan(1, 1.0, 0.3)?;
     let mut plan_sent = false;
     let mut mission_epoch = None;
@@ -639,16 +732,25 @@ where
             arm_confirmed,
             throttle_ramp_start,
             defer_disarm_until_landed,
+            flow_flight,
         );
         let (gyro, accel) = plant.imu_flu();
         let target_time = ((simulated_time + options.plant_dt) * 1.0e9).round() as u64;
         let fix = synthetic_gnss.sample(plant.position(), plant.velocity(), target_time);
+        let flow = synthetic_flow.sample(
+            plant.velocity(),
+            plant.euler(),
+            gyro,
+            plant.altitude(),
+            options.plant_dt,
+            target_time,
+        );
         let plan = if plan_sent {
             mission_plan
         } else {
             WaypointPlanWire::default()
         };
-        let inputs = protocol::lockstep_inputs(gyro, accel, channels, fix, plan, target_time);
+        let inputs = protocol::lockstep_inputs(gyro, accel, channels, fix, flow, plan, target_time);
         let outputs = match exchange(&inputs, options.response_timeout) {
             Ok(response) => response,
             Err(error) if !firmware_ready && wall_start.elapsed() < Duration::from_secs(60) => {
@@ -768,6 +870,13 @@ where
         if mission_epoch.is_none() && status.mission_state == 1 {
             mission_epoch = Some(simulated_time);
         }
+        // The flow flight has no mission to wait for; it starts once the estimator
+        // reports a usable estimate, because an arm request before the guidance
+        // controller has a valid attitude latches a control fault that only a
+        // new arm-switch edge clears.
+        if flow_flight && mission_epoch.is_none() && report.navigation_estimate_observed {
+            mission_epoch = Some(simulated_time);
+        }
         if mission_time.is_some_and(|time| time >= MISSION_DISARM_S + 0.25) && !state.armed {
             report.firmware_disarmed_after_flight = true;
         }
@@ -792,7 +901,7 @@ where
         let progress_steps = (1.0 / options.plant_dt).round() as u64;
         if report.plant_steps.is_multiple_of(progress_steps) {
             println!(
-                "[rdd2-mission] t={simulated_time:.1}s alt={:.2}m vz={:.2}m/s tilt={:.1}deg armed={} gps_ready={} origin={} mission_state={} nav_quality={} nav_err_h={:.2}m nav_err_v={:.2}m nav_speed={:.2}m/s imu_f=({:.2},{:.2},{:.2}) imu_w={:.3} est_z={:.2}m est_vz={:.2}m/s motor=({:.3},{:.3},{:.3},{:.3})",
+                "[rdd2-mission] t={simulated_time:.1}s alt={:.2}m vz={:.2}m/s tilt={:.1}deg armed={} gps_ready={} origin={} mission_state={} nav_quality={} nav_err_h={:.2}m nav_err_v={:.2}m nav_speed={:.2}m/s imu_f=({:.2},{:.2},{:.2}) imu_w={:.3} est_z={:.2}m est_vz={:.2}m/s truth_p=({:.2},{:.2}) est_p=({:.2},{:.2}) truth_v=({:.2},{:.2}) est_v=({:.2},{:.2}) flow_ts={} flow=({:.4},{:.4}) range={:.2} flow_st={} flow_acc={} flow_fused={} motor=({:.3},{:.3},{:.3},{:.3})",
                 plant.altitude(),
                 plant.vertical_speed(),
                 roll.max(pitch),
@@ -810,6 +919,21 @@ where
                 (gyro[0] * gyro[0] + gyro[1] * gyro[1] + gyro[2] * gyro[2]).sqrt(),
                 outputs.odometry_estimate.position_enu_m().z(),
                 outputs.odometry_estimate.velocity_enu_m_s().z(),
+                plant.position()[0],
+                plant.position()[1],
+                outputs.odometry_estimate.position_enu_m().x(),
+                outputs.odometry_estimate.position_enu_m().y(),
+                plant.velocity()[0],
+                plant.velocity()[1],
+                outputs.odometry_estimate.velocity_enu_m_s().x(),
+                outputs.odometry_estimate.velocity_enu_m_s().y(),
+                inputs.optical_flow.timestamp_ns(),
+                inputs.optical_flow.flow_rad().x(),
+                inputs.optical_flow.flow_rad().y(),
+                inputs.optical_flow.distance_m(),
+                status.reserved[0],
+                u16::from_le_bytes([status.reserved[1], status.reserved[2]]),
+                u16::from_le_bytes([status.reserved[3], status.reserved[4]]),
                 outputs.motor_command.values[0],
                 outputs.motor_command.values[1],
                 outputs.motor_command.values[2],
@@ -1123,6 +1247,7 @@ mod tests {
                     [0.0, 0.0, 9.806_65],
                     channels,
                     fix,
+                    protocol::no_optical_flow(),
                     WaypointPlanWire::default(),
                     target_ns,
                 );
@@ -1156,6 +1281,7 @@ mod tests {
                     [0.0, 0.0, 9.806_65],
                     channels,
                     fix,
+                    protocol::no_optical_flow(),
                     plan,
                     target_ns,
                 );

@@ -35,6 +35,8 @@ int rdd2_lockstep_gps_mission_init(void);
 bool rdd2_lockstep_handle_gps_mission(const synapse_topic_GnssFixData_t *fix,
                                       const rdd2_waypoint_plan_t *plan,
                                       uint64_t control_now_ns);
+bool rdd2_lockstep_handle_optical_flow(
+    const synapse_topic_OpticalFlowData_t *sample);
 void rdd2_lockstep_gps_mission_status_get(
     struct rdd2_lockstep_gps_mission_status *status);
 bool rdd2_lockstep_flight_state_blob_if_updated(uint32_t *last_generation,

@@ -22,6 +22,9 @@ int rdd2_guidance_controller_process_start(void);
 int rdd2_rate_control_allocator_process_run(void);
 int rdd2_comms_stub_process_run(void);
 bool rdd2_navigation_origin_valid_get(void);
+/* Raw optical-flow adapter verdict and counts for the lockstep host. */
+void rdd2_navigation_optical_flow_lockstep_get(uint8_t *status, uint16_t *accepted,
+                                               uint16_t *fused);
 /* Latest gyroscope bias estimate, for the IMU-rate bias correction the rate
  * loop applies to the raw gyro sample. Returns false until the estimator has
  * published a usable estimate, in which case the caller must use the

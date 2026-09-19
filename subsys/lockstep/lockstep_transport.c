@@ -39,6 +39,11 @@ static uint64_t g_control_now_ns;
 static int32_t g_last_plan_sequence;
 static bool g_plan_sequence_observed;
 static bool g_lockstep_mission_ready;
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_LOCKSTEP_RAW)
+static struct zros_pub g_lockstep_flow_pub;
+static synapse_topic_OpticalFlowData_t g_lockstep_flow;
+static uint64_t g_lockstep_flow_last_ns;
+#endif
 
 static void lockstep_input_store_publish(const uint8_t *buf, size_t len) {
   uint32_t next_generation =
@@ -199,6 +204,14 @@ int rdd2_lockstep_gps_mission_init(void) {
     rc = zros_pub_init(&g_lockstep_plan_pub, &g_lockstep_mission_node,
                        &topic_waypoint_plan, &g_lockstep_plan);
   }
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_LOCKSTEP_RAW)
+  if (rc == 0) {
+    g_lockstep_flow = (synapse_topic_OpticalFlowData_t){0};
+    g_lockstep_flow_last_ns = 0U;
+    rc = zros_pub_init(&g_lockstep_flow_pub, &g_lockstep_mission_node,
+                       &topic_optical_flow, &g_lockstep_flow);
+  }
+#endif
   g_lockstep_mission_ready = rc == 0;
   return rc;
 }
@@ -240,6 +253,25 @@ bool rdd2_lockstep_handle_gps_mission(const synapse_topic_GnssFixData_t *fix,
   return true;
 }
 
+bool rdd2_lockstep_handle_optical_flow(
+    const synapse_topic_OpticalFlowData_t *sample) {
+#if defined(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_LOCKSTEP_RAW)
+  /* The coordinator repeats the newest sample in every frame; only a new
+   * producer timestamp is a new sample. A zero timestamp is no sample at all. */
+  if (!g_lockstep_mission_ready || sample == NULL ||
+      sample->timestamp_ns == 0U ||
+      sample->timestamp_ns == g_lockstep_flow_last_ns) {
+    return true;
+  }
+  g_lockstep_flow = *sample;
+  g_lockstep_flow_last_ns = sample->timestamp_ns;
+  return zros_pub_update(&g_lockstep_flow_pub) == 0;
+#else
+  (void)sample;
+  return true;
+#endif
+}
+
 void rdd2_lockstep_gps_mission_status_get(
     struct rdd2_lockstep_gps_mission_status *status) {
   uint8_t state;
@@ -262,6 +294,19 @@ void rdd2_lockstep_gps_mission_status_get(
   }
   if (rdd2_navigation_origin_valid_get()) {
     status->flags |= RDD2_LOCKSTEP_ORIGIN_VALID;
+  }
+  {
+    uint8_t flow_status = 0U;
+    uint16_t flow_accepted = 0U;
+    uint16_t flow_fused = 0U;
+
+    rdd2_navigation_optical_flow_lockstep_get(&flow_status, &flow_accepted,
+                                              &flow_fused);
+    status->optical_flow_status = flow_status;
+    status->optical_flow_accepted[0] = (uint8_t)(flow_accepted & 0xFFU);
+    status->optical_flow_accepted[1] = (uint8_t)(flow_accepted >> 8);
+    status->optical_flow_fused[0] = (uint8_t)(flow_fused & 0xFFU);
+    status->optical_flow_fused[1] = (uint8_t)(flow_fused >> 8);
   }
   if (state == RDD2_WAYPOINT_MISSION_PENDING ||
       state == RDD2_WAYPOINT_MISSION_RUNNING) {
@@ -354,6 +399,10 @@ enum rdd2_lockstep_frame_result rdd2_lockstep_advance_frame(
     }
   }
   *coordinator_boot_ns = target;
+  /* The flow sample integrates the interval that just ran, so it is handed
+   * over once that interval is complete and reaches the estimator with the
+   * next tick, one controller period behind the motion it describes. */
+  (void)rdd2_lockstep_handle_optical_flow(&shared->optical_flow);
 
   (void)rdd2_lockstep_flight_state_blob_if_updated(
       flight_generation, (uint8_t *)&flight, sizeof(flight), &flight_len);

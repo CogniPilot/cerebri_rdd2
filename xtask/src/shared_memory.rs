@@ -25,6 +25,7 @@ struct SharedLayout {
     inertial_sample: topic::InertialSampleData,
     manual_control: topic::ManualControlData,
     gnss_fix: topic::GnssFixData,
+    optical_flow: topic::OpticalFlowData,
     waypoint_plan: protocol::WaypointPlanWire,
     pwm_signal_outputs: topic::PwmSignalOutputsData,
     vehicle_health: topic::VehicleHealthData,
@@ -191,6 +192,11 @@ impl Transport {
             );
             ptr::copy_nonoverlapping(&inputs.gnss_fix, ptr::addr_of_mut!((*shared).gnss_fix), 1);
             ptr::copy_nonoverlapping(
+                &inputs.optical_flow,
+                ptr::addr_of_mut!((*shared).optical_flow),
+                1,
+            );
+            ptr::copy_nonoverlapping(
                 &inputs.waypoint_plan,
                 ptr::addr_of_mut!((*shared).waypoint_plan),
                 1,
@@ -265,7 +271,7 @@ impl Drop for Transport {
     }
 }
 
-const _: () = assert!(size_of::<SharedLayout>() == 1176);
+const _: () = assert!(size_of::<SharedLayout>() == 1264);
 
 #[cfg(test)]
 mod tests {
@@ -274,20 +280,21 @@ mod tests {
 
     #[test]
     fn layout_matches_firmware_abi() {
-        assert_eq!(size_of::<SharedLayout>(), 1176);
+        assert_eq!(size_of::<SharedLayout>(), 1264);
         assert_eq!(align_of::<SharedLayout>(), 8);
         assert_eq!(offset_of!(SharedLayout, inertial_sample), 16);
         assert_eq!(offset_of!(SharedLayout, manual_control), 56);
         assert_eq!(offset_of!(SharedLayout, gnss_fix), 96);
-        assert_eq!(offset_of!(SharedLayout, waypoint_plan), 160);
-        assert_eq!(offset_of!(SharedLayout, pwm_signal_outputs), 640);
-        assert_eq!(offset_of!(SharedLayout, vehicle_health), 688);
-        assert_eq!(offset_of!(SharedLayout, attitude_estimate), 744);
-        assert_eq!(offset_of!(SharedLayout, attitude_command), 784);
-        assert_eq!(offset_of!(SharedLayout, control_loop_metrics), 832);
-        assert_eq!(offset_of!(SharedLayout, odometry_estimate), 856);
-        assert_eq!(offset_of!(SharedLayout, planner_reference), 1088);
-        assert_eq!(offset_of!(SharedLayout, mission_status), 1144);
+        assert_eq!(offset_of!(SharedLayout, optical_flow), 160);
+        assert_eq!(offset_of!(SharedLayout, waypoint_plan), 248);
+        assert_eq!(offset_of!(SharedLayout, pwm_signal_outputs), 728);
+        assert_eq!(offset_of!(SharedLayout, vehicle_health), 776);
+        assert_eq!(offset_of!(SharedLayout, attitude_estimate), 832);
+        assert_eq!(offset_of!(SharedLayout, attitude_command), 872);
+        assert_eq!(offset_of!(SharedLayout, control_loop_metrics), 920);
+        assert_eq!(offset_of!(SharedLayout, odometry_estimate), 944);
+        assert_eq!(offset_of!(SharedLayout, planner_reference), 1176);
+        assert_eq!(offset_of!(SharedLayout, mission_status), 1232);
     }
 
     #[test]
@@ -402,6 +409,7 @@ mod tests {
             [0.0, 0.0, 9.8],
             [1500; 16],
             gnss_fix,
+            protocol::no_optical_flow(),
             waypoint_plan,
             5_000_000,
         );

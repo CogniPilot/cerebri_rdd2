@@ -65,7 +65,13 @@ struct rdd2_lockstep_gps_mission_status {
   uint32_t reference_generation;
   uint8_t mission_state;
   uint8_t flags;
-  uint8_t reserved[6];
+  /* Optical-flow diagnostics for the host: the raw adapter's verdict code,
+   * its accepted-sample count and the estimator's fused-correction count,
+   * both little-endian and saturating at 65535. */
+  uint8_t optical_flow_status;
+  uint8_t optical_flow_accepted[2];
+  uint8_t optical_flow_fused[2];
+  uint8_t reserved;
 };
 
 _Static_assert(sizeof(struct rdd2_lockstep_gps_mission_status) == 32U,
@@ -79,8 +85,11 @@ _Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status,
 _Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status,
                         mission_state) == 24U,
                "lockstep status mission state offset mismatch");
+_Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status,
+                        optical_flow_status) == 26U,
+               "lockstep status optical flow status offset mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_gps_mission_status, reserved) ==
-                   26U,
+                   31U,
                "lockstep status reserved offset mismatch");
 
 typedef struct {

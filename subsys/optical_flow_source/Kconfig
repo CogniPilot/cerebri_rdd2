@@ -130,7 +130,27 @@ config RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW
 	  fuses the node's derived velocity instead. GPS remains enabled and
 	  provides the position anchor.
 
-if RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW
+config RDD2_OPTICAL_FLOW_SOURCE_LOCKSTEP_RAW
+	bool "Fuse raw OpticalFlowData supplied by the lockstep coordinator"
+	depends on RDD2_LOCKSTEP
+	depends on !RDD2_OPTICAL_FLOW_SOURCE_WIRE
+	depends on !RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW
+	default n
+	help
+	  Feed the generated navigation estimator the fixed-layout OpticalFlowData
+	  sample the lockstep coordinator places in shared memory each exchange,
+	  through the same raw adapter the direct wire uses. The rehosted and
+	  native lockstep images use this to exercise flow-aided navigation from
+	  a plant-derived flow sensor.
+
+config RDD2_OPTICAL_FLOW_RAW
+	bool
+	default y if RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW || RDD2_OPTICAL_FLOW_SOURCE_LOCKSTEP_RAW
+	help
+	  The raw OpticalFlowData fusion path is compiled in for whichever source
+	  delivers the sample.
+
+if RDD2_OPTICAL_FLOW_RAW
 
 config RDD2_OPTICAL_FLOW_RAW_SENSOR_ID
 	int "Accepted optical-flow sensor id"

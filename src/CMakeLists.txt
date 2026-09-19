@@ -55,7 +55,7 @@ if(CONFIG_SHELL AND CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE)
   )
 endif()
 
-target_sources_ifdef(CONFIG_RDD2_OPTICAL_FLOW_SOURCE_WIRE_RAW app PRIVATE
+target_sources_ifdef(CONFIG_RDD2_OPTICAL_FLOW_RAW app PRIVATE
   processes/navigation_optical_flow_raw.c
 )
 

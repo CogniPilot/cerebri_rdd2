@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use synapse_fbs::{
     topic,
-    types::{GnssFixType, TimeStatus, Vec3f},
+    types::{GnssFixType, TimeStatus, Vec2f, Vec3f},
 };
 
 const GNSS_PERIOD_NS: u64 = 100_000_000;
@@ -215,6 +215,7 @@ pub struct LockstepInputs {
     pub manual_control: topic::ManualControlData,
     pub inertial_sample: topic::InertialSampleData,
     pub gnss_fix: topic::GnssFixData,
+    pub optical_flow: topic::OpticalFlowData,
     pub waypoint_plan: WaypointPlanWire,
 }
 
@@ -223,6 +224,7 @@ pub fn lockstep_inputs(
     accel_flu: [f32; 3],
     channels: [i32; 16],
     gnss_fix: topic::GnssFixData,
+    optical_flow: topic::OpticalFlowData,
     waypoint_plan: WaypointPlanWire,
     target_boot_time_ns: u64,
 ) -> LockstepInputs {
@@ -283,6 +285,7 @@ pub fn lockstep_inputs(
         manual_control,
         inertial_sample,
         gnss_fix,
+        optical_flow,
         waypoint_plan,
     }
 }
@@ -494,6 +497,7 @@ mod tests {
             [4.0, 5.0, -9.8],
             channels,
             gnss_fix,
+            no_optical_flow(),
             plan,
             5_000_000,
         );
@@ -672,5 +676,154 @@ mod tests {
         );
         let state = flight_state(&health.0).unwrap();
         assert!(state.armed && state.rc_valid && state.imu_ok);
+    }
+}
+
+/// Raw optical-flow flags the vehicle's raw adapter requires on every sample.
+const OPTICAL_FLOW_FLAG_FLOW_VALID: u8 = 1 << 0;
+const OPTICAL_FLOW_FLAG_DELTA_ANGLE_VALID: u8 = 1 << 1;
+const OPTICAL_FLOW_FLAG_DISTANCE_VALID: u8 = 1 << 2;
+/// Nadir range below which the synthetic sensor reports no flow, like a real
+/// sensor sitting on its landing gear with the lens too close to focus.
+const OPTICAL_FLOW_MIN_RANGE_M: f64 = 0.05;
+/// Nominal PAA3905-class limits carried in the sample's informational fields.
+const OPTICAL_FLOW_MAX_RATE_RAD_S: f32 = 7.4;
+const OPTICAL_FLOW_MAX_GROUND_DISTANCE_M: f32 = 30.0;
+const OPTICAL_FLOW_FIELD_OF_VIEW_RAD: f32 = 0.733;
+
+/// A plant-derived raw optical-flow sensor: one OpticalFlowData sample per
+/// exchange interval, integrating the interval that just ran.
+///
+/// The vehicle's raw flow path forms the body velocity from the gyro-compensated
+/// flow angles as v_forward = range * (flow_y - dtheta_y) / dt and
+/// v_left = -range * (flow_x - dtheta_x) / dt, so the synthetic sensor reports
+/// flow_x = -v_left * dt / range + dtheta_x and flow_y = v_forward * dt / range
+/// + dtheta_y from the plant's true body velocity, nadir range and integrated
+/// body rate. Quality is full scale and the range is exact, so what the estimator
+/// sees is a perfect sensor with the interface's own conventions.
+pub struct SyntheticOpticalFlow {
+    enabled: bool,
+    latest: topic::OpticalFlowData,
+}
+
+impl SyntheticOpticalFlow {
+    /// Select from the environment: RDD2_FASTDYN_FLOW=0 disables the sensor,
+    /// leaving the estimator unaided without GNSS.
+    pub fn from_env() -> Self {
+        let disabled = std::env::var("RDD2_FASTDYN_FLOW")
+            .map(|value| {
+                let value = value.trim();
+                value == "0" || value.eq_ignore_ascii_case("false") || value.eq_ignore_ascii_case("off")
+            })
+            .unwrap_or(false);
+        Self {
+            enabled: !disabled,
+            latest: topic::OpticalFlowData::default(),
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Produce the sample for the interval ending at `target_boot_time_ns`,
+    /// from the plant's world velocity and attitude at its end, its mean body
+    /// rate over the interval, and its nadir range.
+    pub fn sample(
+        &mut self,
+        velocity_enu_m_s: [f64; 3],
+        euler_rpy_rad: [f64; 3],
+        gyro_flu_rad_s: [f32; 3],
+        range_m: f64,
+        dt_s: f64,
+        target_boot_time_ns: u64,
+    ) -> topic::OpticalFlowData {
+        if !self.enabled || target_boot_time_ns == 0 || dt_s <= 0.0 {
+            return self.latest;
+        }
+        let (sr, cr) = euler_rpy_rad[0].sin_cos();
+        let (sp, cp) = euler_rpy_rad[1].sin_cos();
+        let (sy, cy) = euler_rpy_rad[2].sin_cos();
+        // Body-to-world rotation for yaw about up, then pitch about left, then
+        // roll about forward; its transpose takes the ENU velocity into FLU.
+        let r = [
+            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr],
+        ];
+        let v = velocity_enu_m_s;
+        let forward = r[0][0] * v[0] + r[1][0] * v[1] + r[2][0] * v[2];
+        let left = r[0][1] * v[0] + r[1][1] * v[1] + r[2][1] * v[2];
+        let range = range_m.max(OPTICAL_FLOW_MIN_RANGE_M);
+        let dtheta = [
+            f64::from(gyro_flu_rad_s[0]) * dt_s,
+            f64::from(gyro_flu_rad_s[1]) * dt_s,
+            f64::from(gyro_flu_rad_s[2]) * dt_s,
+        ];
+        let flow_x = -left * dt_s / range + dtheta[0];
+        let flow_y = forward * dt_s / range + dtheta[1];
+        let values = [forward, left, flow_x, flow_y, dtheta[0], dtheta[1], dtheta[2]];
+        if !values.iter().all(|value| value.is_finite()) {
+            return self.latest;
+        }
+        self.latest = topic::OpticalFlowData::new(
+            target_boot_time_ns,
+            target_boot_time_ns - ((dt_s * 0.5e9).round() as u64).min(target_boot_time_ns),
+            target_boot_time_ns,
+            &Vec2f::new(flow_x as f32, flow_y as f32),
+            &Vec3f::new(dtheta[0] as f32, dtheta[1] as f32, dtheta[2] as f32),
+            range as f32,
+            0.0,
+            (dt_s * 1.0e9).round() as u32,
+            0,
+            OPTICAL_FLOW_MAX_RATE_RAD_S,
+            OPTICAL_FLOW_MIN_RANGE_M as f32,
+            OPTICAL_FLOW_MAX_GROUND_DISTANCE_M,
+            OPTICAL_FLOW_FIELD_OF_VIEW_RAD,
+            25.0,
+            u8::MAX,
+            u8::MAX,
+            1,
+            topic::FlowLightMode::Bright,
+            OPTICAL_FLOW_FLAG_FLOW_VALID
+                | OPTICAL_FLOW_FLAG_DELTA_ANGLE_VALID
+                | OPTICAL_FLOW_FLAG_DISTANCE_VALID,
+            TimeStatus::LocalFreerun,
+            0,
+        );
+        self.latest
+    }
+}
+
+/// The sample the controller benchmark and a disabled sensor hand over: a zero
+/// timestamp, which the raw adapter rejects as no sample.
+pub fn no_optical_flow() -> topic::OpticalFlowData {
+    topic::OpticalFlowData::default()
+}
+
+#[cfg(test)]
+mod synthetic_flow_tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_flow_reports_forward_motion_with_the_raw_convention() {
+        let mut flow = SyntheticOpticalFlow {
+            enabled: true,
+            latest: topic::OpticalFlowData::default(),
+        };
+        // Level, heading east, moving east at 1 m/s, 2 m up, no rotation.
+        let sample = flow.sample([1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0; 3], 2.0, 0.02, 20_000_000);
+        assert_eq!(sample.timestamp_ns(), 20_000_000);
+        assert_eq!(sample.flags(), 7);
+        assert_eq!(sample.integration_timespan_ns(), 20_000_000);
+        // v_forward = range * flow_y / dt: flow_y = 1.0 * 0.02 / 2.0 = 0.01 rad.
+        assert!((f64::from(sample.flow_rad().y()) - 0.01).abs() < 1e-6);
+        assert!(f64::from(sample.flow_rad().x()).abs() < 1e-6);
+        // Heading north (yaw 90 deg) and moving north is still forward motion.
+        let sample = flow.sample([0.0, 1.0, 0.0], [0.0, 0.0, std::f64::consts::FRAC_PI_2], [0.0; 3], 2.0, 0.02, 40_000_000);
+        assert!((f64::from(sample.flow_rad().y()) - 0.01).abs() < 1e-6);
+        // Moving west while heading north is motion to the left: flow_x = -v_left * dt / range.
+        let sample = flow.sample([-1.0, 0.0, 0.0], [0.0, 0.0, std::f64::consts::FRAC_PI_2], [0.0; 3], 2.0, 0.02, 60_000_000);
+        assert!((f64::from(sample.flow_rad().x()) + 0.01).abs() < 1e-6);
     }
 }

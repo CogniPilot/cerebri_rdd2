@@ -9,6 +9,7 @@
 #include "interfaces/data.h"
 
 #include <synapse/control_reader.h>
+#include <synapse/optical_flow_reader.h>
 #include <synapse/sensors_reader.h>
 #include <synapse/state_reader.h>
 
@@ -23,6 +24,7 @@ struct rdd2_lockstep_shared {
   synapse_topic_InertialSampleData_t inertial_sample;
   synapse_topic_ManualControlData_t manual_control;
   synapse_topic_GnssFixData_t gnss_fix;
+  synapse_topic_OpticalFlowData_t optical_flow;
   rdd2_waypoint_plan_t waypoint_plan;
   synapse_topic_PwmSignalOutputsData_t pwm_signal_outputs;
   synapse_topic_VehicleHealthData_t vehicle_health;
@@ -34,7 +36,7 @@ struct rdd2_lockstep_shared {
   struct rdd2_lockstep_gps_mission_status mission_status;
 };
 
-_Static_assert(sizeof(struct rdd2_lockstep_shared) == 1176,
+_Static_assert(sizeof(struct rdd2_lockstep_shared) == 1264,
                "native SIL shared layout mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_shared, inertial_sample) == 16,
                "inertial sample ABI offset mismatch");
@@ -42,24 +44,24 @@ _Static_assert(offsetof(struct rdd2_lockstep_shared, manual_control) == 56,
                "manual control ABI offset mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_shared, gnss_fix) == 96,
                "GNSS fix ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, waypoint_plan) == 160,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, waypoint_plan) == 248,
                "waypoint plan ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, pwm_signal_outputs) == 640,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, pwm_signal_outputs) == 728,
                "PWM output ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, vehicle_health) == 688,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, vehicle_health) == 776,
                "vehicle health ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, attitude_estimate) == 744,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, attitude_estimate) == 832,
                "attitude estimate ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, attitude_command) == 784,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, attitude_command) == 872,
                "attitude command ABI offset mismatch");
 _Static_assert(offsetof(struct rdd2_lockstep_shared, control_loop_metrics) ==
-                   832,
+                   920,
                "control loop metrics ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, odometry_estimate) == 856,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, odometry_estimate) == 944,
                "odometry estimate ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, planner_reference) == 1088,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, planner_reference) == 1176,
                "planner reference ABI offset mismatch");
-_Static_assert(offsetof(struct rdd2_lockstep_shared, mission_status) == 1144,
+_Static_assert(offsetof(struct rdd2_lockstep_shared, mission_status) == 1232,
                "mission status ABI offset mismatch");
 
 #endif
